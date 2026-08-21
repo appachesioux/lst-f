@@ -77,6 +77,9 @@ pub fn run(
     e: Editor,
     environ: *const std.process.Environ.Map,
     path: []const u8,
+    /// O editor abre com o diretorio-base como cwd, para que `:e`, `gf` e
+    /// completacao funcionem sobre os caminhos que estao no buffer.
+    cwd: []const u8,
 ) !RunResult {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, e.argv);
@@ -85,6 +88,7 @@ pub fn run(
     var child = try std.process.spawn(io, .{
         .argv = argv.items,
         .environ_map = environ,
+        .cwd = .{ .path = cwd },
         .stdin = .inherit,
         .stdout = .inherit,
         .stderr = .inherit,

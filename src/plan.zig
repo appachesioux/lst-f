@@ -38,6 +38,9 @@ pub const Problem = union(enum) {
     dest_under_dest: struct { outer: u32, inner: u32 },
     parent_removed_child_moved: struct { parent: u32, child: u32 },
     parent_moved_child_touched: struct { parent: u32, child: u32 },
+    unknown_directive: struct { line: u32, name: []const u8 },
+    directive_needs_argument: struct { line: u32, name: []const u8 },
+    multiple_directives: struct { line: u32 },
 
     pub fn describe(p: Problem, w: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (p) {
@@ -64,6 +67,9 @@ pub const Problem = union(enum) {
                 "ID {d} move um diretorio que contem o ID {d}, tambem alterado na mesma selecao",
                 .{ v.parent, v.child },
             ),
+            .unknown_directive => |v| try w.print("linha {d}: diretiva desconhecida \":{s}\"", .{ v.line, v.name }),
+            .directive_needs_argument => |v| try w.print("linha {d}: \":{s}\" precisa de um argumento", .{ v.line, v.name }),
+            .multiple_directives => |v| try w.print("linha {d}: so uma diretiva por vez", .{v.line}),
         }
     }
 };
@@ -420,8 +426,23 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
 // Parsing do buffer editado
 // ---------------------------------------------------------------------------
 
+/// Diretiva de navegacao: a linha comeca por `:`, como um comando ex. Linha de
+/// entrada sempre comeca por digito, entao nao ha ambiguidade com nome de arquivo.
+pub const Directive = union(enum) {
+    cd: []const u8,
+    find: []const u8,
+    undo,
+    quit,
+};
+
+pub const Document = struct {
+    edits: []const Edit,
+    /// No maximo uma por rodada: duas seriam duas telas ao mesmo tempo.
+    directive: ?Directive = null,
+};
+
 pub const ParseResult = union(enum) {
-    ok: []const Edit,
+    ok: Document,
     invalid: []const Problem,
 };
 
@@ -432,6 +453,7 @@ pub const ParseResult = union(enum) {
 pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResult {
     var edits: std.ArrayList(Edit) = .empty;
     var problems: std.ArrayList(Problem) = .empty;
+    var directive: ?Directive = null;
 
     var line_no: u32 = 0;
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -441,6 +463,36 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
         if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
         if (line.len == 0) continue;
         if (line[0] == '#') continue;
+
+        if (line[0] == ':') {
+            if (directive != null) {
+                try problems.append(arena, .{ .multiple_directives = .{ .line = line_no } });
+                continue;
+            }
+            const body = std.mem.trim(u8, line[1..], " \t");
+            const split = std.mem.indexOfAny(u8, body, " \t") orelse body.len;
+            const name = body[0..split];
+            const argument = std.mem.trim(u8, body[split..], " \t");
+
+            if (std.mem.eql(u8, name, "cd")) {
+                if (argument.len == 0) {
+                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = "cd" } });
+                    continue;
+                }
+                directive = .{ .cd = argument };
+            } else if (std.mem.eql(u8, name, "find")) {
+                directive = .{ .find = argument };
+            } else if (std.mem.eql(u8, name, "undo")) {
+                directive = .undo;
+            } else if (std.mem.eql(u8, name, "quit") or std.mem.eql(u8, name, "q")) {
+                directive = .quit;
+            } else {
+                try problems.append(arena, .{
+                    .unknown_directive = .{ .line = line_no, .name = try arena.dupe(u8, name) },
+                });
+            }
+            continue;
+        }
 
         var i: usize = 0;
         while (i < line.len and std.ascii.isDigit(line[i])) i += 1;
@@ -463,15 +515,45 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
     }
 
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
-    return .{ .ok = try edits.toOwnedSlice(arena) };
+    return .{ .ok = .{ .edits = try edits.toOwnedSlice(arena), .directive = directive } };
 }
 
+/// Cabecalho do buffer. E a barra de localizacao desta interface: o buffer do
+/// editor **e** a tela, entao o que um gerenciador de arquivos poria numa barra
+/// de titulo mora aqui, em linhas de comentario.
+pub const BufferHeader = struct {
+    app: []const u8,
+    version: []const u8,
+    /// Caminho ja pronto para exibicao (com `~`, se for o caso).
+    location: []const u8,
+    /// Origem do conteudo, quando nao e a listagem do diretorio.
+    scope: ?[]const u8 = null,
+    /// Nomes que nao sao UTF-8 valido: aparecem, mas fora da edicao.
+    unlistable: []const []const u8 = &.{},
+    notes: []const []const u8 = &.{},
+};
+
 /// Escreve o buffer que vai para o editor.
-pub fn writeBuffer(w: *std.Io.Writer, base: []const u8, originals: []const Original) std.Io.Writer.Error!void {
-    try w.print("# lst-f: {s}\n", .{base});
-    try w.writeAll("# Edite o caminho a direita do ID. O ID casa a linha com a entrada:\n");
-    try w.writeAll("# reordenar e inofensivo, apagar a linha remove a entrada.\n");
-    try w.writeAll("# Saia com erro (:cq) para nao aplicar nada.\n");
+pub fn writeBuffer(
+    w: *std.Io.Writer,
+    header: BufferHeader,
+    originals: []const Original,
+) std.Io.Writer.Error!void {
+    try w.print("# {s} v{s}  \u{00b7}  {s}\n", .{ header.app, header.version, header.location });
+    if (header.scope) |scope| try w.print("# {s}\n", .{scope});
+    try w.writeAll("#\n");
+    try w.writeAll("# edite o caminho = renomeia ou move  \u{00b7}  apague a linha = remove\n");
+    try w.writeAll("# o ID casa a linha com a entrada: reordenar ou :sort e inofensivo\n");
+    try w.writeAll("# :cd <dir>  \u{00b7}  :find [termo]  \u{00b7}  :undo  \u{00b7}  :quit    (:cq aborta sem aplicar)\n");
+    for (header.notes) |note| try w.print("# aviso: {s}\n", .{note});
+    for (header.unlistable) |name| {
+        try w.writeAll("# fora da edicao, nome nao e UTF-8 valido: ");
+        for (name) |c| {
+            if (c >= 0x20 and c < 0x7f) try w.writeByte(c) else try w.print("\\x{x:0>2}", .{c});
+        }
+        try w.writeByte('\n');
+    }
+    try w.writeAll("#\n");
     for (originals) |o| {
         try w.print("{d:0>4}  {s}\n", .{ o.id, o.path });
     }
@@ -739,7 +821,7 @@ test "parser do buffer" {
         "\n" ++
         "0003   nome com  espacos .txt\n";
     const res = try parseBuffer(f.a(), text);
-    const edits = res.ok;
+    const edits = res.ok.edits;
     try testing.expectEqual(@as(usize, 3), edits.len);
     try testing.expectEqual(@as(u32, 1), edits[0].id);
     try testing.expectEqualStrings("a.txt", edits[0].path);
@@ -762,7 +844,52 @@ test "parser preserva espaco no fim do nome" {
     var f = Fixture.init();
     defer f.deinit();
     const res = try parseBuffer(f.a(), "0001  nome com espaco no fim \n");
-    try testing.expectEqualStrings("nome com espaco no fim ", res.ok[0].path);
+    try testing.expectEqualStrings("nome com espaco no fim ", res.ok.edits[0].path);
+}
+
+test "diretivas de navegacao" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const cd = (try parseBuffer(f.a(), "#\n:cd src\n0001  a.txt\n")).ok;
+    try testing.expectEqualStrings("src", cd.directive.?.cd);
+    try testing.expectEqual(@as(usize, 1), cd.edits.len);
+
+    const find = (try parseBuffer(f.a(), ":find  plan.zig\n")).ok;
+    try testing.expectEqualStrings("plan.zig", find.directive.?.find);
+
+    // :find sem termo e legitimo: abre o buscador na arvore inteira.
+    const find_all = (try parseBuffer(f.a(), ":find\n")).ok;
+    try testing.expectEqualStrings("", find_all.directive.?.find);
+
+    try testing.expect((try parseBuffer(f.a(), ":undo\n")).ok.directive.? == .undo);
+    try testing.expect((try parseBuffer(f.a(), ":quit\n")).ok.directive.? == .quit);
+    try testing.expect((try parseBuffer(f.a(), ":q\n")).ok.directive.? == .quit);
+}
+
+test "diretivas invalidas abortam sem aplicar nada" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const cases = [_]struct { text: []const u8, tag: std.meta.Tag(Problem) }{
+        .{ .text = ":voar\n", .tag = .unknown_directive },
+        .{ .text = ":cd\n", .tag = .directive_needs_argument },
+        .{ .text = ":cd a\n:cd b\n", .tag = .multiple_directives },
+    };
+    for (cases) |case| {
+        switch (try parseBuffer(f.a(), case.text)) {
+            .ok => return error.ExpectedInvalid,
+            .invalid => |ps| try testing.expect(ps[0] == case.tag),
+        }
+    }
+}
+
+test "nome de arquivo nunca e confundido com diretiva" {
+    var f = Fixture.init();
+    defer f.deinit();
+    // A linha de entrada comeca por digito, entao `:` no nome e so um byte.
+    const doc = (try parseBuffer(f.a(), "0001  :cd nao sou diretiva\n")).ok;
+    try testing.expect(doc.directive == null);
+    try testing.expectEqualStrings(":cd nao sou diretiva", doc.edits[0].path);
 }
 
 test "round-trip do buffer" {
@@ -772,10 +899,17 @@ test "round-trip do buffer" {
         orig(1, "a b.txt", .file),
         orig(2, "sub/c.md", .file),
     };
-    var buf: [1024]u8 = undefined;
+    var buf: [2048]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try writeBuffer(&w, "/tmp/base", &originals);
+    try writeBuffer(&w, .{
+        .app = "lst-f",
+        .version = "0.0.0",
+        .location = "~/base",
+        .unlistable = &.{"invalido-\xff.txt"},
+        .notes = &.{"area orfa .lst-f-1 (2 itens)"},
+    }, &originals);
     const res = try parseBuffer(f.a(), w.buffered());
-    const plan_res = try build(f.a(), &originals, res.ok, .{});
+    try testing.expect(res.ok.directive == null);
+    const plan_res = try build(f.a(), &originals, res.ok.edits, .{});
     try testing.expect(plan_res.ok.isEmpty());
 }
