@@ -78,6 +78,9 @@ pub const Keys = struct {
     pub const recursive = "ctrl-r";
     pub const undo = "alt-u";
     pub const preview = "alt-p";
+    pub const help = "f1";
+    /// Como o fzf nomeia a tecla e como ela e mostrada ao usuario.
+    pub const help_label = "F1";
 };
 
 pub const Options = struct {
@@ -187,7 +190,10 @@ pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
     }
 
     var expect: std.ArrayList(u8) = .empty;
-    try expect.appendSlice(arena, "--expect=enter," ++ Keys.edit ++ "," ++ Keys.undo);
+    try expect.appendSlice(
+        arena,
+        "--expect=enter," ++ Keys.edit ++ "," ++ Keys.undo ++ "," ++ Keys.help,
+    );
     if (options.features.reload) {
         try argv.append(
             arena,
