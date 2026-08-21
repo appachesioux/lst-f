@@ -41,6 +41,16 @@ pub const Options = struct {
     color: bool = false,
 };
 
+/// Larguras das colunas de exibicao. Ficam aqui, junto de quem escreve as
+/// linhas, para que o cabecalho de colunas nunca saia do lugar.
+pub const columns = struct {
+    pub const kind = 1;
+    pub const mode = 9;
+    pub const size = 9;
+    pub const time = 16;
+    pub const gap = "  ";
+};
+
 const ansi = struct {
     const reset = "\x1b[0m";
     const dim = "\x1b[2m";
@@ -253,6 +263,31 @@ pub fn writeDisplay(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
     if (options.color) try w.writeAll(ansi.reset);
 }
 
+/// Cabecalho de colunas, no estilo de lista do Dolphin ou do Nautilus.
+/// Alinha byte a byte com `writeDisplay`, incluindo o deslocamento dos icones.
+pub fn writeColumnTitles(w: *Io.Writer, options: Options) Io.Writer.Error!void {
+    try writePadded(w, "T", columns.kind);
+    try w.writeAll(columns.gap);
+    try writePadded(w, "PERMISSAO", columns.mode);
+    try w.writeAll(columns.gap);
+    try writeRightPadded(w, "TAMANHO", columns.size);
+    try w.writeAll(columns.gap);
+    try writePadded(w, "MODIFICADO", columns.time);
+    try w.writeAll(columns.gap);
+    if (options.icons) try w.writeAll("   ");
+    try w.writeAll("NOME");
+}
+
+fn writePadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
+    try w.writeAll(text[0..@min(text.len, width)]);
+    try w.splatByteAll(' ', width -| text.len);
+}
+
+fn writeRightPadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
+    try w.splatByteAll(' ', width -| text.len);
+    try w.writeAll(text[0..@min(text.len, width)]);
+}
+
 fn kindChar(e: Entry) u8 {
     if (e.symlink) return 'l';
     return switch (e.kind) {
@@ -333,6 +368,41 @@ test "ordenacao: diretorios antes, depois caixa-insensivel" {
     try testing.expectEqualStrings("Beta", entries[1].path);
     try testing.expectEqualStrings("alfa.txt", entries[2].path);
     try testing.expectEqualStrings("zebra.txt", entries[3].path);
+}
+
+/// Colunas ocupadas no terminal, nao bytes: o icone e um codepoint largo.
+fn displayColumns(text: []const u8) usize {
+    var total: usize = 0;
+    var it = (std.unicode.Utf8View.init(text) catch return text.len).iterator();
+    while (it.nextCodepoint()) |cp| total += if (cp >= 0x1100) 2 else 1;
+    return total;
+}
+
+test "cabecalho de colunas alinha com a linha de dados" {
+    const entry: Entry = .{
+        .path = "arquivo.txt",
+        .kind = .file,
+        .symlink = false,
+        .size = 2048,
+        .mtime_s = 1_700_000_000,
+        .mode = 0o644,
+        .utf8_ok = true,
+    };
+    for ([_]Options{ .{}, .{ .icons = true } }) |options| {
+        var title_buf: [256]u8 = undefined;
+        var title: Io.Writer = .fixed(&title_buf);
+        try writeColumnTitles(&title, options);
+
+        var row_buf: [256]u8 = undefined;
+        var row: Io.Writer = .fixed(&row_buf);
+        try writeDisplay(&row, entry, options);
+
+        const title_text = title.buffered();
+        const row_text = row.buffered();
+        const name_col = displayColumns(title_text[0..std.mem.indexOf(u8, title_text, "NOME").?]);
+        const value_col = displayColumns(row_text[0..std.mem.indexOf(u8, row_text, "arquivo.txt").?]);
+        try testing.expectEqual(name_col, value_col);
+    }
 }
 
 test "display neutraliza bytes de controle e marca nao-UTF-8" {

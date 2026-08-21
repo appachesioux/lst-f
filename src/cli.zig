@@ -86,6 +86,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  -V, --version      versao
         \\
         \\teclas na lista:
+        \\  {s}                 esta ajuda
         \\  Enter              abre o arquivo ou entra no diretorio
         \\  Tab                marca / desmarca
         \\  {s}             alterna entre listar o diretorio e buscar na arvore
@@ -99,6 +100,7 @@ pub fn printHelp(w: *Io.Writer) !void {
     , .{
         build_options.app_name,
         build_options.version,
+        fzf.Keys.help_label,
         fzf.Keys.recursive,
         fzf.Keys.edit,
         fzf.Keys.preview,
@@ -359,6 +361,12 @@ fn loop(b: *Browser) !void {
             b.mode = b.mode.toggle();
             continue;
         }
+        if (std.mem.eql(u8, selection.key, fzf.Keys.help)) {
+            try b.out.writeByte('\n');
+            try printHelp(b.out);
+            try pause(b);
+            continue;
+        }
         if (std.mem.eql(u8, selection.key, fzf.Keys.undo)) {
             try undoLast(b);
             continue;
@@ -379,11 +387,36 @@ fn openBase(b: *Browser) !Io.Dir {
 fn buildHeader(b: *Browser, orphans: []const fsops.Orphan) ![]const u8 {
     var buf: std.Io.Writer.Allocating = .init(b.arena);
     const w = &buf.writer;
-    try w.print("{s}{s}\n", .{ b.base, if (b.mode == .recursive) "  [arvore]" else "" });
-    try w.print(
-        "Enter abre  Tab marca  {s} arvore  {s} editar  {s} preview  {s} desfazer",
-        .{ fzf.Keys.recursive, fzf.Keys.edit, fzf.Keys.preview, fzf.Keys.undo },
-    );
+
+    // O texto do `--header` do fzf comeca na mesma coluna do texto dos itens,
+    // entao a largura util e a do terminal menos a calha do ponteiro.
+    const width: usize = @max(40, terminalWidth(b.io) -| gutter);
+
+    // Linha 1: onde estamos a esquerda, o que somos a direita. Como na barra de
+    // localizacao de um Dolphin ou Nautilus, com a versao sempre a vista.
+    const location = try std.fmt.allocPrint(b.arena, "{s}{s}", .{
+        abbreviateHome(b.arena, b.environ, b.base),
+        if (b.mode == .recursive) "  [arvore]" else "",
+    });
+    const badge = try std.fmt.allocPrint(b.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
+        fzf.Keys.help_label,
+        build_options.app_name,
+        build_options.version,
+    });
+    try writeEllipsized(w, location, width -| (badge.len + 2));
+    const used = @min(location.len, width -| (badge.len + 2));
+    try w.splatByteAll(' ', width -| (used + badge.len));
+    try w.writeAll(badge);
+    try w.writeByte('\n');
+
+    // Linha 2: titulos das colunas, alinhados byte a byte com as entradas.
+    try explorer.writeColumnTitles(w, b.options);
+    try w.writeByte('\n');
+
+    // Linha 3: regua, que e o que separa cabecalho de conteudo na lista de um
+    // gerenciador de arquivos.
+    try w.splatBytesAll("\u{2500}", width);
+
     for (orphans) |o| {
         try w.print(
             "\narea orfa {s} ({d} item(ns)) do PID {d}, que nao esta mais rodando",
@@ -391,6 +424,41 @@ fn buildHeader(b: *Browser, orphans: []const fsops.Orphan) ![]const u8 {
         );
     }
     return buf.written();
+}
+
+/// `$HOME` vira `~`, como na barra de localizacao de qualquer gerenciador de
+/// arquivos. So encurta a exibicao; o caminho real nunca passa por aqui.
+fn abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
+    const home = environ.get("HOME") orelse return path;
+    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
+    if (path.len != home.len and path[home.len] != '/') return path;
+    return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
+}
+
+/// Colunas que o fzf consome a esquerda do texto (ponteiro e marcador).
+const gutter = 4;
+
+fn terminalWidth(io: Io) usize {
+    _ = io;
+    if (@import("builtin").os.tag != .linux) return 80;
+    const linux = std.os.linux;
+    var ws: std.posix.winsize = undefined;
+    for ([_]std.posix.fd_t{ std.posix.STDERR_FILENO, std.posix.STDOUT_FILENO }) |fd| {
+        const rc = linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws));
+        if (linux.errno(rc) == .SUCCESS and ws.col > 0) return ws.col;
+    }
+    return 80;
+}
+
+fn writeEllipsized(w: *Io.Writer, text: []const u8, width: usize) !void {
+    if (text.len <= width) {
+        try w.writeAll(text);
+        return;
+    }
+    if (width <= 1) return;
+    // Corta pela esquerda: o fim do caminho e o que interessa.
+    try w.writeAll("<");
+    try w.writeAll(text[text.len - (width - 1) ..]);
 }
 
 /// `true` para continuar a sessao.
