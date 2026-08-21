@@ -77,6 +77,7 @@ pub const Keys = struct {
     pub const edit = "ctrl-e";
     pub const recursive = "ctrl-r";
     pub const undo = "alt-u";
+    pub const preview = "alt-p";
 };
 
 pub const Options = struct {
@@ -178,7 +179,11 @@ pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
         // forma de honrar "caminhos sao dados" e nao passar caminho por ali.
         // O binario chega pelo ambiente, expandido pelo proprio shell.
         try argv.append(arena, "--preview=\"$" ++ session.env_self ++ "\" --preview-index {1}");
-        try argv.append(arena, "--preview-window=right:50%");
+        // Comeca fechado: a lista e o que se quer ver na maior parte do tempo,
+        // e o preview custa um self-exec por movimento de cursor. A sintaxe com
+        // `:` e a que o piso 0.17 entende; a com virgula so veio depois.
+        try argv.append(arena, "--preview-window=right:50%:hidden");
+        try argv.append(arena, "--bind=" ++ Keys.preview ++ ":toggle-preview");
     }
 
     var expect: std.ArrayList(u8) = .empty;
