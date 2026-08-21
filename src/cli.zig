@@ -1,4 +1,9 @@
 //! Parsing de argumentos e composicao do fluxo.
+//!
+//! A tela e o buffer do editor. O `lst-f` gera o buffer, abre o editor do
+//! usuario, le de volta o que ele salvou e age: renomeia, move, remove, ou
+//! executa a diretiva de navegacao que ele escreveu. O `fzf` entra so quando
+//! chamado, como buscador fuzzy na arvore.
 
 const std = @import("std");
 const Io = std.Io;
@@ -16,7 +21,6 @@ const session = @import("session.zig");
 pub const Command = union(enum) {
     browse: Browse,
     preview_index: u32,
-    reload_toggle,
     help,
     version,
 };
@@ -24,6 +28,8 @@ pub const Command = union(enum) {
 pub const Browse = struct {
     dir: []const u8 = ".",
     editor: ?[]const u8 = null,
+    /// Abre direto no buscador, com o termo ja digitado.
+    find: ?[]const u8 = null,
     options: explorer.Options = .{},
 };
 
@@ -39,7 +45,6 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
         const arg = args[i];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) return .help;
         if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-V")) return .version;
-        if (std.mem.eql(u8, arg, "--reload-toggle")) return .reload_toggle;
         if (std.mem.eql(u8, arg, "--preview-index")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
@@ -57,6 +62,14 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             i += 1;
             if (i >= args.len) return error.MissingValue;
             browse.editor = args[i];
+        } else if (std.mem.eql(u8, arg, "--find") or std.mem.eql(u8, arg, "-f")) {
+            // O termo e opcional: `--find` sozinho abre o buscador na arvore.
+            if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
+                i += 1;
+                browse.find = args[i];
+            } else {
+                browse.find = "";
+            }
         } else if (std.mem.eql(u8, arg, "--max-depth")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
@@ -74,37 +87,42 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
 
 pub fn printHelp(w: *Io.Writer) !void {
     try w.print(
-        \\{s} {s} -- explora e altera o filesystem no terminal
+        \\{s} v{s} -- explora e altera o filesystem no terminal
         \\
         \\uso: lst-f [opcoes] [diretorio]
         \\
+        \\A tela e o buffer do seu Vim ou Neovim. Cada linha e uma entrada, com um
+        \\ID a esquerda. Edite o caminho para renomear ou mover; apague a linha
+        \\para remover. O ID casa a linha com a entrada, entao reordenar, rodar
+        \\:sort ou recolar linhas e inofensivo.
+        \\
+        \\  --find [termo]     abre direto no buscador fuzzy da arvore
         \\  --editor <cmd>     editor a usar (padrao: $VISUAL, $EDITOR)
         \\  --max-depth <n>    profundidade maxima da busca recursiva
-        \\  --icons            emite icones na lista
+        \\  --icons            emite icones na busca
         \\  --no-color         desliga as cores
         \\  -h, --help         esta ajuda
         \\  -V, --version      versao
         \\
-        \\teclas na lista:
-        \\  {s}                 esta ajuda
-        \\  Enter              abre o arquivo ou entra no diretorio
-        \\  Tab                marca / desmarca
-        \\  {s}             alterna entre listar o diretorio e buscar na arvore
-        \\  {s}             envia a marcacao para o editor
+        \\diretivas, escritas no proprio buffer:
+        \\  :cd <dir>          entra no diretorio (.. sobe)
+        \\  :find [termo]      busca fuzzy na arvore com o fzf; o que voce marcar
+        \\                     vira o conteudo do buffer
+        \\  :undo              desfaz a ultima operacao aplicada nesta sessao
+        \\  :quit              sai (salvar sem mudancas tambem sai; :cq aborta)
+        \\
+        \\no buscador:
+        \\  Tab                marca / desmarca      Enter  aceita a marcacao
         \\  {s}              abre e fecha o preview (comeca fechado)
-        \\  {s}              desfaz a ultima operacao aplicada nesta sessao
-        \\  Esc                sai
+        \\  {s}                 esta ajuda            Esc    cancela
         \\
         \\Precisa do fzf ({d}.{d}+) e de um Vim ou Neovim no PATH.
         \\
     , .{
         build_options.app_name,
         build_options.version,
-        fzf.Keys.help_label,
-        fzf.Keys.recursive,
-        fzf.Keys.edit,
         fzf.Keys.preview,
-        fzf.Keys.undo,
+        fzf.Keys.help_label,
         fzf.min_version.major,
         fzf.min_version.minor,
     });
@@ -139,19 +157,16 @@ pub fn run(init: std.process.Init) !u8 {
             break :blk 0;
         },
         .version => blk: {
-            try out.print("{s} {s}\n", .{ build_options.app_name, build_options.version });
+            try out.print("{s} v{s}\n", .{ build_options.app_name, build_options.version });
             break :blk 0;
         },
         .preview_index => |index| runPreview(arena, io, out, environ, index),
-        .reload_toggle => runReloadToggle(arena, io, out, environ),
-        .browse => |b| runBrowse(arena, io, out, environ, b),
+        .browse => |b| runSession(arena, io, out, environ, b),
     };
 }
 
-// ---------------------------------------------------------------------------
-// Self-exec disparados pelo fzf
-// ---------------------------------------------------------------------------
-
+/// Preview do buscador, por self-exec. O indice vem do campo 1 do registro e
+/// resolve para o caminho pela lista que o processo principal deixou no estado.
 fn runPreview(
     arena: Allocator,
     io: Io,
@@ -170,55 +185,8 @@ fn runPreview(
     return 0;
 }
 
-/// Alterna listagem local e busca recursiva sem sair do fzf. So e usado quando
-/// o `reload` esta disponivel; sem ele, a tecla vira `--expect` e o processo
-/// principal respawna o fzf com a outra lista.
-fn runReloadToggle(
-    arena: Allocator,
-    io: Io,
-    out: *Io.Writer,
-    environ: *const std.process.Environ.Map,
-) !u8 {
-    const state = session.State.open(arena, io, environ) catch return 1;
-    const base_path = state.readBase(io, arena) catch return 1;
-    const mode = (state.readMode(io, arena) catch session.Mode.local).toggle();
-    try state.writeMode(io, mode);
-
-    var options: explorer.Options = .{ .recursive = mode == .recursive };
-    options.color = environ.get("NO_COLOR") == null;
-
-    var list_file = try state.listFile(io);
-    defer list_file.close(io);
-    var list_buffer: [64 * 1024]u8 = undefined;
-    var list_writer: Io.File.Writer = .init(list_file, io, &list_buffer);
-
-    var feed: Feed = .{ .records = out, .list = &list_writer.interface, .options = options };
-    explorer.enumerate(arena, io, base_path, options, feed.sink()) catch {};
-    try list_writer.interface.flush();
-    return 0;
-}
-
-const Feed = struct {
-    records: *Io.Writer,
-    list: *Io.Writer,
-    options: explorer.Options,
-
-    fn emit(ctx: *anyopaque, index: u32, e: explorer.Entry) anyerror!void {
-        const f: *Feed = @ptrCast(@alignCast(ctx));
-        // Campo 1 e o indice, nunca o caminho: nome de arquivo pode conter TAB.
-        try f.records.print("{d}\t", .{index});
-        try explorer.writeDisplay(f.records, e, f.options);
-        try f.records.writeByte(0);
-        try f.list.print("{s}\x00", .{e.path});
-    }
-
-    fn sink(f: *Feed) explorer.Sink {
-        return .{ .ctx = f, .func = emit };
-    }
-};
-
 // ---------------------------------------------------------------------------
-// Sessao interativa
+// Sessao
 // ---------------------------------------------------------------------------
 
 const AreaRef = struct {
@@ -232,7 +200,7 @@ const Undo = struct {
     applied: fsops.Applied,
 };
 
-const Browser = struct {
+const Session = struct {
     arena: Allocator,
     io: Io,
     out: *Io.Writer,
@@ -243,9 +211,16 @@ const Browser = struct {
     features: fzf.Features,
     state: session.State,
     pid: std.posix.pid_t,
+    buffer_path: []const u8,
 
     base: []const u8,
-    mode: session.Mode = .local,
+    /// Conteudo corrente do buffer.
+    entries: []const plan.Original = &.{},
+    /// De onde o conteudo veio, quando nao e a listagem do diretorio.
+    scope: ?[]const u8 = null,
+    unlistable: []const []const u8 = &.{},
+    /// O buffer no disco ja serve; nao regerar (o usuario tem correcoes a fazer).
+    keep_buffer: bool = false,
 
     area: ?fsops.Area = null,
     area_base: []const u8 = "",
@@ -253,31 +228,27 @@ const Browser = struct {
     undo: ?Undo = null,
 };
 
-fn runBrowse(
+fn runSession(
     arena: Allocator,
     io: Io,
     out: *Io.Writer,
     environ: *std.process.Environ.Map,
     opts: Browse,
 ) !u8 {
-    const features = fzf.detect(arena, io) catch |err| {
-        switch (err) {
-            error.FzfNotFound => try out.writeAll(
-                "lst-f: o fzf nao esta no PATH. Instale-o pelo gerenciador da distribuicao.\n",
-            ),
-            error.FzfTooOld => try out.print(
-                "lst-f: fzf antigo demais; o piso e {d}.{d} (--preview).\n",
-                .{ fzf.min_version.major, fzf.min_version.minor },
-            ),
-            else => try out.print("lst-f: nao foi possivel usar o fzf ({s}).\n", .{@errorName(err)}),
-        }
-        try out.flush();
-        return 1;
-    };
-
     const base = Io.Dir.cwd().realPathFileAlloc(io, opts.dir, arena) catch {
         try out.print("lst-f: nao foi possivel abrir {s}\n", .{opts.dir});
         return 1;
+    };
+
+    // O editor e requisito, nao conveniencia: sem ele nao ha tela.
+    _ = editor_mod.resolve(arena, environ, opts.editor) catch |err| {
+        try explainEditor(out, err);
+        return 1;
+    };
+
+    const features = fzf.detect(arena, io) catch |err| blk: {
+        try warnFzf(out, err);
+        break :blk fzf.Features{ .version = .{ .major = 0, .minor = 0 }, .raw = "" };
     };
 
     const pid = std.os.linux.getpid();
@@ -287,18 +258,13 @@ fn runBrowse(
     try environ.put(session.env_state, state.path);
     try environ.put(session.env_self, try selfPath(arena, io, environ));
     // O contrato com o fzf depende de flags exatas, e `FZF_DEFAULT_OPTS` entra
-    // antes delas. Uma configuracao pessoal comum como
-    // `--preview-window hidden` ja desliga o preview do lst-f, e um
-    // `--bind ...execute(rm -i {})` receberia o registro inteiro no lugar de um
-    // caminho. Para esta invocacao, o ambiente do fzf comeca limpo.
+    // antes delas. Uma configuracao pessoal comum como `--preview-window hidden`
+    // ja desliga o preview, e um `--bind ...execute(rm -i {})` receberia o
+    // registro inteiro no lugar de um caminho.
     try environ.put("FZF_DEFAULT_OPTS", "");
     try environ.put("FZF_DEFAULT_OPTS_FILE", "");
 
-    if (editor_mod.resolve(arena, environ, opts.editor)) |_| {} else |err| {
-        try explainEditor(out, err);
-    }
-
-    var b: Browser = .{
+    var s: Session = .{
         .arena = arena,
         .io = io,
         .out = out,
@@ -309,96 +275,300 @@ fn runBrowse(
         .features = features,
         .state = state,
         .pid = pid,
+        .buffer_path = try std.fmt.allocPrint(arena, "{s}/lst-f.lstf", .{state.path}),
         .base = base,
     };
-    defer cleanupAreas(&b);
+    defer cleanupAreas(&s);
 
-    try loop(&b);
+    if (opts.find) |query| {
+        if (!try runFind(&s, query)) try loadListing(&s);
+    } else {
+        try loadListing(&s);
+    }
+
+    try loop(&s);
     return 0;
 }
 
-fn loop(b: *Browser) !void {
+fn loop(s: *Session) !void {
     while (true) {
-        b.options.recursive = b.mode == .recursive;
-        try b.state.writeBase(b.io, b.base);
-        try b.state.writeMode(b.io, b.mode);
+        if (!s.keep_buffer) try writeBuffer(s);
+        s.keep_buffer = false;
 
-        const orphans = fsops.scanOrphans(b.arena, b.io, try openBase(b), b.pid) catch &.{};
-        const header = try buildHeader(b, orphans);
-
-        var runner = try fzf.start(b.arena, b.io, .{
-            .features = b.features,
-            .header = header,
-            .prompt = "> ",
-            .environ = b.environ,
-            .color = b.options.color,
-            .preview = true,
-        });
-
-        var list_file = try b.state.listFile(b.io);
-        var list_buffer: [64 * 1024]u8 = undefined;
-        var list_writer: Io.File.Writer = .init(list_file, b.io, &list_buffer);
-
-        var feed: Feed = .{
-            .records = runner.writer(),
-            .list = &list_writer.interface,
-            .options = b.options,
+        const editor = editor_mod.resolve(s.arena, s.environ, s.editor_spec) catch |err| {
+            try explainEditor(s.out, err);
+            return;
         };
-        // Streaming: o fzf ja mostra as primeiras entradas enquanto a arvore
-        // ainda esta sendo percorrida.
-        explorer.enumerate(b.arena, b.io, b.base, b.options, feed.sink()) catch {};
-        list_writer.interface.flush() catch {};
-        list_file.close(b.io);
+        const result = editor_mod.run(
+            s.arena,
+            s.io,
+            editor,
+            s.environ,
+            s.buffer_path,
+            s.base,
+        ) catch |err| {
+            try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
+            return;
+        };
+        // Sair com erro (:cq) e o sinal de "nao aplica nada", como no git commit.
+        if (result == .aborted) {
+            try s.out.writeAll("lst-f: editor saiu com erro; nada foi aplicado.\n");
+            return;
+        }
 
-        const selection = try runner.finish(b.arena);
-        if (selection.aborted) return;
+        const text = try Io.Dir.cwd().readFileAlloc(
+            s.io,
+            s.buffer_path,
+            s.arena,
+            .limited(64 * 1024 * 1024),
+        );
+        const parsed = try plan.parseBuffer(s.arena, text);
+        switch (parsed) {
+            .invalid => |problems| {
+                try reportProblems(s, problems);
+                s.keep_buffer = true;
+                continue;
+            },
+            .ok => {},
+        }
+        const document = parsed.ok;
 
-        // Um `reload` dentro do fzf pode ter trocado o modo e a lista.
-        b.mode = b.state.readMode(b.io, b.arena) catch b.mode;
-        const paths = try b.state.readList(b.io, b.arena);
+        const built = try plan.build(s.arena, s.entries, document.edits, .{
+            .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
+        });
+        switch (built) {
+            .invalid => |problems| {
+                try reportProblems(s, problems);
+                s.keep_buffer = true;
+                continue;
+            },
+            .ok => {},
+        }
 
-        if (std.mem.eql(u8, selection.key, fzf.Keys.recursive)) {
-            b.mode = b.mode.toggle();
-            continue;
+        const changed = !built.ok.isEmpty();
+        if (changed) {
+            if (!try confirmAndApply(s, built.ok)) {
+                s.keep_buffer = true;
+                continue;
+            }
         }
-        if (std.mem.eql(u8, selection.key, fzf.Keys.help)) {
-            try b.out.writeByte('\n');
-            try printHelp(b.out);
-            try pause(b);
+
+        const directive = document.directive orelse {
+            // Nada mudou e nada foi pedido: acabou.
+            if (!changed) return;
+            try loadListing(s);
             continue;
+        };
+
+        switch (directive) {
+            .quit => return,
+            .undo => try undoLast(s),
+            .cd => |target| try changeDir(s, target),
+            .find => |query| {
+                if (!try runFind(s, query)) try loadListing(s);
+            },
         }
-        if (std.mem.eql(u8, selection.key, fzf.Keys.undo)) {
-            try undoLast(b);
-            continue;
-        }
-        if (std.mem.eql(u8, selection.key, fzf.Keys.edit)) {
-            try editSelection(b, paths, selection.indices);
-            continue;
-        }
-        if (selection.indices.len == 0) return;
-        if (!try openOrEnter(b, paths, selection.indices[0])) return;
     }
 }
 
-fn openBase(b: *Browser) !Io.Dir {
-    return Io.Dir.cwd().openDir(b.io, b.base, .{ .iterate = true });
+// ---------------------------------------------------------------------------
+// Conteudo do buffer
+// ---------------------------------------------------------------------------
+
+const Collector = struct {
+    session: *Session,
+    entries: std.ArrayList(plan.Original) = .empty,
+    unlistable: std.ArrayList([]const u8) = .empty,
+
+    fn emit(ctx: *anyopaque, index: u32, e: explorer.Entry) anyerror!void {
+        const c: *Collector = @ptrCast(@alignCast(ctx));
+        if (e.parent) return; // `..` nao e entrada editavel; para subir existe `:cd ..`
+        // O Vim nao preserva bytes invalidos no round-trip: o ID estaria certo e
+        // o destino, corrompido. A entrada aparece, mas fora da edicao.
+        if (!e.utf8_ok) {
+            try c.unlistable.append(c.session.arena, e.path);
+            return;
+        }
+        try c.entries.append(c.session.arena, .{
+            .id = index,
+            .path = e.path,
+            .kind = e.kind,
+        });
+    }
+
+    fn sink(c: *Collector) explorer.Sink {
+        return .{ .ctx = c, .func = emit };
+    }
+};
+
+fn loadListing(s: *Session) !void {
+    var collector: Collector = .{ .session = s };
+    var options = s.options;
+    options.recursive = false;
+    try explorer.enumerate(s.arena, s.io, s.base, options, collector.sink());
+    s.entries = try collector.entries.toOwnedSlice(s.arena);
+    s.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
+    s.scope = null;
 }
 
-fn buildHeader(b: *Browser, orphans: []const fsops.Orphan) ![]const u8 {
-    var buf: std.Io.Writer.Allocating = .init(b.arena);
-    const w = &buf.writer;
+fn writeBuffer(s: *Session) !void {
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
 
-    // O texto do `--header` do fzf comeca na mesma coluna do texto dos itens,
-    // entao a largura util e a do terminal menos a calha do ponteiro.
-    const width: usize = @max(40, terminalWidth(b.io) -| gutter);
+    var notes: std.ArrayList([]const u8) = .empty;
+    const orphans = fsops.scanOrphans(s.arena, s.io, base_dir, s.pid) catch &.{};
+    for (orphans) |o| {
+        try notes.append(s.arena, try std.fmt.allocPrint(
+            s.arena,
+            "area orfa {s} ({d} item(ns)) do PID {d}, que nao esta mais rodando",
+            .{ o.name, o.items, o.pid },
+        ));
+    }
 
-    // Linha 1: onde estamos a esquerda, o que somos a direita. Como na barra de
-    // localizacao de um Dolphin ou Nautilus, com a versao sempre a vista.
-    const location = try std.fmt.allocPrint(b.arena, "{s}{s}", .{
-        abbreviateHome(b.arena, b.environ, b.base),
-        if (b.mode == .recursive) "  [arvore]" else "",
+    var file = try Io.Dir.cwd().createFile(s.io, s.buffer_path, .{ .truncate = true });
+    defer file.close(s.io);
+    var buffer: [64 * 1024]u8 = undefined;
+    var writer: Io.File.Writer = .init(file, s.io, &buffer);
+    try plan.writeBuffer(&writer.interface, .{
+        .app = build_options.app_name,
+        .version = build_options.version,
+        .location = abbreviateHome(s.arena, s.environ, s.base),
+        .scope = s.scope,
+        .unlistable = s.unlistable,
+        .notes = notes.items,
+    }, s.entries);
+    try writer.interface.flush();
+}
+
+fn changeDir(s: *Session, target: []const u8) !void {
+    const joined = if (std.fs.path.isAbsolute(target))
+        target
+    else
+        try std.fs.path.join(s.arena, &.{ s.base, target });
+
+    const resolved = Io.Dir.cwd().realPathFileAlloc(s.io, joined, s.arena) catch {
+        try report(s, try std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}));
+        return;
+    };
+    const st = Io.Dir.cwd().statFile(s.io, resolved, .{}) catch {
+        try report(s, try std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}));
+        return;
+    };
+    if (st.kind != .directory) {
+        try report(s, try std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{target}));
+        return;
+    }
+    s.base = resolved;
+    try loadListing(s);
+}
+
+// ---------------------------------------------------------------------------
+// Buscador
+// ---------------------------------------------------------------------------
+
+const Feed = struct {
+    records: *Io.Writer,
+    list: *Io.Writer,
+    options: explorer.Options,
+    paths: std.ArrayList(explorer.Entry) = .empty,
+    arena: Allocator,
+
+    fn emit(ctx: *anyopaque, index: u32, e: explorer.Entry) anyerror!void {
+        const f: *Feed = @ptrCast(@alignCast(ctx));
+        if (e.parent) return;
+        try f.paths.append(f.arena, e);
+        // Campo 1 e o indice, nunca o caminho: nome de arquivo pode conter TAB.
+        try f.records.print("{d}\t", .{index});
+        try explorer.writeDisplay(f.records, e, f.options);
+        try f.records.writeByte(0);
+        try f.list.print("{s}\x00", .{e.path});
+    }
+
+    fn sink(f: *Feed) explorer.Sink {
+        return .{ .ctx = f, .func = emit };
+    }
+};
+
+/// Abre o fzf sobre a arvore a partir do diretorio corrente. O que for marcado
+/// vira o conteudo do buffer. Devolve `false` quando nada foi escolhido.
+fn runFind(s: *Session, query: []const u8) !bool {
+    if (s.features.version.major == 0 and s.features.version.minor == 0) {
+        try report(s, "o fzf nao esta disponivel; a busca depende dele");
+        return false;
+    }
+
+    try s.state.writeBase(s.io, s.base);
+
+    var options = s.options;
+    options.recursive = true;
+
+    var runner = try fzf.start(s.arena, s.io, .{
+        .features = s.features,
+        .header = try findHeader(s),
+        .prompt = "find> ",
+        .query = query,
+        .environ = s.environ,
+        .color = s.options.color,
+        .preview = true,
     });
-    const badge = try std.fmt.allocPrint(b.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
+
+    var list_file = try s.state.listFile(s.io);
+    var list_buffer: [64 * 1024]u8 = undefined;
+    var list_writer: Io.File.Writer = .init(list_file, s.io, &list_buffer);
+
+    var feed: Feed = .{
+        .records = runner.writer(),
+        .list = &list_writer.interface,
+        .options = options,
+        .arena = s.arena,
+    };
+    // Streaming: o fzf ja mostra as primeiras entradas enquanto a arvore ainda
+    // esta sendo percorrida.
+    explorer.enumerate(s.arena, s.io, s.base, options, feed.sink()) catch {};
+    list_writer.interface.flush() catch {};
+    list_file.close(s.io);
+
+    const selection = try runner.finish(s.arena);
+    if (selection.aborted) return false;
+    if (std.mem.eql(u8, selection.key, fzf.Keys.help)) {
+        try s.out.writeByte('\n');
+        try printHelp(s.out);
+        try pause(s);
+        return runFind(s, query);
+    }
+    if (selection.indices.len == 0) return false;
+
+    var entries: std.ArrayList(plan.Original) = .empty;
+    var unlistable: std.ArrayList([]const u8) = .empty;
+    for (selection.indices) |index| {
+        if (index >= feed.paths.items.len) continue;
+        const e = feed.paths.items[index];
+        if (!e.utf8_ok) {
+            try unlistable.append(s.arena, e.path);
+            continue;
+        }
+        try entries.append(s.arena, .{ .id = index, .path = e.path, .kind = e.kind });
+    }
+    if (entries.items.len == 0 and unlistable.items.len == 0) return false;
+
+    s.entries = try entries.toOwnedSlice(s.arena);
+    s.unlistable = try unlistable.toOwnedSlice(s.arena);
+    s.scope = if (query.len > 0)
+        try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s))", .{ query, s.entries.len })
+    else
+        try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s))", .{s.entries.len});
+    return true;
+}
+
+fn findHeader(s: *Session) ![]const u8 {
+    var buf: std.Io.Writer.Allocating = .init(s.arena);
+    const w = &buf.writer;
+    const width: usize = @max(40, terminalWidth() -| gutter);
+
+    const location = try std.fmt.allocPrint(s.arena, "{s}  [arvore]", .{
+        abbreviateHome(s.arena, s.environ, s.base),
+    });
+    const badge = try std.fmt.allocPrint(s.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
         fzf.Keys.help_label,
         build_options.app_name,
         build_options.version,
@@ -409,37 +579,16 @@ fn buildHeader(b: *Browser, orphans: []const fsops.Orphan) ![]const u8 {
     try w.writeAll(badge);
     try w.writeByte('\n');
 
-    // Linha 2: titulos das colunas, alinhados byte a byte com as entradas.
-    try explorer.writeColumnTitles(w, b.options);
+    try explorer.writeColumnTitles(w, s.options);
     try w.writeByte('\n');
-
-    // Linha 3: regua, que e o que separa cabecalho de conteudo na lista de um
-    // gerenciador de arquivos.
     try w.splatBytesAll("\u{2500}", width);
-
-    for (orphans) |o| {
-        try w.print(
-            "\narea orfa {s} ({d} item(ns)) do PID {d}, que nao esta mais rodando",
-            .{ o.name, o.items, o.pid },
-        );
-    }
     return buf.written();
-}
-
-/// `$HOME` vira `~`, como na barra de localizacao de qualquer gerenciador de
-/// arquivos. So encurta a exibicao; o caminho real nunca passa por aqui.
-fn abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
-    const home = environ.get("HOME") orelse return path;
-    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
-    if (path.len != home.len and path[home.len] != '/') return path;
-    return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
 }
 
 /// Colunas que o fzf consome a esquerda do texto (ponteiro e marcador).
 const gutter = 4;
 
-fn terminalWidth(io: Io) usize {
-    _ = io;
+fn terminalWidth() usize {
     if (@import("builtin").os.tag != .linux) return 80;
     const linux = std.os.linux;
     var ws: std.posix.winsize = undefined;
@@ -461,160 +610,54 @@ fn writeEllipsized(w: *Io.Writer, text: []const u8, width: usize) !void {
     try w.writeAll(text[text.len - (width - 1) ..]);
 }
 
-/// `true` para continuar a sessao.
-fn openOrEnter(b: *Browser, paths: []const []const u8, index: u32) !bool {
-    if (index >= paths.len) return true;
-    const rel = paths[index];
-
-    if (std.mem.eql(u8, rel, "..")) {
-        b.base = std.fs.path.dirname(b.base) orelse b.base;
-        b.mode = .local;
-        return true;
-    }
-
-    var base_dir = try openBase(b);
-    defer base_dir.close(b.io);
-
-    const st = base_dir.statFile(b.io, rel, .{}) catch {
-        try report(b, "nao foi possivel abrir a entrada");
-        return true;
-    };
-    if (st.kind == .directory) {
-        b.base = try std.fs.path.join(b.arena, &.{ b.base, rel });
-        b.mode = .local;
-        return true;
-    }
-
-    const editor = editor_mod.resolve(b.arena, b.environ, b.editor_spec) catch |err| {
-        try explainEditor(b.out, err);
-        try pause(b);
-        return true;
-    };
-    const full = try std.fs.path.join(b.arena, &.{ b.base, rel });
-    _ = editor_mod.run(b.arena, b.io, editor, b.environ, full) catch |err| {
-        try b.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
-        try pause(b);
-    };
-    return true;
+/// `$HOME` vira `~`, como na barra de localizacao de qualquer gerenciador de
+/// arquivos. So encurta a exibicao; o caminho real nunca passa por aqui.
+fn abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
+    const home = environ.get("HOME") orelse return path;
+    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
+    if (path.len != home.len and path[home.len] != '/') return path;
+    return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
 }
 
 // ---------------------------------------------------------------------------
-// Fluxo de edicao
+// Aplicacao
 // ---------------------------------------------------------------------------
 
-fn editSelection(b: *Browser, paths: []const []const u8, indices: []const u32) !void {
-    if (indices.len == 0) return;
-
-    var base_dir = try openBase(b);
-    defer base_dir.close(b.io);
-
-    var originals: std.ArrayList(plan.Original) = .empty;
-    for (indices) |index| {
-        if (index >= paths.len) continue;
-        const rel = paths[index];
-        if (std.mem.eql(u8, rel, "..")) continue;
-        // O Vim nao preserva bytes invalidos no round-trip: o ID estaria certo
-        // e o destino, corrompido. Melhor recusar nomeando a entrada.
-        if (!std.unicode.utf8ValidateSlice(rel)) {
-            try b.out.print(
-                "lst-f: a entrada \"{s}\" nao tem nome UTF-8 valido e nao pode ir para o editor.\n",
-                .{rel},
-            );
-            try pause(b);
-            return;
-        }
-        const st = base_dir.statFile(b.io, rel, .{ .follow_symlinks = false }) catch continue;
-        try originals.append(b.arena, .{
-            .id = index,
-            .path = rel,
-            .kind = switch (st.kind) {
-                .directory => .dir,
-                .file, .sym_link => .file,
-                else => .other,
-            },
-        });
-    }
-    if (originals.items.len == 0) {
-        try report(b, "nada selecionado para editar");
-        return;
-    }
-
-    // Sufixo proprio: o buffer fica identificavel no editor e nao casa com
-    // autocmd de formatacao presa a extensao (*.txt, *.md). Nao ha tentativa de
-    // neutralizar a configuracao do usuario -- usar o editor dele e o ponto;
-    // quem quiser isolamento passa `--editor "vim -u NONE"`. A garantia contra
-    // um plugin que reformate o buffer e o diff, que mostra tudo antes de gravar.
-    const buffer_path = try std.fmt.allocPrint(b.arena, "{s}/lst-f-edit.lstf", .{b.state.path});
-    {
-        var file = try Io.Dir.cwd().createFile(b.io, buffer_path, .{ .truncate = true });
-        defer file.close(b.io);
-        var buf: [64 * 1024]u8 = undefined;
-        var fw: Io.File.Writer = .init(file, b.io, &buf);
-        try plan.writeBuffer(&fw.interface, b.base, originals.items);
-        try fw.interface.flush();
-    }
-
-    const editor = editor_mod.resolve(b.arena, b.environ, b.editor_spec) catch |err| {
-        try explainEditor(b.out, err);
-        try pause(b);
-        return;
-    };
-    const result = editor_mod.run(b.arena, b.io, editor, b.environ, buffer_path) catch |err| {
-        try b.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
-        try pause(b);
-        return;
-    };
-    if (result == .aborted) {
-        try report(b, "editor saiu com erro: nada foi aplicado");
-        return;
-    }
-
-    const text = try Io.Dir.cwd().readFileAlloc(b.io, buffer_path, b.arena, .limited(64 * 1024 * 1024));
-    const parsed = try plan.parseBuffer(b.arena, text);
-    switch (parsed) {
-        .invalid => |problems| return reportProblems(b, problems),
-        .ok => {},
-    }
-
-    const built = try plan.build(b.arena, originals.items, parsed.ok, .{
-        .temp_prefix = try std.fmt.allocPrint(b.arena, ".lst-f-tmp-{d}-", .{b.pid}),
-    });
-    switch (built) {
-        .invalid => |problems| return reportProblems(b, problems),
-        .ok => {},
-    }
-
-    try confirmAndApply(b, base_dir, built.ok);
+fn openBase(s: *Session) !Io.Dir {
+    return Io.Dir.cwd().openDir(s.io, s.base, .{ .iterate = true });
 }
 
-fn confirmAndApply(b: *Browser, base_dir: Io.Dir, p: plan.Plan) !void {
-    if (p.isEmpty()) {
-        try report(b, "nada mudou no buffer");
-        return;
-    }
+/// `false` quando o usuario recusou tudo: o buffer volta como estava.
+fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
 
-    const missing = try missingDirs(b, base_dir, p.mkdirs);
-    try renderDiff(b, base_dir, p, missing);
+    const missing = try missingDirs(s, base_dir, p.mkdirs);
+    try renderDiff(s, base_dir, p, missing);
 
     var effective = p;
     effective.mkdirs = missing;
 
     if (p.moves.len > 0 or missing.len > 0) {
-        if (!try confirm(b, "Aplicar renomeacoes e movimentos?")) return;
+        if (!try confirm(s, "Aplicar renomeacoes e movimentos?")) {
+            effective.moves = &.{};
+            effective.renames = &.{};
+            effective.mkdirs = &.{};
+        }
     }
 
     var area_ptr: ?*fsops.Area = null;
     if (p.removes.len > 0) {
-        if (try confirm(b, "Confirmar as remocoes?")) {
-            area_ptr = ensureArea(b) catch |err| blk: {
+        if (try confirm(s, "Confirmar as remocoes?")) {
+            area_ptr = ensureArea(s) catch |err| blk: {
                 if (err == error.AreaUnavailable) {
-                    try b.out.writeAll(
+                    try s.out.writeAll(
                         "lst-f: sem permissao de escrita no diretorio-base: nao da para criar a\n" ++
                             "       area de sessao, logo nao ha como garantir o rollback. As remocoes\n" ++
                             "       foram recusadas; as renomeacoes seguem.\n",
                     );
                 } else {
-                    try b.out.print("lst-f: nao foi possivel abrir a area de sessao: {s}\n", .{@errorName(err)});
+                    try s.out.print("lst-f: nao foi possivel abrir a area de sessao: {s}\n", .{@errorName(err)});
                 }
                 break :blk null;
             };
@@ -623,36 +666,37 @@ fn confirmAndApply(b: *Browser, base_dir: Io.Dir, p: plan.Plan) !void {
     }
 
     if (effective.isEmpty()) {
-        try report(b, "nada a aplicar");
-        return;
+        try report(s, "nada foi aplicado");
+        return false;
     }
 
-    const outcome = try fsops.apply(b.arena, b.io, base_dir, effective, area_ptr);
-    try reportOutcome(b, outcome);
+    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr);
+    try reportOutcome(s, outcome);
 
     if (outcome.failure == null and !outcome.applied.isEmpty()) {
-        b.undo = .{
-            .base = b.base,
+        s.undo = .{
+            .base = s.base,
             .area = if (area_ptr) |a| a.name else null,
             .applied = outcome.applied,
         };
     }
-    try pause(b);
+    try pause(s);
+    return true;
 }
 
-fn missingDirs(b: *Browser, base_dir: Io.Dir, dirs: []const []const u8) ![]const []const u8 {
+fn missingDirs(s: *Session, base_dir: Io.Dir, dirs: []const []const u8) ![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     for (dirs) |d| {
-        _ = base_dir.statFile(b.io, d, .{ .follow_symlinks = false }) catch {
-            try out.append(b.arena, d);
+        _ = base_dir.statFile(s.io, d, .{ .follow_symlinks = false }) catch {
+            try out.append(s.arena, d);
             continue;
         };
     }
-    return out.toOwnedSlice(b.arena);
+    return out.toOwnedSlice(s.arena);
 }
 
-fn renderDiff(b: *Browser, base_dir: Io.Dir, p: plan.Plan, missing: []const []const u8) !void {
-    const w = b.out;
+fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []const u8) !void {
+    const w = s.out;
     try w.writeAll("\n");
 
     if (missing.len > 0) {
@@ -678,11 +722,11 @@ fn renderDiff(b: *Browser, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
         try w.print(
             "Remover ({d})  ->  area da sessao .lst-f-{d}/, apagada ao sair: depois disso\n" ++
                 "              a remocao e definitiva; isto nao e uma lixeira.\n",
-            .{ p.removes.len, b.pid },
+            .{ p.removes.len, s.pid },
         );
         for (p.removes) |rm| {
             if (rm.kind == .dir) {
-                const count = fsops.subtreeCount(b.io, base_dir, rm.path);
+                const count = fsops.subtreeCount(s.io, base_dir, rm.path);
                 try w.print("  {s}/  ({d} item(ns) na subarvore)\n", .{ rm.path, count });
             } else {
                 try w.print("  {s}\n", .{rm.path});
@@ -694,16 +738,14 @@ fn renderDiff(b: *Browser, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
     if (p.unchanged > 0) try w.print("{d} entrada(s) sem mudanca.\n\n", .{p.unchanged});
 }
 
-fn reportOutcome(b: *Browser, outcome: fsops.Outcome) !void {
-    const w = b.out;
+fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
+    const w = s.out;
     if (outcome.failure) |f| {
         try w.print("\nFALHA em \"{s}\": {s} ({s})\n", .{ f.phase, f.detail, @errorName(f.err) });
         if (outcome.rollback_errors.len == 0) {
             try w.writeAll("Rollback completo: nada foi alterado.\n");
         } else {
-            try w.writeAll(
-                "O rollback nao conseguiu desfazer tudo. Estado a recuperar a mao:\n",
-            );
+            try w.writeAll("O rollback nao conseguiu desfazer tudo. Estado a recuperar a mao:\n");
             for (outcome.rollback_errors) |e| try w.print("  {s}\n", .{e});
             try w.writeAll("Entradas que continuam aplicadas:\n");
             for (outcome.applied.renames) |r| try w.print("  {s} -> {s}\n", .{ r.from, r.to });
@@ -719,84 +761,86 @@ fn reportOutcome(b: *Browser, outcome: fsops.Outcome) !void {
         .{ outcome.applied.renames.len, outcome.applied.created_dirs.len, outcome.applied.removed.len },
     );
     if (outcome.applied.removed.len > 0) {
-        try w.print("Use {s} para desfazer enquanto a sessao estiver aberta.\n", .{fzf.Keys.undo});
+        try w.writeAll("Escreva :undo no buffer para desfazer enquanto a sessao estiver aberta.\n");
     }
 }
 
-fn reportProblems(b: *Browser, problems: []const plan.Problem) !void {
-    try b.out.writeAll("\nNada foi aplicado. O buffer editado tem problemas:\n");
+fn reportProblems(s: *Session, problems: []const plan.Problem) !void {
+    try s.out.writeAll("\nNada foi aplicado. O buffer tem problemas:\n");
     for (problems) |p| {
-        try b.out.writeAll("  ");
-        try p.describe(b.out);
-        try b.out.writeByte('\n');
+        try s.out.writeAll("  ");
+        try p.describe(s.out);
+        try s.out.writeByte('\n');
     }
-    try pause(b);
+    try s.out.writeAll("\nO buffer volta como voce deixou, para corrigir.\n");
+    try pause(s);
 }
 
 // ---------------------------------------------------------------------------
 // Area de sessao e undo
 // ---------------------------------------------------------------------------
 
-fn ensureArea(b: *Browser) !*fsops.Area {
-    if (b.area != null and std.mem.eql(u8, b.area_base, b.base)) return &b.area.?;
-    if (b.area) |*a| {
-        a.close(b.io);
-        b.area = null;
+fn ensureArea(s: *Session) !*fsops.Area {
+    if (s.area != null and std.mem.eql(u8, s.area_base, s.base)) return &s.area.?;
+    if (s.area) |*a| {
+        a.close(s.io);
+        s.area = null;
     }
 
-    var base_dir = try openBase(b);
-    defer base_dir.close(b.io);
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
 
-    const name = try fsops.areaName(b.arena, b.pid);
-    b.area = try fsops.openArea(b.arena, b.io, base_dir, name);
-    b.area_base = b.base;
+    const name = try fsops.areaName(s.arena, s.pid);
+    s.area = try fsops.openArea(s.arena, s.io, base_dir, name);
+    s.area_base = s.base;
 
-    for (b.areas.items) |a| {
-        if (std.mem.eql(u8, a.base, b.base)) return &b.area.?;
+    for (s.areas.items) |a| {
+        if (std.mem.eql(u8, a.base, s.base)) return &s.area.?;
     }
-    try b.areas.append(b.arena, .{ .base = b.base, .name = name });
-    return &b.area.?;
+    try s.areas.append(s.arena, .{ .base = s.base, .name = name });
+    return &s.area.?;
 }
 
-fn undoLast(b: *Browser) !void {
-    const u = b.undo orelse {
-        try report(b, "nada para desfazer nesta sessao");
+fn undoLast(s: *Session) !void {
+    const u = s.undo orelse {
+        try report(s, "nada para desfazer nesta sessao");
         return;
     };
 
-    var base_dir = Io.Dir.cwd().openDir(b.io, u.base, .{ .iterate = true }) catch {
-        try report(b, "o diretorio da ultima operacao nao esta mais acessivel");
+    var base_dir = Io.Dir.cwd().openDir(s.io, u.base, .{ .iterate = true }) catch {
+        try report(s, "o diretorio da ultima operacao nao esta mais acessivel");
         return;
     };
-    defer base_dir.close(b.io);
+    defer base_dir.close(s.io);
 
     var area_dir: ?Io.Dir = null;
     if (u.area) |name| {
-        area_dir = base_dir.openDir(b.io, name, .{ .iterate = true }) catch null;
+        area_dir = base_dir.openDir(s.io, name, .{ .iterate = true }) catch null;
     }
-    defer if (area_dir) |d| d.close(b.io);
+    defer if (area_dir) |d| d.close(s.io);
 
-    const errors = try fsops.revert(b.arena, b.io, base_dir, u.applied, area_dir);
+    const errors = try fsops.revert(s.arena, s.io, base_dir, u.applied, area_dir);
     if (errors.len == 0) {
-        try b.out.writeAll("\nUltima operacao desfeita.\n");
-        b.undo = null;
+        try s.out.writeAll("\nUltima operacao desfeita.\n");
+        s.undo = null;
     } else {
-        try b.out.writeAll("\nO undo nao conseguiu desfazer tudo:\n");
-        for (errors) |e| try b.out.print("  {s}\n", .{e});
+        try s.out.writeAll("\nO undo nao conseguiu desfazer tudo:\n");
+        for (errors) |e| try s.out.print("  {s}\n", .{e});
     }
-    try pause(b);
+    try pause(s);
+    try loadListing(s);
 }
 
 /// Saida limpa apaga as areas. A partir daqui a remocao e definitiva.
-fn cleanupAreas(b: *Browser) void {
-    if (b.area) |*a| {
-        a.close(b.io);
-        b.area = null;
+fn cleanupAreas(s: *Session) void {
+    if (s.area) |*a| {
+        a.close(s.io);
+        s.area = null;
     }
-    for (b.areas.items) |a| {
-        var base_dir = Io.Dir.cwd().openDir(b.io, a.base, .{ .iterate = true }) catch continue;
-        defer base_dir.close(b.io);
-        base_dir.deleteTree(b.io, a.name) catch {};
+    for (s.areas.items) |a| {
+        var base_dir = Io.Dir.cwd().openDir(s.io, a.base, .{ .iterate = true }) catch continue;
+        defer base_dir.close(s.io);
+        base_dir.deleteTree(s.io, a.name) catch {};
     }
 }
 
@@ -821,40 +865,53 @@ const Tty = struct {
     }
 };
 
-fn confirm(b: *Browser, question: []const u8) !bool {
-    const tty = b.tty orelse return false;
-    try b.out.print("{s} [s/N] ", .{question});
-    try b.out.flush();
+fn confirm(s: *Session, question: []const u8) !bool {
+    const tty = s.tty orelse return false;
+    try s.out.print("{s} [s/N] ", .{question});
+    try s.out.flush();
     const answer = tty.line() orelse return false;
     const trimmed = std.mem.trim(u8, answer, " \t\r");
     return trimmed.len > 0 and (trimmed[0] == 's' or trimmed[0] == 'S' or
         trimmed[0] == 'y' or trimmed[0] == 'Y');
 }
 
-fn pause(b: *Browser) !void {
-    const tty = b.tty orelse return;
-    try b.out.writeAll("\n[Enter para voltar a lista] ");
-    try b.out.flush();
+fn pause(s: *Session) !void {
+    const tty = s.tty orelse return;
+    try s.out.writeAll("\n[Enter para voltar ao buffer] ");
+    try s.out.flush();
     _ = tty.line();
 }
 
-fn report(b: *Browser, message: []const u8) !void {
-    try b.out.print("\nlst-f: {s}\n", .{message});
-    try pause(b);
+fn report(s: *Session, message: []const u8) !void {
+    try s.out.print("\nlst-f: {s}\n", .{message});
+    try pause(s);
 }
 
 fn explainEditor(w: *Io.Writer, err: editor_mod.ResolveError) !void {
     switch (err) {
         error.NoEditor => try w.writeAll(
-            "lst-f: nenhum editor configurado. Defina $VISUAL ou $EDITOR (por exemplo\n" ++
-                "       export EDITOR=vim) ou use --editor. A navegacao e o preview seguem\n" ++
-                "       funcionando sem editor.\n",
+            "lst-f: nenhum editor configurado, e o editor e a tela do lst-f. Defina\n" ++
+                "       $VISUAL ou $EDITOR (por exemplo export EDITOR=vim) ou use --editor.\n",
         ),
         error.NotForeground => try w.writeAll(
             "lst-f: o editor configurado nao segura o terminal e devolveria o controle\n" ++
                 "       antes da edicao. Use um editor de terminal, ou a flag de espera do seu\n" ++
                 "       (code --wait, subl -w).\n",
         ),
+    }
+}
+
+fn warnFzf(w: *Io.Writer, err: anyerror) !void {
+    switch (err) {
+        error.FzfNotFound => try w.writeAll(
+            "lst-f: o fzf nao esta no PATH; :find nao vai funcionar. O resto da sessao\n" ++
+                "       (listar, renomear, mover, remover) nao depende dele.\n",
+        ),
+        error.FzfTooOld => try w.print(
+            "lst-f: fzf antigo demais para o preview; o piso e {d}.{d}. :find fica indisponivel.\n",
+            .{ fzf.min_version.major, fzf.min_version.minor },
+        ),
+        else => try w.print("lst-f: fzf indisponivel ({s}); :find fica fora do ar.\n", .{@errorName(err)}),
     }
 }
 
@@ -886,7 +943,6 @@ test "parsing de argumentos" {
     try testing.expectEqualStrings("/tmp", (try parse(a, &.{ "lst-f", "/tmp" })).browse.dir);
     try testing.expect(try parse(a, &.{ "lst-f", "--help" }) == .help);
     try testing.expect(try parse(a, &.{ "lst-f", "-V" }) == .version);
-    try testing.expect(try parse(a, &.{ "lst-f", "--reload-toggle" }) == .reload_toggle);
     try testing.expectEqual(
         @as(u32, 12),
         (try parse(a, &.{ "lst-f", "--preview-index", "12" })).preview_index,
@@ -904,10 +960,23 @@ test "parsing de argumentos" {
     try testing.expectError(error.TooManyPaths, parse(a, &.{ "lst-f", "a", "b" }));
 }
 
+test "--find aceita termo opcional" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    try testing.expectEqualStrings("plan", (try parse(a, &.{ "lst-f", "--find", "plan" })).browse.find.?);
+    try testing.expectEqualStrings("", (try parse(a, &.{ "lst-f", "--find" })).browse.find.?);
+    // Sem termo, mas com diretorio: o caminho nao pode ser engolido como termo.
+    const with_dir = (try parse(a, &.{ "lst-f", "--find", "termo", "/tmp" })).browse;
+    try testing.expectEqualStrings("termo", with_dir.find.?);
+    try testing.expectEqualStrings("/tmp", with_dir.dir);
+}
+
 test "recursivo nao e flag de linha de comando" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
-    // A busca recursiva e um atalho dentro da sessao: exigir decidir antes de
-    // abrir seria pior, porque o que se quer so aparece navegando.
+    // A busca na arvore e a diretiva `:find`, escrita no buffer. Exigir decidir
+    // antes de abrir seria pior: o que se quer so aparece navegando.
     try testing.expectError(error.UnknownOption, parse(arena_state.allocator(), &.{ "lst-f", "--recursive" }));
 }

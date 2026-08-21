@@ -4,11 +4,11 @@
 
 `lst-f` é uma CLI para explorar e alterar o filesystem no terminal. Ela combina:
 
-- `fzf` como interface de navegação, busca fuzzy, seleção múltipla e preview;
-- Vim ou Neovim, invocado pelo `$VISUAL`, `$EDITOR` ou por opção explícita, para editar operações em lote;
+- Vim ou Neovim, invocado pelo `$VISUAL`, `$EDITOR` ou por opção explícita, **como tela**: o diretório é um buffer editável, e é editando esse buffer que se renomeia, move, remove e navega;
+- `fzf` como buscador fuzzy na árvore, chamado pela diretiva `:find` — não como interface de navegação;
 - um núcleo próprio que transforma a edição em um plano seguro de operações no filesystem.
 
-A experiência visual deve lembrar Dolphin ou Nautilus: lista legível, diretório atual no cabeçalho, diretórios antes de arquivos, cores discretas, metadados úteis e preview. É uma TUI, não uma GUI. `lst-f` lista um diretório por vez; a busca recursiva é um atalho dentro da sessão, e mesmo ela apresenta lista plana — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
+A tela é o buffer, então o que um gerenciador de arquivos poria numa barra de título mora no cabeçalho do buffer, em linhas de comentário: versão, caminho corrente, gramática e diretivas disponíveis. Uma entrada por linha, com ID à esquerda, diretórios antes de arquivos. O `fzf`, quando chamado, apresenta lista plana com metadados e preview — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
 
 ### Diferenciação
 
@@ -18,11 +18,12 @@ O objetivo é uso real, não exercício. Isso exige ser honesto sobre o que já 
 
 As outras alternativas cobrem menos: `vidir` e `qmv` editam uma lista mas não navegam, não filtram e não mostram preview; `fzf` seleciona muito bem e não renomeia nada; `pipe-rename` recebe caminhos por pipe e a origem da seleção é problema de quem chama.
 
-**A única diferença funcional em relação ao `oil.nvim` é a seleção fuzzy recursiva como ponto de entrada.** O oil navega um diretório por vez e não filtra. O caso *"filtrar um termo na árvore inteira, marcar 12 dos 200 resultados espalhados por 6 diretórios, renomear todos de uma vez"* exige colar o oil a um picker externo, e aí são duas ferramentas, não um fluxo.
+São duas diferenças em relação ao `oil.nvim`, e as duas importam:
 
-O restante é empacotamento, não capacidade, e vale registrar como tal: binário único sem instalação nem gerenciador de plugin, funciona com `vim` além de Neovim, e roda como CLI componível em vez de dentro de uma sessão de editor. Isso é a diferença entre "está no meu setup" e "funciona no servidor em que acabei de entrar por SSH". É motivo suficiente para existir, mas é distribuição.
+1. **Seleção fuzzy recursiva alimentando o buffer.** O oil navega um diretório por vez e não filtra. O caso *"filtrar um termo na árvore inteira, marcar 12 dos 200 resultados espalhados por 6 diretórios, renomear todos de uma vez"* exige colar o oil a um picker externo. No `lst-f` é `:find termo`, marcar, e o resultado **é** o buffer.
+2. **Nada de plugin.** O oil é um plugin de Neovim: exige gerenciador de plugin, exige Neovim, e vive dentro de uma sessão de editor. O `lst-f` é um binário único que funciona com `vim` puro e roda como CLI componível. É a diferença entre "está no meu setup" e "funciona no servidor em que acabei de entrar por SSH".
 
-**Consequência de design**: sendo a busca recursiva o único diferencial funcional, ela precisa estar a um toque de distância dentro da sessão — não atrás de uma flag que se decide antes de abrir o programa, nem adiada para depois do MVP. O padrão continua sendo listar um diretório, que é o que se quer na maior parte do tempo; uma tecla alterna para a busca na árvore a partir da raiz atual, e outra volta. Recursivo como flag de linha de comando seria pior: exigiria saber de antemão o que só se descobre navegando.
+**Consequência de design**: não há plugin, logo não há tecla nossa dentro do editor. Toda ação que não seja editar um caminho é uma **diretiva escrita no próprio buffer** (`:cd`, `:find`, `:undo`, `:quit`), executada quando o editor sai. Linha de entrada sempre começa por dígito, então uma linha iniciada por `:` nunca é ambígua com nome de arquivo. O preço é uma ida e volta ao editor por passo de navegação; o ganho é funcionar com qualquer Vim, sem instalar nada.
 
 Está fora de escopo:
 
@@ -56,8 +57,9 @@ Está fora de escopo:
 
 - Piso absoluto **0.17.0** (ago/2017), definido por `--preview`/`--preview-window`. Debian 10 traz 0.17.5; Ubuntu 20.04 traz 0.20.0.
 - `--read0`/`--print0` existem desde 0.15.0; `--multi --bind --expect --header --ansi --with-nth --delimiter --reverse --tiebreak` são anteriores. NUL é linha de base, não recurso a detectar.
-- **`reload` (0.21.0+) é opcional e detectado.** Ele serve às duas trocas de lista da sessão: entrar/sair de diretório e alternar entre local e recursivo. Com ele, tudo acontece numa única sessão `fzf`, preservando query e posição do cursor. Sem ele, cada troca encerra e respawna o `fzf`. É o loop central da ferramenta e merece o caminho bom quando ele existe — Debian 11 traz 0.24, Ubuntu 22.04 traz 0.29, Debian 12 traz 0.38.
-- Detecção uma vez por execução, via `fzf --version`.
+- **`reload` não é usado.** O `fzf` aqui abre, recebe uma lista, devolve a marcação e sai; não há troca de lista dentro dele. Isso mantém o piso em 0.17 sem custo nenhum.
+- Detecção uma vez por execução, via `fzf --version`. O `fzf` é dependência **só do `:find`**: sem ele, listar, renomear, mover e remover continuam funcionando, e a CLI avisa que a busca está fora do ar.
+- **`FZF_DEFAULT_OPTS` e `FZF_DEFAULT_OPTS_FILE` são zerados** na invocação. A configuração pessoal do usuário entra antes das nossas flags e pode desligar o preview (`--preview-window hidden`) ou rodar comando destrutivo sobre o registro, que não é um caminho (`--bind ...execute(rm -i {})`).
 - Evitar (recentes e dispensáveis): `--highlight-line`, itens multi-linha (`--gap`, `--marker-multi-line`), `--preview-border`, `--tmux`.
 
 ### Contrato com o editor
@@ -69,12 +71,13 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 
 ## Fluxo principal
 
-1. `lst-f [diretório]` lista aquele diretório. O `fzf` apresenta a lista formatada e permite filtrar e marcar entradas.
-2. Enter abre arquivo ou entra no diretório; a entrada de pai permite voltar. Uma tecla alterna entre listagem local e busca recursiva a partir do diretório atual. Outra tecla envia as entradas marcadas para o fluxo de edição.
-3. `lst-f` cria um arquivo temporário com as entradas selecionadas e abre o editor configurado pelo usuário.
-4. Após o editor sair, `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear ou remover.
-5. Antes de gravar, exibe o diff do plano e exige confirmação. Remoções aparecem em bloco próprio e exigem confirmação separada. Em falha de validação, não executa alteração alguma.
+1. `lst-f [diretório]` monta o buffer daquele diretório e abre o editor do usuário, com o diretório-base como *cwd* — assim `:e`, `gf` e completação funcionam sobre os caminhos listados.
+2. O usuário edita: muda caminhos, apaga linhas, ou escreve **uma** diretiva (`:cd <dir>`, `:find [termo]`, `:undo`, `:quit`). Salva e sai.
+3. Sair com código diferente de zero (`:cq`) aborta tudo. Salvar sem nenhuma mudança e sem diretiva encerra a sessão: não há o que fazer.
+4. `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear ou remover.
+5. Antes de gravar, exibe o diff do plano e exige confirmação. Remoções aparecem em bloco próprio e exigem confirmação separada. Em falha de validação, não executa alteração alguma e o buffer volta como o usuário o deixou, para corrigir.
 6. A aplicação resolve colisões e ciclos com nomes temporários no mesmo filesystem, e executa as remoções por último, movendo para a área de sessão.
+7. Depois de aplicar, ou de executar a diretiva, o buffer é regerado e o editor reabre. A sessão vive enquanto o laço vive — é o que sustenta a área de remoção e o `:undo`.
 
 ## Formato do buffer de edição
 
@@ -89,7 +92,17 @@ Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da op
 - O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
-- Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID.
+- Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva.
+- Linhas iniciadas por `#` são comentário e formam o cabeçalho: versão, caminho corrente, gramática, diretivas, avisos de área órfã e as entradas de nome não-UTF-8, que aparecem escapadas e fora da edição.
+
+**Diretivas.** Sem plugin não há tecla nossa dentro do editor, então toda ação que não é editar um caminho se escreve como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado:
+
+- `:cd <dir>` entra no diretório (`..` sobe; caminho absoluto é aceito, porque navegar não é renomear);
+- `:find [termo]` chama o `fzf` sobre a árvore e transforma a marcação no conteúdo do buffer;
+- `:undo` desfaz a última operação aplicada na sessão;
+- `:quit` sai.
+
+Linha de entrada sempre começa por dígito, então `:` no início nunca colide com nome de arquivo — e um nome que comece por `:` continua editável normalmente, porque vem depois do ID.
 
 **Por que ID e não posição.** Mapeamento posicional falha em silêncio no caso mais provável. Um `:sort` no buffer — coisa natural de fazer numa lista de arquivos — produz uma permutação válida: a contagem de linhas bate, não há colisão, o plano passa em toda validação, e a ferramenta renomeia cada arquivo com o nome de outro. Só o ID torna essa classe de erro impossível.
 
@@ -130,16 +143,18 @@ Em Linux, nome de arquivo é sequência de bytes, não texto UTF-8. O Vim não p
 - **O campo 1 é o índice, não o caminho.** Nome de arquivo pode conter TAB e qualquer byte; caminho no campo 1 quebraria o parsing. O índice resolve para o caminho em memória.
 - Saída: `--print0`. O `fzf` devolve o registro inteiro; `lst-f` lê o índice e resolve o caminho internamente, sem parsear a coluna de exibição.
 - Preview: `--preview 'lst-f --preview-index {1}'` — self-exec. O `--preview` do `fzf` sempre executa via `sh -c`; a única forma de honrar "caminhos são dados, não fragmentos de shell" é não passar caminho por ali.
-- Teclas, fixas no MVP: Enter abre ou entra; Tab marca; uma tecla alterna local/recursivo; uma tecla envia a marcação para a edição; uma tecla abre e fecha o preview, que **começa fechado**. Com `reload` disponível, o alternar e a troca de diretório são `--bind` numa sessão só; sem ele, são `--expect` que encerram o `fzf` e respawnam com a nova lista. As duas rotas produzem o mesmo resultado, com UX diferente.
+- Teclas do buscador, fixas no MVP: `Tab` marca; `Enter` aceita a marcação e sai; `alt-p` abre e fecha o preview, que **começa fechado**; `F1` mostra a ajuda; `Esc` cancela. O `fzf` é chamado por `:find` e sai assim que a marcação está feita — o que foi marcado vira o conteúdo do buffer.
 
 ## Estrutura inicial
 
-- `cli`: parsing de argumentos e composição do fluxo.
-- `explorer`: enumeração, ordenação e apresentação de entradas para o `fzf`.
-- `fzf`: invocação do binário, detecção de recursos e decodificação de seleção; não contém regras de filesystem.
-- `editor`: criação do arquivo temporário, invocação do editor e parsing do buffer editado.
-- `plan`: comparação da edição, validações, diff e plano de operações.
+- `cli`: parsing de argumentos e composição do laço de buffer.
+- `explorer`: enumeração, ordenação e apresentação de entradas.
+- `fzf`: invocação do binário como buscador, detecção de versão e decodificação da marcação; não contém regras de filesystem.
+- `editor`: resolução do editor, invocação em foreground e recusa de editor que não segura o TTY.
+- `plan`: formato do buffer (escrita, parsing, diretivas), validações, diff e plano de operações.
 - `fsops`: execução ordenada, área de sessão, rollback e relatório de estado.
+- `preview`: renderização do preview do buscador, por self-exec.
+- `session`: diretório volátil de estado dos self-exec, passado por variável de ambiente para que nenhum caminho seja interpolado no `sh -c` do `fzf`. Não confundir com a área de sessão do `fsops`.
 
 Não introduzir interfaces, configuração ou camadas extras antes de uma necessidade concreta.
 
@@ -171,8 +186,9 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
 
 ## Critérios de sucesso do MVP
 
-- Em um terminal comum, sem instalar plugin nem editor específico, o usuário navega por diretório e, com um toque, filtra a árvore inteira e marca numa só seleção entradas espalhadas por vários diretórios.
-- Com Vim ou Neovim, renomeia ou move múltiplas entradas ao editar uma lista temporária.
+- Em um terminal comum, sem instalar plugin nem gerenciador de plugin, o usuário abre um diretório no próprio Vim e navega escrevendo `:cd` no buffer.
+- Com `:find`, filtra a árvore inteira e marca numa só seleção entradas espalhadas por vários diretórios, e a marcação vira o buffer.
+- Com Vim ou Neovim, renomeia ou move múltiplas entradas editando o buffer.
 - Nenhuma operação é aplicada sem preview, validação e confirmação; remoções exigem confirmação própria, separada da de renomeações.
 - Editar o buffer de forma inesperada — reordenar, ordenar, recolar linhas — nunca produz renomeação incorreta em silêncio: ou o plano está certo, ou aborta com erro explicativo.
 - **Validação exaustiva antes de qualquer escrita.** Em falha durante a aplicação, tentar rollback em ordem reversa e **sempre** imprimir relatório exato do estado final e dos passos de recuperação manual. Não se promete atomicidade: POSIX não oferece transação de filesystem, e o próprio rollback pode falhar. A promessa é validação forte, falha rara e estado sempre legível.
@@ -181,18 +197,7 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
 
 ## Próximos passos
 
-1. Criar o esqueleto Zig com `build.zig`, comando `lst-f` e a suíte de testes; confirmar `zig fmt .`, `zig build test` e `zig build`.
-2. Implementar a verificação de ambiente: localizar `fzf` e `$VISUAL`/`$EDITOR`, detectar `reload` pela versão do `fzf`, rejeitar editores que não rodam em foreground, e explicar dependência ausente sem baixar ou instalar nada.
-3. Implementar `plan` como módulo puro, com testes em memória: grafo, ordenação topológica, ciclos, colisões, validação lexical de caminhos, criação de pais. Antes de qualquer I/O.
-4. Implementar a enumeração local e a ordenação de entradas (diretórios antes de arquivos), com testes para nomes incomuns, não-UTF-8 e links simbólicos.
-5. Integrar a lista ao `fzf` pelo contrato de índice + `--read0`/`--print0`. Layout inicial com cabeçalho, metadados e fallback sem ícones.
-6. Implementar a troca de diretório: sessão única com `reload` quando disponível, respawn quando não.
-7. Implementar o preview via self-exec (`--preview-index`), com fallback de metadados para binário.
-8. Implementar o fluxo de renomear/mover: buffer com ID, abertura no editor, parser, diff e confirmação.
-9. Implementar a aplicação: `renameat2` com `RENAME_NOREPLACE`, temporários no mesmo filesystem, rollback reverso e relatório de estado. Testes de falha injetada.
-10. Implementar remoção: ID ausente no parser, bloco próprio no diff com contagem de itens por diretório, confirmação separada, área `.lst-f-<pid>/` com manifesto NUL, execução após todos os renames, undo na sessão, limpeza na saída limpa e aviso de área órfã na abertura.
-11. Implementar o atalho de busca recursiva: enumeração em streaming com limite de profundidade, sem atravessar montagem ou symlink de diretório, `reload` quando disponível e respawn quando não, mais a validação de pai e filho na mesma seleção.
-12. Validar manualmente em terminal local e em instalação limpa de Debian/Ubuntu Server com versões não recentes de `fzf` e Vim/Neovim.
+O MVP está implementado. O que ficou de fora, e por quê, está logo abaixo.
 
 Fora do MVP: undo entre sessões, que exigiria persistir a área além da execução. É o único caminho aberto, porque a rota alternativa — lixeira do sistema — está fora de escopo em definitivo, assim como a integração com Git.
 

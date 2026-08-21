@@ -12,9 +12,6 @@ const session = @import("session.zig");
 
 /// Piso absoluto, definido por `--preview`/`--preview-window` (ago/2017).
 pub const min_version: Version = .{ .major = 0, .minor = 17 };
-/// `reload` e opcional e detectado; sem ele, cada troca de lista respawna o fzf.
-pub const reload_version: Version = .{ .major = 0, .minor = 21 };
-
 pub const Version = struct {
     major: u16,
     minor: u16,
@@ -28,7 +25,6 @@ pub const Version = struct {
 pub const Features = struct {
     version: Version,
     raw: []const u8,
-    reload: bool,
 };
 
 pub const DetectError = error{ FzfNotFound, FzfTooOld, FzfUnusable };
@@ -57,7 +53,6 @@ pub fn detect(gpa: Allocator, io: Io) !Features {
     return .{
         .version = version,
         .raw = try gpa.dupe(u8, std.mem.trim(u8, result.stdout, " \n\r\t")),
-        .reload = version.atLeast(reload_version),
     };
 }
 
@@ -74,9 +69,6 @@ pub fn parseVersion(text: []const u8) ?Version {
 }
 
 pub const Keys = struct {
-    pub const edit = "ctrl-e";
-    pub const recursive = "ctrl-r";
-    pub const undo = "alt-u";
     pub const preview = "alt-p";
     pub const help = "f1";
     /// Como o fzf nomeia a tecla e como ela e mostrada ao usuario.
@@ -87,6 +79,8 @@ pub const Options = struct {
     features: Features,
     header: []const u8,
     prompt: []const u8,
+    /// Consulta ja digitada, vinda do `:find <termo>`.
+    query: []const u8 = "",
     environ: *const std.process.Environ.Map,
     color: bool,
     preview: bool,
@@ -189,20 +183,11 @@ pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
         try argv.append(arena, "--bind=" ++ Keys.preview ++ ":toggle-preview");
     }
 
-    var expect: std.ArrayList(u8) = .empty;
-    try expect.appendSlice(
-        arena,
-        "--expect=enter," ++ Keys.edit ++ "," ++ Keys.undo ++ "," ++ Keys.help,
-    );
-    if (options.features.reload) {
-        try argv.append(
-            arena,
-            "--bind=" ++ Keys.recursive ++ ":reload(\"$" ++ session.env_self ++ "\" --reload-toggle)",
-        );
-    } else {
-        try expect.appendSlice(arena, "," ++ Keys.recursive);
+    if (options.query.len > 0) {
+        try argv.append(arena, try std.fmt.allocPrint(arena, "--query={s}", .{options.query}));
     }
-    try argv.append(arena, try expect.toOwnedSlice(arena));
+    // O fzf aqui e um buscador, nao a tela: sai assim que a marcacao esta feita.
+    try argv.append(arena, "--expect=enter," ++ Keys.help);
 
     var child = try std.process.spawn(io, .{
         .argv = argv.items,
@@ -234,10 +219,8 @@ test "parse da versao do fzf" {
     try testing.expect(parseVersion("sem versao") == null);
 }
 
-test "piso de versao e deteccao do reload" {
+test "piso de versao" {
     try testing.expect((Version{ .major = 0, .minor = 17 }).atLeast(min_version));
     try testing.expect(!(Version{ .major = 0, .minor = 15 }).atLeast(min_version));
-    try testing.expect(!(Version{ .major = 0, .minor = 20 }).atLeast(reload_version));
-    try testing.expect((Version{ .major = 0, .minor = 21 }).atLeast(reload_version));
-    try testing.expect((Version{ .major = 1, .minor = 0 }).atLeast(reload_version));
+    try testing.expect((Version{ .major = 1, .minor = 0 }).atLeast(min_version));
 }

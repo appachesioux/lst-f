@@ -1,5 +1,5 @@
-//! Estado compartilhado entre o processo principal e os self-exec que o fzf
-//! dispara (`--preview-index`, `--reload-toggle`).
+//! Estado compartilhado entre o processo principal e o self-exec de preview
+//! que o fzf dispara (`--preview-index`).
 //!
 //! Nao confundir com a **area de sessao** do `fsops`: aquela e `.lst-f-<pid>/`
 //! no diretorio-base, no mesmo filesystem, e existe para o rollback da
@@ -13,18 +13,6 @@ const Allocator = std.mem.Allocator;
 
 pub const env_state = "LST_F_STATE";
 pub const env_self = "LST_F_SELF";
-
-pub const Mode = enum {
-    local,
-    recursive,
-
-    pub fn toggle(m: Mode) Mode {
-        return switch (m) {
-            .local => .recursive,
-            .recursive => .local,
-        };
-    }
-};
 
 pub const State = struct {
     path: []const u8,
@@ -59,15 +47,6 @@ pub const State = struct {
 
     pub fn readBase(s: State, io: Io, arena: Allocator) ![]const u8 {
         return s.dir.readFileAlloc(io, "base", arena, .limited(Io.Dir.max_path_bytes));
-    }
-
-    pub fn writeMode(s: State, io: Io, mode: Mode) !void {
-        try s.dir.writeFile(io, .{ .sub_path = "mode", .data = @tagName(mode) });
-    }
-
-    pub fn readMode(s: State, io: Io, arena: Allocator) !Mode {
-        const text = try s.dir.readFileAlloc(io, "mode", arena, .limited(32));
-        return if (std.mem.eql(u8, text, "recursive")) .recursive else .local;
     }
 
     /// A lista corrente, um caminho por registro, separada por NUL. E o que
