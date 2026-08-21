@@ -1,0 +1,206 @@
+# lst-f
+
+## Objetivo e limites
+
+`lst-f` é uma CLI para explorar e alterar o filesystem no terminal. Ela combina:
+
+- `fzf` como interface de navegação, busca fuzzy, seleção múltipla e preview;
+- Vim ou Neovim, invocado pelo `$VISUAL`, `$EDITOR` ou por opção explícita, para editar operações em lote;
+- um núcleo próprio que transforma a edição em um plano seguro de operações no filesystem.
+
+A experiência visual deve lembrar Dolphin ou Nautilus: lista legível, diretório atual no cabeçalho, diretórios antes de arquivos, cores discretas, metadados úteis e preview. É uma TUI, não uma GUI. `lst-f` lista um diretório por vez; a busca recursiva é um atalho dentro da sessão, e mesmo ela apresenta lista plana — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
+
+### Diferenciação
+
+O objetivo é uso real, não exercício. Isso exige ser honesto sobre o que já existe.
+
+**`oil.nvim` faz quase tudo que este documento descreve**: diretório como buffer editável, IDs ocultos casando linha com entrada, criar, renomear, mover, copiar, remoção para a lixeira, diálogo de confirmação listando as operações antes de aplicar, preview, movimentação entre diretórios com dois buffers, e adaptador SSH. Não adianta listar essas capacidades como diferencial — não são.
+
+As outras alternativas cobrem menos: `vidir` e `qmv` editam uma lista mas não navegam, não filtram e não mostram preview; `fzf` seleciona muito bem e não renomeia nada; `pipe-rename` recebe caminhos por pipe e a origem da seleção é problema de quem chama.
+
+**A única diferença funcional em relação ao `oil.nvim` é a seleção fuzzy recursiva como ponto de entrada.** O oil navega um diretório por vez e não filtra. O caso *"filtrar um termo na árvore inteira, marcar 12 dos 200 resultados espalhados por 6 diretórios, renomear todos de uma vez"* exige colar o oil a um picker externo, e aí são duas ferramentas, não um fluxo.
+
+O restante é empacotamento, não capacidade, e vale registrar como tal: binário único sem instalação nem gerenciador de plugin, funciona com `vim` além de Neovim, e roda como CLI componível em vez de dentro de uma sessão de editor. Isso é a diferença entre "está no meu setup" e "funciona no servidor em que acabei de entrar por SSH". É motivo suficiente para existir, mas é distribuição.
+
+**Consequência de design**: sendo a busca recursiva o único diferencial funcional, ela precisa estar a um toque de distância dentro da sessão — não atrás de uma flag que se decide antes de abrir o programa, nem adiada para depois do MVP. O padrão continua sendo listar um diretório, que é o que se quer na maior parte do tempo; uma tecla alterna para a busca na árvore a partir da raiz atual, e outra volta. Recursivo como flag de linha de comando seria pior: exigiria saber de antemão o que só se descobre navegando.
+
+Está fora de escopo:
+
+- plugins de Vim, Neovim ou fzf;
+- reimplementar fuzzy finder, editor de texto ou TUI;
+- dependência de `fzf.vim`, `fzf-lua`, `oil.nvim`, `fd`, `rg`, Node, Python ou Nerd Font;
+- adaptadores remotos, sincronização, permissões elevadas e gerenciamento de conteúdo de arquivos.
+
+## Stack e comandos
+
+- Zig 0.16.x. O ambiente de desenvolvimento possui Zig 0.16.0; Rust não será adotado.
+- Biblioteca padrão de Zig como base. Dependências externas exigem benefício concreto e aprovação prévia.
+- Zig é pré-1.0 e quebra a biblioteca padrão a cada release. Contar com manutenção periódica por atualização de versão; não é motivo para abstrair a std por trás de camadas próprias.
+- Executáveis de runtime: `fzf` e um editor `vim` ou `nvim` configurado pelo usuário.
+- `git` é opcional; quando solicitado e aplicável, operações podem usar `git mv`.
+- Formatar: `zig fmt .`.
+- Testar: `zig build test`.
+- Compilar: `zig build`.
+
+## Compatibilidade
+
+- O alvo inclui sessões SSH e distribuições estáveis, inclusive Debian e Ubuntu Server; não exigir a versão mais recente de `fzf`, Vim ou Neovim.
+- O vetor real de compatibilidade com distribuição estável não é a versão do `fzf`, é a glibc. Compilar com alvo explícito (por exemplo `-target x86_64-linux-gnu.2.28`) ou estaticamente; isso resolve a maior parte do problema sem custo de design.
+- A enumeração é do `lst-f`; o `fzf` recebe a lista pronta pela entrada padrão. Não usar o walker embutido, popup, bindings dinâmicos nem plugins recentes do `fzf`.
+- Recursos opcionais do `fzf` são detectados antes do uso. Se indisponíveis, a navegação e seleção básicas continuam disponíveis ou a CLI explica o requisito pontual.
+- A aparência deve funcionar sem ícones. Ícones só são emitidos quando habilitados pelo usuário; o fallback textual não pode perder informação.
+- Caminhos são tratados como dados, não como fragmentos de shell. A comunicação interna e com `fzf` usa NUL, e nenhum caminho é interpolado em linha de comando de shell.
+
+### Piso de versão do fzf
+
+- Piso absoluto **0.17.0** (ago/2017), definido por `--preview`/`--preview-window`. Debian 10 traz 0.17.5; Ubuntu 20.04 traz 0.20.0.
+- `--read0`/`--print0` existem desde 0.15.0; `--multi --bind --expect --header --ansi --with-nth --delimiter --reverse --tiebreak` são anteriores. NUL é linha de base, não recurso a detectar.
+- **`reload` (0.21.0+) é opcional e detectado.** Ele serve às duas trocas de lista da sessão: entrar/sair de diretório e alternar entre local e recursivo. Com ele, tudo acontece numa única sessão `fzf`, preservando query e posição do cursor. Sem ele, cada troca encerra e respawna o `fzf`. É o loop central da ferramenta e merece o caminho bom quando ele existe — Debian 11 traz 0.24, Ubuntu 22.04 traz 0.29, Debian 12 traz 0.38.
+- Detecção uma vez por execução, via `fzf --version`.
+- Evitar (recentes e dispensáveis): `--highlight-line`, itens multi-linha (`--gap`, `--marker-multi-line`), `--preview-border`, `--tmux`.
+
+### Contrato com o editor
+
+Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp>`, em foreground no TTY, esperar sair, reler o arquivo. Sem piso de versão relevante. As restrições são comportamentais:
+
+1. Rodar em foreground no TTY — rejeitar `gvim`, `nvim-qt`, `mvim`, `code` sem `--wait`, `subl` sem `-w`.
+2. Suportar aborto por exit code diferente de zero (`:cq`), sinal de "não aplica nada", como no `git commit`.
+
+## Fluxo principal
+
+1. `lst-f [diretório]` lista aquele diretório. O `fzf` apresenta a lista formatada e permite filtrar e marcar entradas.
+2. Enter abre arquivo ou entra no diretório; a entrada de pai permite voltar. Uma tecla alterna entre listagem local e busca recursiva a partir do diretório atual. Outra tecla envia as entradas marcadas para o fluxo de edição.
+3. `lst-f` cria um arquivo temporário com as entradas selecionadas e abre o editor configurado pelo usuário.
+4. Após o editor sair, `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear ou remover.
+5. Antes de gravar, exibe o diff do plano e exige confirmação. Remoções aparecem em bloco próprio e exigem confirmação separada. Em falha de validação, não executa alteração alguma.
+6. A aplicação resolve colisões e ciclos com nomes temporários no mesmo filesystem, e executa as remoções por último, movendo para a área de sessão.
+
+## Formato do buffer de edição
+
+Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da operação:
+
+```
+0001  relatorio.pdf
+0002  notas antigas.txt
+0003  docs/rascunho.md
+```
+
+- O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
+- Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
+- **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
+- Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID.
+
+**Por que ID e não posição.** Mapeamento posicional falha em silêncio no caso mais provável. Um `:sort` no buffer — coisa natural de fazer numa lista de arquivos — produz uma permutação válida: a contagem de linhas bate, não há colisão, o plano passa em toda validação, e a ferramenta renomeia cada arquivo com o nome de outro. Só o ID torna essa classe de erro impossível.
+
+Com remoção no escopo, o ID deixa de ser conveniência e vira requisito de segurança: sem ele, não há como distinguir "apagou a linha 3" de "reordenou o buffer", e as duas leituras divergem entre não fazer nada e apagar um arquivo.
+
+## Remoção e área de sessão
+
+Remoção faz parte do escopo inicial. Nenhum arquivo é apagado durante a aplicação do plano: o que sai vai para uma **área de sessão**, no mesmo modelo de arquivo de swap do Vim — existe enquanto a sessão existe, serve para desfazer, e some no fim.
+
+- **Gramática**: apagar a linha no buffer remove a entrada. Nada de sintaxe especial, prefixo ou comando.
+- **Onde**: `.lst-f-<pid>/` criado sob demanda dentro do diretório-base da operação. Tem que ser no mesmo filesystem, porque a remoção é um `rename()` — a mesma razão dos temporários de ciclo. O invariante que garante isso é a listagem não atravessar ponto de montagem, o que torna essa regra estrutural e não cosmética.
+- **Layout**: cada entrada removida é renomeada para o próprio ID (`.lst-f-<pid>/0007`), e um `manifest` guarda `ID → caminho original` com campos separados por NUL. Usar o ID como nome elimina colisão entre arquivos de mesmo basename vindos de subdiretórios diferentes, e o NUL no manifesto dispensa qualquer escape ou codificação — nome de arquivo continua sendo sequência de bytes do começo ao fim.
+- **Rollback**: como tudo é `rename()`, desfazer é simétrico. Uma falha no meio da aplicação restaura a partir do manifesto e nada é perdido.
+- **Undo na sessão**: enquanto a área existir, a última operação aplicada pode ser desfeita sem sair do `lst-f`. Isso cabe no MVP justamente porque a área já precisa existir para o rollback; é o mesmo mecanismo, exposto ao usuário.
+- **Fim da sessão**: saída limpa apaga a área. **A partir daí a remoção é definitiva.** `lst-f` não é lixeira e não deve dar essa impressão — a garantia é sobre erro durante a operação e arrependimento durante a sessão, não sobre recuperação amanhã.
+- **Área órfã**: se a sessão morrer (crash, kill, queda de SSH), a área fica. Na abertura seguinte do mesmo diretório, detectar `.lst-f-*` de PID morto e avisar, como o Vim faz com `.swp`: informar o caminho e o que há dentro, sem restaurar nem apagar sozinho.
+- **Sem permissão de escrita no diretório-base**: não há como criar a área, logo não há como garantir rollback. A remoção é recusada com explicação. Renomeações continuam disponíveis.
+- **Diretórios**: um diretório vai inteiro para a área num único `rename()`, com conteúdo, sem recursão. O diff informa quantos itens a subárvore contém, porque marcar um diretório sem perceber é fácil e o número é a informação que evita isso.
+- **Confirmação separada**: o diff mostra renomeações e remoções em blocos distintos, e a remoção tem prompt próprio. Confirmar renomeações não confirma remoções.
+- **Remoções por último**: criação de pais, depois renomeações e movimentos, e então as remoções. Uma fase por vez, rollback simples.
+- **Symlink**: move o link para a área, nunca o alvo.
+- **Pai e filho na mesma seleção**: na busca recursiva, pai e filho caem no mesmo buffer com facilidade. Remover o pai e renomear um filho é contradição e o `plan` recusa; remover pai e filho é redundância e o `plan` absorve, movendo só o pai.
+- **A área é invisível para a listagem**: `.lst-f-<pid>/` nunca aparece como entrada, nem local nem na busca recursiva.
+
+Fora do escopo do MVP: integração com a lixeira do sistema (FreeDesktop Trash) como opção, para quem quiser reversibilidade além da sessão. Só faz sentido depois que o fluxo básico estiver assentado, e traz o custo de lixeira por ponto de montagem e `.trashinfo` percent-encoded.
+
+## Nomes que não são UTF-8 válido
+
+Em Linux, nome de arquivo é sequência de bytes, não texto UTF-8. O Vim não preserva bytes inválidos no round-trip: lê como latin1 ou trata como binário, e o que volta são bytes diferentes dos que saíram. O ID não protege contra isso — o ID está correto, o destino é que está corrompido.
+
+- Na enumeração, detectar entradas cujo nome não é UTF-8 válido.
+- Listagem, navegação e preview continuam funcionando normalmente com elas.
+- A edição em lote as **recusa**, com mensagem explícita nomeando a entrada. Nunca enviar ao editor um nome que não sobreviverá à volta.
+
+## Contrato com o fzf
+
+- Entrada: um registro por entrada, `--read0`. Cada registro é `índice <TAB> colunas de exibição`, com `--delimiter=<TAB> --with-nth=2..`.
+- **O campo 1 é o índice, não o caminho.** Nome de arquivo pode conter TAB e qualquer byte; caminho no campo 1 quebraria o parsing. O índice resolve para o caminho em memória.
+- Saída: `--print0`. O `fzf` devolve o registro inteiro; `lst-f` lê o índice e resolve o caminho internamente, sem parsear a coluna de exibição.
+- Preview: `--preview 'lst-f --preview-index {1}'` — self-exec. O `--preview` do `fzf` sempre executa via `sh -c`; a única forma de honrar "caminhos são dados, não fragmentos de shell" é não passar caminho por ali.
+- Teclas, fixas no MVP: Enter abre ou entra; Tab marca; uma tecla alterna local/recursivo; uma tecla envia a marcação para a edição. Com `reload` disponível, o alternar e a troca de diretório são `--bind` numa sessão só; sem ele, são `--expect` que encerram o `fzf` e respawnam com a nova lista. As duas rotas produzem o mesmo resultado, com UX diferente.
+
+## Estrutura inicial
+
+- `cli`: parsing de argumentos e composição do fluxo.
+- `explorer`: enumeração, ordenação e apresentação de entradas para o `fzf`.
+- `fzf`: invocação do binário, detecção de recursos e decodificação de seleção; não contém regras de filesystem.
+- `editor`: criação do arquivo temporário, invocação do editor e parsing do buffer editado.
+- `plan`: comparação da edição, validações, diff e plano de operações.
+- `fsops`: execução ordenada, área de sessão, rollback e relatório de estado.
+
+Não introduzir interfaces, configuração ou camadas extras antes de uma necessidade concreta.
+
+## Regras técnicas
+
+- Aplique KISS: árvore lateral, thumbnails, operações remotas e visualização sofisticada ficam para depois.
+- O núcleo valida caminhos vazios, absolutos quando não permitidos, escape do diretório-base da operação, duplicatas, colisões, permissões e ciclos antes de qualquer escrita.
+- **Sobrescrita e TOCTOU**: entre a validação de "destino não existe" e o `rename()` o destino pode passar a existir, e `rename()` sobrescreve em silêncio. Usar `Io.Dir.renamePreserve`, que é `renameat2` com `RENAME_NOREPLACE` no Linux (kernel 3.15+, cobre qualquer alvo com folga). Onde o sistema não oferece rename atômico não-substitutivo, a chamada devolve `OperationUnsupported` e a janela de corrida fica documentada como limitação conhecida.
+- **Rename só de caixa** (`arquivo.txt` para `ARQUIVO.TXT`): rotear **sempre** por nome temporário, sem tentar detectar se o filesystem é case-insensitive. É barato e correto em FAT32, exFAT, NTFS e APFS.
+- **Symlinks**: renomear ou mover para a área o link, nunca o alvo. Não seguir link ao validar escape do diretório-base — a validação é lexical antes de qualquer resolução. A criação de diretórios pai não pode atravessar symlink para fora do base.
+- Remoção está no escopo inicial e passa pela área de sessão, com as garantias da seção própria: bloco separado no diff, confirmação própria, execução por último, e recusa explícita quando não for possível criar a área.
+- Arquivos binários nunca são exibidos como texto bruto no preview; o fallback mostra metadados.
+- A integração Git é opt-in e fora do MVP. Não inferir `git mv` silenciosamente.
+- Testes ficam junto ao código e devem cobrir: nomes com espaços e caracteres especiais, nomes não-UTF-8, TAB no nome, colisões, troca cíclica, criação de diretórios pai, buffer reordenado, ID adulterado, remoção simples, remoção de diretório não-vazio, dois arquivos de mesmo basename removidos de subdiretórios diferentes, diretório-base sem permissão de escrita, área órfã de PID morto, undo na sessão, pai removido com filho renomeado, pai e filho ambos removidos, e falha durante a aplicação em cada fase.
+
+## Pontos de atenção e desafios técnicos
+
+- **Integridade do buffer**: resolvida pelo ID (ver seção do formato). Com remoção no escopo, a contagem de linhas deixa de ser critério de validação — linha a menos é intenção, não erro —, o que transfere toda a segurança para o ID e para o diff de confirmação.
+- **Resolução de ciclos e colisões**:
+  - Ciclos (`A -> B -> C -> A`) exigem ordenação topológica e nomes temporários intermediários.
+  - Os temporários vão obrigatoriamente no mesmo diretório e filesystem, para que `rename()` seja atômico e sem cópia entre pontos de montagem.
+- **Orquestração de TTY e subprocessos**: o controle do terminal transita Explorer -> `fzf` -> `$EDITOR` -> prompt `[y/N]`. Os descritores de I/O de cada `ChildProcess` devem ser repassados e gerenciados junto ao `/dev/tty` para preservar o estado do terminal.
+- **Busca recursiva em árvore grande**: a listagem local é barata, mas o atalho de recursão pode gerar dezenas de milhares de entradas a partir de um `$HOME`. Enumerar em streaming para o `fzf` em vez de montar a lista inteira antes; `stat` por entrada é o custo dominante em NFS. Respeitar limite de profundidade e não atravessar ponto de montagem nem symlink de diretório — sem isso, um toque na tecla de recursão no lugar errado vira varredura do sistema. Não atravessar montagem também é o que sustenta o invariante de filesystem único da área de sessão.
+
+## Recomendações de arquitetura e implementação
+
+- **Testes unitários puros no módulo `plan`**: desacoplar a lógica de grafo, ordenação topológica, detecção de ciclos e validação de caminhos do I/O de disco, permitindo testes rápidos e exaustivos em memória com listas de origem e destino. Esta é a decisão de arquitetura que mais importa no projeto.
+- **Criação automática de subdiretórios**: ao mover para um caminho relativo com diretórios inexistentes (`doc.txt` para `docs/sub/doc.txt`), o plano prevê a criação prévia da árvore de pais, e o rollback prevê a remoção dos diretórios que ele mesmo criou.
+- **Índice como identidade única**: o mesmo índice serve ao campo 1 do `fzf` e ao ID do buffer de edição. Um conceito, dois usos.
+
+## Critérios de sucesso do MVP
+
+- Em um terminal comum, sem instalar plugin nem editor específico, o usuário navega por diretório e, com um toque, filtra a árvore inteira e marca numa só seleção entradas espalhadas por vários diretórios.
+- Com Vim ou Neovim, renomeia ou move múltiplas entradas ao editar uma lista temporária.
+- Nenhuma operação é aplicada sem preview, validação e confirmação; remoções exigem confirmação própria, separada da de renomeações.
+- Editar o buffer de forma inesperada — reordenar, ordenar, recolar linhas — nunca produz renomeação incorreta em silêncio: ou o plano está certo, ou aborta com erro explicativo.
+- **Validação exaustiva antes de qualquer escrita.** Em falha durante a aplicação, tentar rollback em ordem reversa e **sempre** imprimir relatório exato do estado final e dos passos de recuperação manual. Não se promete atomicidade: POSIX não oferece transação de filesystem, e o próprio rollback pode falhar. A promessa é validação forte, falha rara e estado sempre legível.
+- **Nenhuma falha durante a aplicação destrói dado.** Toda remoção é `rename()` para a área de sessão; enquanto a sessão viver, tudo que saiu pode voltar, e o undo na sessão expõe isso ao usuário. Encerrada a sessão, a remoção é definitiva — a promessa é sobre erro e arrependimento, não sobre lixeira.
+- O programa continua útil com instalações não recentes das ferramentas adjacentes e informa de forma clara funcionalidades indisponíveis.
+
+## Próximos passos
+
+1. Criar o esqueleto Zig com `build.zig`, comando `lst-f` e a suíte de testes; confirmar `zig fmt .`, `zig build test` e `zig build`.
+2. Implementar a verificação de ambiente: localizar `fzf` e `$VISUAL`/`$EDITOR`, detectar `reload` pela versão do `fzf`, rejeitar editores que não rodam em foreground, e explicar dependência ausente sem baixar ou instalar nada.
+3. Implementar `plan` como módulo puro, com testes em memória: grafo, ordenação topológica, ciclos, colisões, validação lexical de caminhos, criação de pais. Antes de qualquer I/O.
+4. Implementar a enumeração local e a ordenação de entradas (diretórios antes de arquivos), com testes para nomes incomuns, não-UTF-8 e links simbólicos.
+5. Integrar a lista ao `fzf` pelo contrato de índice + `--read0`/`--print0`. Layout inicial com cabeçalho, metadados e fallback sem ícones.
+6. Implementar a troca de diretório: sessão única com `reload` quando disponível, respawn quando não.
+7. Implementar o preview via self-exec (`--preview-index`), com fallback de metadados para binário.
+8. Implementar o fluxo de renomear/mover: buffer com ID, abertura no editor, parser, diff e confirmação.
+9. Implementar a aplicação: `renameat2` com `RENAME_NOREPLACE`, temporários no mesmo filesystem, rollback reverso e relatório de estado. Testes de falha injetada.
+10. Implementar remoção: ID ausente no parser, bloco próprio no diff com contagem de itens por diretório, confirmação separada, área `.lst-f-<pid>/` com manifesto NUL, execução após todos os renames, undo na sessão, limpeza na saída limpa e aviso de área órfã na abertura.
+11. Implementar o atalho de busca recursiva: enumeração em streaming com limite de profundidade, sem atravessar montagem ou symlink de diretório, `reload` quando disponível e respawn quando não, mais a validação de pai e filho na mesma seleção.
+12. Validar manualmente em terminal local e em instalação limpa de Debian/Ubuntu Server com versões não recentes de `fzf` e Vim/Neovim.
+
+Fora do MVP, nesta ordem: undo entre sessões, que exige persistir a área além da execução ou integrar a lixeira do sistema; integração `git mv` opt-in.
+
+## Referências
+
+- Comportamento de edição de renomes: `https://github.com/marcusbuffett/pipe-rename`.
+- Mapeamento por ID no buffer: `vidir`, do moreutils.
+- Navegação e seleção: `https://github.com/junegunn/fzf`.
+- Diretório como buffer editável: `https://github.com/stevearc/oil.nvim`.
+- Área temporária de sessão com aviso de órfã: arquivos de swap do Vim (`:help swap-file`).
+- Bloco de notas privado e provisório: `0-ctx/0-scratchpad.md`.
