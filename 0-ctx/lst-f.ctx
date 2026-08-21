@@ -29,7 +29,9 @@ Está fora de escopo:
 - plugins de Vim, Neovim ou fzf;
 - reimplementar fuzzy finder, editor de texto ou TUI;
 - dependência de `fzf.vim`, `fzf-lua`, `oil.nvim`, `fd`, `rg`, Node, Python ou Nerd Font;
-- adaptadores remotos, sincronização, permissões elevadas e gerenciamento de conteúdo de arquivos.
+- adaptadores remotos, sincronização, permissões elevadas e gerenciamento de conteúdo de arquivos;
+- integração com Git. Renomear é operação de filesystem; quem versiona o diretório usa o Git depois, e o `git status` reconhece rename por conteúdo. `git mv` não entra nem como opção;
+- lixeira do sistema (FreeDesktop Trash). A área de sessão existe para rollback e arrependimento dentro da sessão; ela não é uma lixeira e não vai virar uma.
 
 ## Stack e comandos
 
@@ -37,7 +39,6 @@ Está fora de escopo:
 - Biblioteca padrão de Zig como base. Dependências externas exigem benefício concreto e aprovação prévia.
 - Zig é pré-1.0 e quebra a biblioteca padrão a cada release. Contar com manutenção periódica por atualização de versão; não é motivo para abstrair a std por trás de camadas próprias.
 - Executáveis de runtime: `fzf` e um editor `vim` ou `nvim` configurado pelo usuário.
-- `git` é opcional; quando solicitado e aplicável, operações podem usar `git mv`.
 - Formatar: `zig fmt .`.
 - Testar: `zig build test`.
 - Compilar: `zig build`.
@@ -113,7 +114,7 @@ Remoção faz parte do escopo inicial. Nenhum arquivo é apagado durante a aplic
 - **Pai e filho na mesma seleção**: na busca recursiva, pai e filho caem no mesmo buffer com facilidade. Remover o pai e renomear um filho é contradição e o `plan` recusa; remover pai e filho é redundância e o `plan` absorve, movendo só o pai.
 - **A área é invisível para a listagem**: `.lst-f-<pid>/` nunca aparece como entrada, nem local nem na busca recursiva.
 
-Fora do escopo do MVP: integração com a lixeira do sistema (FreeDesktop Trash) como opção, para quem quiser reversibilidade além da sessão. Só faz sentido depois que o fluxo básico estiver assentado, e traz o custo de lixeira por ponto de montagem e `.trashinfo` percent-encoded.
+Integrar a lixeira do sistema (FreeDesktop Trash) está **fora de escopo em definitivo**, não adiado: custaria lixeira por ponto de montagem e `.trashinfo` percent-encoded para entregar uma promessa que o `lst-f` decidiu não fazer. Quem quiser reversibilidade além da sessão usa uma lixeira de verdade.
 
 ## Nomes que não são UTF-8 válido
 
@@ -151,7 +152,6 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
 - **Symlinks**: renomear ou mover para a área o link, nunca o alvo. Não seguir link ao validar escape do diretório-base — a validação é lexical antes de qualquer resolução. A criação de diretórios pai não pode atravessar symlink para fora do base.
 - Remoção está no escopo inicial e passa pela área de sessão, com as garantias da seção própria: bloco separado no diff, confirmação própria, execução por último, e recusa explícita quando não for possível criar a área.
 - Arquivos binários nunca são exibidos como texto bruto no preview; o fallback mostra metadados.
-- A integração Git é opt-in e fora do MVP. Não inferir `git mv` silenciosamente.
 - Testes ficam junto ao código e devem cobrir: nomes com espaços e caracteres especiais, nomes não-UTF-8, TAB no nome, colisões, troca cíclica, criação de diretórios pai, buffer reordenado, ID adulterado, remoção simples, remoção de diretório não-vazio, dois arquivos de mesmo basename removidos de subdiretórios diferentes, diretório-base sem permissão de escrita, área órfã de PID morto, undo na sessão, pai removido com filho renomeado, pai e filho ambos removidos, e falha durante a aplicação em cada fase.
 
 ## Pontos de atenção e desafios técnicos
@@ -194,7 +194,7 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
 11. Implementar o atalho de busca recursiva: enumeração em streaming com limite de profundidade, sem atravessar montagem ou symlink de diretório, `reload` quando disponível e respawn quando não, mais a validação de pai e filho na mesma seleção.
 12. Validar manualmente em terminal local e em instalação limpa de Debian/Ubuntu Server com versões não recentes de `fzf` e Vim/Neovim.
 
-Fora do MVP, nesta ordem: undo entre sessões, que exige persistir a área além da execução ou integrar a lixeira do sistema; integração `git mv` opt-in.
+Fora do MVP: undo entre sessões, que exigiria persistir a área além da execução. É o único caminho aberto, porque a rota alternativa — lixeira do sistema — está fora de escopo em definitivo, assim como a integração com Git.
 
 ## Referências
 
