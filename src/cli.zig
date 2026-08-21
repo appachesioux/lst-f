@@ -90,6 +90,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  Tab                marca / desmarca
         \\  {s}             alterna entre listar o diretorio e buscar na arvore
         \\  {s}             envia a marcacao para o editor
+        \\  {s}              abre e fecha o preview (comeca fechado)
         \\  {s}              desfaz a ultima operacao aplicada nesta sessao
         \\  Esc                sai
         \\
@@ -100,6 +101,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         build_options.version,
         fzf.Keys.recursive,
         fzf.Keys.edit,
+        fzf.Keys.preview,
         fzf.Keys.undo,
         fzf.min_version.major,
         fzf.min_version.minor,
@@ -379,8 +381,8 @@ fn buildHeader(b: *Browser, orphans: []const fsops.Orphan) ![]const u8 {
     const w = &buf.writer;
     try w.print("{s}{s}\n", .{ b.base, if (b.mode == .recursive) "  [arvore]" else "" });
     try w.print(
-        "Enter abre  Tab marca  {s} arvore  {s} editar  {s} desfazer",
-        .{ fzf.Keys.recursive, fzf.Keys.edit, fzf.Keys.undo },
+        "Enter abre  Tab marca  {s} arvore  {s} editar  {s} preview  {s} desfazer",
+        .{ fzf.Keys.recursive, fzf.Keys.edit, fzf.Keys.preview, fzf.Keys.undo },
     );
     for (orphans) |o| {
         try w.print(

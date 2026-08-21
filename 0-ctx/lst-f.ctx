@@ -130,7 +130,7 @@ Em Linux, nome de arquivo é sequência de bytes, não texto UTF-8. O Vim não p
 - **O campo 1 é o índice, não o caminho.** Nome de arquivo pode conter TAB e qualquer byte; caminho no campo 1 quebraria o parsing. O índice resolve para o caminho em memória.
 - Saída: `--print0`. O `fzf` devolve o registro inteiro; `lst-f` lê o índice e resolve o caminho internamente, sem parsear a coluna de exibição.
 - Preview: `--preview 'lst-f --preview-index {1}'` — self-exec. O `--preview` do `fzf` sempre executa via `sh -c`; a única forma de honrar "caminhos são dados, não fragmentos de shell" é não passar caminho por ali.
-- Teclas, fixas no MVP: Enter abre ou entra; Tab marca; uma tecla alterna local/recursivo; uma tecla envia a marcação para a edição. Com `reload` disponível, o alternar e a troca de diretório são `--bind` numa sessão só; sem ele, são `--expect` que encerram o `fzf` e respawnam com a nova lista. As duas rotas produzem o mesmo resultado, com UX diferente.
+- Teclas, fixas no MVP: Enter abre ou entra; Tab marca; uma tecla alterna local/recursivo; uma tecla envia a marcação para a edição; uma tecla abre e fecha o preview, que **começa fechado**. Com `reload` disponível, o alternar e a troca de diretório são `--bind` numa sessão só; sem ele, são `--expect` que encerram o `fzf` e respawnam com a nova lista. As duas rotas produzem o mesmo resultado, com UX diferente.
 
 ## Estrutura inicial
 

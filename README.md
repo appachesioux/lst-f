@@ -56,6 +56,7 @@ lst-f ~/projetos # lista outro diretório
 | `Tab`    | marca / desmarca                                        |
 | `ctrl-r` | alterna entre listar o diretório e buscar na árvore     |
 | `ctrl-e` | envia a marcação para o editor                          |
+| `alt-p`  | abre e fecha o preview (começa fechado)                  |
 | `alt-u`  | desfaz a última operação aplicada nesta sessão          |
 | `Esc`    | sai                                                     |
 
