@@ -13,7 +13,7 @@ d │ rwxr-xr-x │         - │ 2026-08-21 19:58 │  src/
 - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  README.md
 ```
 
-O cabeçalho ocupa as primeiras linhas e as entradas vêm logo abaixo. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
+Os títulos das colunas ficam na barra de topo e as entradas ocupam o buffer inteiro. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
 
 A primeira linha mostra permanentemente a versão, o diretório atual e se a sessão está usando **Vim** ou **Neovim**.
 
@@ -56,7 +56,7 @@ que você acabou de entrar por SSH.
 
 Na árvore, use `j`/`k` ou as setas para navegar; `q`, `Esc`, `Enter` ou `\` a fecha. Para manter a abertura rápida em árvores grandes, ela mostra até 2.000 entradas e informa quando foi truncada.
 
-Use `:w` para aplicar a edição no filesystem — mesmo sem alterações ele só atualiza a lista e mantém a sessão aberta. O `lst-f` fecha e reabre sua instância temporária do editor automaticamente após a confirmação; a sessão permanece no explorador, com um aviso no cabeçalho e o cursor na mesma linha aproximada. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
+Use `:w` para aplicar a edição no filesystem — mesmo sem alterações ele só atualiza a lista e mantém a sessão aberta. O `lst-f` fecha e reabre sua instância temporária do editor automaticamente após a confirmação; a sessão permanece no explorador, com o resultado na barra de baixo e o cursor na mesma linha aproximada. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
 
 Em terminais estreitos, o nome editável pode ficar fora da área visível; use `zl` e `zh` para rolar horizontalmente.
 
@@ -125,13 +125,17 @@ continuar vazio — o que você escreveu depois fica.
 
 ## Só o nome é editável
 
-O cabeçalho é a barra de título desta tela e as colunas técnicas são leitura:
-o cursor não entra nelas e, se um `:sort`, um `dd` ou uma colagem passar por
-cima, o `lst-f` recompõe a linha na hora. Vim e Neovim não trancam um intervalo
-de linhas — `modifiable` vale para o buffer inteiro —, então isso é feito pelo
-helper, sem plugin. O plano nunca dependeu dessas colunas: elas são descartadas
-na leitura do buffer, então nem uma edição que escape delas muda o que acontece
-no disco.
+Os títulos das colunas ficam numa **barra de topo**, irmã da barra de status de
+baixo: é linha de tela, não de buffer. Não rola junto com a lista, não dá para
+apagar, redesenha-se sozinha quando o terminal muda de tamanho e acompanha a
+rolagem horizontal para as colunas nunca saírem do lugar.
+
+As colunas técnicas de cada linha são leitura: o cursor não entra nelas e, se um
+`:sort`, um `dd` ou uma colagem passar por cima, o `lst-f` recompõe a linha na
+hora. Vim e Neovim não trancam um intervalo de linhas — `modifiable` vale para o
+buffer inteiro —, então isso é feito pelo helper, sem plugin. O plano nunca
+dependeu dessas colunas: elas são descartadas na leitura do buffer, então nem
+uma edição que escape delas muda o que acontece no disco.
 
 ## Remoção
 

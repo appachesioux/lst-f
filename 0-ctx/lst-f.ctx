@@ -8,7 +8,7 @@
 - `fzf` como buscador fuzzy na árvore, chamado pela diretiva `:find` — não como interface de navegação;
 - um núcleo próprio que transforma a edição em um plano seguro de operações no filesystem.
 
-A tela é o buffer, então o que um gerenciador de arquivos poria numa barra de título mora no cabeçalho do buffer, em linhas de comentário: versão, caminho corrente, gramática e diretivas disponíveis. Uma entrada por linha, com ID à esquerda, diretórios antes de arquivos. O `fzf`, quando chamado, apresenta lista plana com metadados e preview — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
+A tela é o buffer. O que um gerenciador de arquivos poria numa barra de título fica fora do texto: os títulos das colunas numa barra de topo e o caminho corrente na barra de status — linhas de tela, que não rolam com a lista nem podem ser editadas. Só escopo do `:find` e avisos ocupam linhas do buffer, acima das entradas. Uma entrada por linha, com ID à esquerda, diretórios antes de arquivos. O `fzf`, quando chamado, apresenta lista plana com metadados e preview — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
 
 ### Diferenciação
 
@@ -98,13 +98,13 @@ d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  docs/
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
 - Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva. Linha sem ID não é erro: é pedido de criação de arquivo ou diretório.
-- O cabeçalho ocupa o topo do buffer (barra de localização, títulos de colunas com bordas alinhadas, avisos pontuais) e não usa caracteres de comentário `#` para evitar desalinhamento e cores divergentes de sintaxe no editor. O conteúdo (lista de arquivos) fica logo abaixo do cabeçalho. Somente o nome à direita da grade é editável e o parser ignora os metadados.
+- O cabeçalho não é texto do buffer: títulos de colunas na barra de topo, caminho corrente e resultado da última operação na barra de baixo. Linha de tela não rola com a lista, não pode ser apagada e acompanha o tamanho do terminal. Ocupam linhas do buffer, acima das entradas, apenas o escopo do `:find`, os avisos de área órfã e os nomes fora da edição — coisas que precisam sobreviver a uma leitura atenta, não a um piscar de barra. Somente o nome à direita da grade é editável e o parser ignora os metadados.
 
 **Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
 
 `-` volta ao diretório-pai. `.` alterna a exibição de arquivos e diretórios ocultos (dotfiles). `\` abre uma árvore visual flutuante. `Ctrl+P` dispara a busca fuzzy (`fzf`) na árvore inteira imediatamente. `Ctrl+S` abre/fecha o painel dividido de destino (split vertical na direita); `Tab` alterna o foco entre o painel principal e o painel de destino; no painel de destino, `Enter` navega nas pastas e `Y` (ou `yy`) copia o caminho do destino para a área de transferência do Vim para ser colado (`p`) facilmente durante a renomeação.
 
-Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, devolve o controle para a confirmação no terminal e reabre o buffer. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O buffer reabre no cursor salvo e mostra o resultado no cabeçalho; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
+Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, devolve o controle para a confirmação no terminal e reabre o buffer. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O buffer reabre no cursor salvo e mostra o resultado na barra de baixo; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
 
 **Diretivas.** As ações restantes escrevem-se como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado:
 
