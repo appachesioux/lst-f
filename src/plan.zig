@@ -602,9 +602,11 @@ fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
 }
 
 fn extractPath(body: []const u8) []const u8 {
-    // Formato com grade de colunas: `d │ ... │  caminho`
-    if (body.len >= 54 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[50..54], " │")) {
-        const rest = body[54..];
+    // Formato com grade de colunas: `d │ ... │  caminho`. Os deslocamentos sao
+    // em bytes (`│` ocupa tres) e valem para a grade de `writeTableDetails`; o
+    // round-trip com colunas testa exatamente isto.
+    if (body.len >= 67 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[63..67], " │")) {
+        const rest = body[67..];
         if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
         if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
         return rest;
@@ -1343,7 +1345,7 @@ test "round-trip do buffer com colunas preserva somente o nome editavel" {
         .id = 7,
         .path = "antes.txt",
         .kind = .file,
-        .display = "- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │",
+        .display = "- │ rw-r--r-- │ root     │      1.1K │ 2026-08-21 21:14 │",
     }};
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
@@ -1351,7 +1353,7 @@ test "round-trip do buffer com colunas preserva somente o nome editavel" {
     const doc = (try parseBuffer(f.a(), w.buffered(), &.{})).ok;
     try testing.expectEqualStrings("antes.txt", doc.edits[0].path);
 
-    const renamed = (try parseBuffer(f.a(), "/0007  - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  depois.txt\n", &.{})).ok;
+    const renamed = (try parseBuffer(f.a(), "/0007  - │ rw-r--r-- │ root     │      1.1K │ 2026-08-21 21:14 │  depois.txt\n", &.{})).ok;
     try testing.expectEqualStrings("depois.txt", renamed.edits[0].path);
 }
 

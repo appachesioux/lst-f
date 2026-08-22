@@ -5,17 +5,20 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-lst-f v26.8.21  ~/Devel/lst-f  ·  Vim
-──┬───────────┬───────────┬──────────────────┬──────────────────────────
-T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
-──┼───────────┼───────────┼──────────────────┼──────────────────────────
-d │ rwxr-xr-x │         - │ 2026-08-21 19:58 │  src/
-- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  README.md
+T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME              ← barra de topo
+d │ rwxr-xr-x │          │         - │ 2026-08-21 19:58 │  src/
+- │ rw-r--r-- │          │      1.1K │ 2026-08-21 21:14 │  README.md
+- │ rw-r--r-- │ root     │       220 │ 2026-08-20 08:03 │  instalado-pelo-sistema.conf
+ NORMAL  2/3  ~/Devel/lst-f  README.md        lst-f v26.8.21  ·  Vim  F1=Help
 ```
+
+A coluna `OWNER` fica em branco no que é seu — repetir o seu nome em toda linha
+não informa nada. Dono alheio aparece pelo nome; se o `uid` não estiver em
+`/etc/passwd` (usuário só de LDAP ou SSSD, por exemplo), aparece o número.
 
 Os títulos das colunas ficam na barra de topo e as entradas ocupam o buffer inteiro. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
 
-A primeira linha mostra permanentemente a versão, o diretório atual e se a sessão está usando **Vim** ou **Neovim**.
+A barra de baixo mostra permanentemente o modo, a posição na lista, o diretório atual, o nome sob o cursor e se a sessão está usando **Vim** ou **Neovim**.
 
 O ID à esquerda casa a linha com a entrada, então reordenar, rodar `:sort` ou
 recolar linhas é inofensivo. Nada é gravado sem diff e confirmação, e as

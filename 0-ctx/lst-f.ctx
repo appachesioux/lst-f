@@ -84,14 +84,11 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da operação:
 
 ```
-lst-f v26.8.21  ~/Devel/lst-f  ·  Vim
-──┬───────────┬───────────┬──────────────────┬──────────────────────────
-T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
-──┼───────────┼───────────┼──────────────────┼──────────────────────────
-d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src/
-d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  docs/
-- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  relatorio.pdf
-- │ rw-r--r-- │      6.1K │ 2026-08-22 13:33 │  README.md
+T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME    ← barra de topo
+d │ rwxr-xr-x │          │         - │ 2026-08-22 13:19 │  src/
+d │ rwxr-xr-x │ root     │         - │ 2026-08-22 13:19 │  docs/
+- │ rw-r--r-- │          │      1.1K │ 2026-08-21 21:14 │  relatorio.pdf
+- │ rw-r--r-- │          │      6.1K │ 2026-08-22 13:33 │  README.md
 ```
 
 - O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
