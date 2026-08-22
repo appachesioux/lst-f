@@ -98,10 +98,12 @@ pub const State = struct {
             \\    \ '  Diretivas (escreva no buffer e salve):',
             \\    \ '    :cd <dir>      Entra no diretorio (.. sobe)',
             \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
+            \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
             \\    \ '    :undo          Desfaz a ultima operacao aplicada na sessao',
             \\    \ '    :quit          Sai da sessao (:cq aborta sem aplicar nada)',
             \\    \ '',
             \\    \ '  Atalhos no buffer:',
+            \\    \ '    .              Alterna exibicao de arquivos ocultos',
             \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
             \\    \ '    -              Volta ao diretorio-pai',
@@ -259,6 +261,11 @@ pub const State = struct {
             \\  write
             \\endfunction
             \\
+            \\function! LstfToggleHidden() abort
+            \\  call append('$', ':hidden')
+            \\  write
+            \\endfunction
+            \\
             \\function! s:lstf_prepare_save() abort
             \\  if search('^:', 'nw') == 0
             \\    call append('$', ':refresh')
@@ -316,12 +323,15 @@ pub const State = struct {
             \\  if s:lstf_dest_dir !~# '/$'
             \\    let s:lstf_dest_dir .= '/'
             \\  endif
-            \\  let l:raw_entries = globpath(s:lstf_dest_dir, '*', 0, 1) + globpath(s:lstf_dest_dir, '.*', 0, 1)
+            \\  let l:raw_entries = globpath(s:lstf_dest_dir, '*', 0, 1)
+            \\  if get(s:, 'lstf_dest_hidden', 0)
+            \\    let l:raw_entries += globpath(s:lstf_dest_dir, '.*', 0, 1)
+            \\  endif
             \\  let l:dirs = []
             \\  let l:files = []
             \\  for l:item in l:raw_entries
             \\    let l:tail = fnamemodify(l:item, ':t')
-            \\    if l:tail ==# '.' || l:tail ==# '..'
+            \\    if l:tail ==# '.' || l:tail ==# '..' || l:tail =~# '^\.lst-f-'
             \\      continue
             \\    endif
             \\    if isdirectory(l:item)
@@ -335,7 +345,7 @@ pub const State = struct {
             \\  let l:lines = [
             \\    \ 'DESTINATION: ' . s:lstf_dest_dir,
             \\    \ '──┬───────────┬───────────┬──────────────────┬──────────────────────────',
-            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy path]',
+            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy . =hidden]',
             \\    \ '──┼───────────┼───────────┼──────────────────┼──────────────────────────',
             \\    \ 'd │ rwxr-xr-x │         - │                - │  ../'
             \\    \ ]
@@ -360,6 +370,11 @@ pub const State = struct {
             \\  call setline(1, l:lines)
             \\  setlocal nomodified nomodifiable
             \\  execute 'call cursor(5, 1)'
+            \\endfunction
+            \\
+            \\function! s:lstf_dest_toggle_hidden() abort
+            \\  let s:lstf_dest_hidden = !get(s:, 'lstf_dest_hidden', 0)
+            \\  call s:lstf_render_dest(s:lstf_dest_dir)
             \\endfunction
             \\
             \\function! s:lstf_dest_open() abort
@@ -439,6 +454,7 @@ pub const State = struct {
             \\  setlocal nonumber norelativenumber cursorline
             \\  nnoremap <buffer> <silent> <CR> :call <SID>lstf_dest_open()<CR>
             \\  nnoremap <buffer> <silent> - :call <SID>lstf_dest_up()<CR>
+            \\  nnoremap <buffer> <silent> . :call <SID>lstf_dest_toggle_hidden()<CR>
             \\  nnoremap <buffer> <silent> Y :call <SID>lstf_dest_yank()<CR>
             \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
             \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
@@ -489,6 +505,7 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
             \\nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
+            \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
             \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
             \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>

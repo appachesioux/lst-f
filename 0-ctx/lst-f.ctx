@@ -102,7 +102,7 @@ d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  docs/
 
 **Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
 
-`-` volta ao diretório-pai. `\` abre uma árvore visual flutuante. `Ctrl+P` dispara a busca fuzzy (`fzf`) na árvore inteira imediatamente. `Ctrl+S` abre/fecha o painel dividido de destino (split vertical na direita); `Tab` alterna o foco entre o painel principal e o painel de destino; no painel de destino, `Enter` navega nas pastas e `Y` (ou `yy`) copia o caminho do destino para a área de transferência do Vim para ser colado (`p`) facilmente durante a renomeação.
+`-` volta ao diretório-pai. `.` alterna a exibição de arquivos e diretórios ocultos (dotfiles). `\` abre uma árvore visual flutuante. `Ctrl+P` dispara a busca fuzzy (`fzf`) na árvore inteira imediatamente. `Ctrl+S` abre/fecha o painel dividido de destino (split vertical na direita); `Tab` alterna o foco entre o painel principal e o painel de destino; no painel de destino, `Enter` navega nas pastas e `Y` (ou `yy`) copia o caminho do destino para a área de transferência do Vim para ser colado (`p`) facilmente durante a renomeação.
 
 Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, devolve o controle para a confirmação no terminal e reabre o buffer. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O buffer reabre no cursor salvo e mostra o resultado no cabeçalho; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
 
@@ -110,6 +110,7 @@ Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` qu
 
 - `:cd <dir>` entra no diretório (`..` sobe; caminho absoluto é aceito, porque navegar não é renomear);
 - `:open <arquivo>` abre o arquivo no editor de texto com retorno garantido ao `lst-f` ao fechar (`:q`);
+- `:hidden` alterna a exibição de arquivos ocultos;
 - `:find [termo]` chama o `fzf` sobre a árvore e transforma a marcação no conteúdo do buffer;
 - `:undo` desfaz a última operação aplicada na sessão;
 - `:quit` sai.

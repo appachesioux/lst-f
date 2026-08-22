@@ -435,6 +435,7 @@ pub const Directive = union(enum) {
     cd: []const u8,
     find: []const u8,
     open: []const u8,
+    hidden: ?bool,
     /// Inserida pelo helper antes de `:w`, para que salvar sem alteracao
     /// mantenha a sessao aberta e apenas atualize a listagem.
     refresh,
@@ -541,6 +542,18 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
                 directive = .{ .open = argument };
             } else if (std.mem.eql(u8, name, "find")) {
                 directive = .{ .find = argument };
+            } else if (std.mem.eql(u8, name, "hidden") or std.mem.eql(u8, name, "hide") or std.mem.eql(u8, name, "dotfiles")) {
+                if (argument.len == 0 or std.mem.eql(u8, argument, "toggle")) {
+                    directive = .{ .hidden = null };
+                } else if (std.mem.eql(u8, argument, "on") or std.mem.eql(u8, argument, "1") or std.mem.eql(u8, argument, "true") or std.mem.eql(u8, argument, "show")) {
+                    directive = .{ .hidden = true };
+                } else if (std.mem.eql(u8, argument, "off") or std.mem.eql(u8, argument, "0") or std.mem.eql(u8, argument, "false")) {
+                    directive = .{ .hidden = false };
+                } else {
+                    try problems.append(arena, .{
+                        .unknown_directive = .{ .line = line_no, .name = try arena.dupe(u8, name) },
+                    });
+                }
             } else if (std.mem.eql(u8, name, "refresh")) {
                 directive = .refresh;
             } else if (std.mem.eql(u8, name, "undo")) {
@@ -1054,4 +1067,19 @@ test "cabecalho sem entradas nao acusa erro de linha sem ID" {
     ;
     const res = try parseBuffer(f.a(), text);
     try testing.expectEqual(@as(usize, 0), res.ok.edits.len);
+}
+
+test "diretiva :hidden eh parseada corretamente" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const t1 = (try parseBuffer(f.a(), "0001  a.txt\n:hidden\n")).ok;
+    try testing.expect(t1.directive.? == .hidden);
+    try testing.expectEqual(@as(?bool, null), t1.directive.?.hidden);
+
+    const t2 = (try parseBuffer(f.a(), "0001  a.txt\n:hidden on\n")).ok;
+    try testing.expectEqual(@as(?bool, true), t2.directive.?.hidden);
+
+    const t3 = (try parseBuffer(f.a(), "0001  a.txt\n:hidden off\n")).ok;
+    try testing.expectEqual(@as(?bool, false), t3.directive.?.hidden);
 }
