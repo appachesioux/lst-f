@@ -22,6 +22,9 @@ pub const Entry = struct {
     mode: u16,
     /// Nome que nao e UTF-8 valido: lista e navega, mas nao vai para o editor.
     utf8_ok: bool,
+    /// Dono, ja resolvido. Vazio quando e voce: a coluna inteira repetindo o
+    /// seu nome nao informa nada na maioria dos diretorios.
+    owner: []const u8 = "",
     /// A entrada sintetica `..`.
     parent: bool = false,
 };
@@ -60,6 +63,73 @@ const ansi = struct {
     const warn = "\x1b[33m";
 };
 
+/// Resolve uid -> nome lendo `/etc/passwd` uma vez. Sem libc: o alvo de
+/// compatibilidade e o binario estatico, entao nada de NSS -- um usuario que so
+/// existe em LDAP ou SSSD aparece pelo numero, como no `xpl-f`.
+pub const Users = struct {
+    arena: Allocator,
+    by_uid: std.AutoHashMapUnmanaged(u32, []const u8) = .empty,
+    loaded: bool = false,
+    self_uid: u32,
+
+    pub fn init(arena: Allocator) Users {
+        return .{
+            .arena = arena,
+            .self_uid = if (@import("builtin").os.tag == .linux) std.os.linux.getuid() else 0,
+        };
+    }
+
+    pub fn nameFor(u: *Users, io: Io, uid: u32) []const u8 {
+        if (uid == u.self_uid) return "";
+        u.load(io);
+        if (u.by_uid.get(uid)) |name| return name;
+        const fallback = std.fmt.allocPrint(u.arena, "{d}", .{uid}) catch return "";
+        u.by_uid.put(u.arena, uid, fallback) catch {};
+        return fallback;
+    }
+
+    fn load(u: *Users, io: Io) void {
+        if (u.loaded) return;
+        u.loaded = true;
+        const content = Io.Dir.cwd().readFileAlloc(
+            io,
+            "/etc/passwd",
+            u.arena,
+            .limited(4 * 1024 * 1024),
+        ) catch return;
+        parsePasswd(u.arena, content, &u.by_uid) catch {};
+    }
+};
+
+/// `nome:senha:uid:...` por linha. Separado da leitura para ser testavel.
+fn parsePasswd(
+    arena: Allocator,
+    content: []const u8,
+    out: *std.AutoHashMapUnmanaged(u32, []const u8),
+) Allocator.Error!void {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        var fields = std.mem.splitScalar(u8, line, ':');
+        const name = fields.next() orelse continue;
+        _ = fields.next() orelse continue;
+        const uid_text = fields.next() orelse continue;
+        if (name.len == 0) continue;
+        const uid = std.fmt.parseInt(u32, uid_text, 10) catch continue;
+        try out.put(arena, uid, name);
+    }
+}
+
+/// Dono da entrada. `Io.File.Stat` nao expoe uid -- mesma lacuna do `dev` --,
+/// entao vai de `statx` cru, so com a mascara do uid.
+fn ownerUid(dir_fd: std.posix.fd_t, sub_path: [:0]const u8) ?u32 {
+    if (@import("builtin").os.tag != .linux) return null;
+    const linux = std.os.linux;
+    var stx: linux.Statx = undefined;
+    const rc = linux.statx(dir_fd, sub_path.ptr, linux.AT.SYMLINK_NOFOLLOW, .{ .UID = true }, &stx);
+    if (linux.errno(rc) != .SUCCESS) return null;
+    return stx.uid;
+}
+
 /// Chamado uma vez por entrada, na ordem final. Permite alimentar o fzf em
 /// streaming em vez de montar a arvore inteira antes.
 pub const Sink = struct {
@@ -86,6 +156,7 @@ pub fn enumerate(
     defer dir.close(io);
 
     var index: u32 = 0;
+    var users: Users = .init(arena);
 
     if (!options.recursive) {
         if (std.fs.path.dirname(base) != null) {
@@ -101,7 +172,7 @@ pub fn enumerate(
             });
             index += 1;
         }
-        const entries = try readDir(arena, io, dir, "", options);
+        const entries = try readDir(arena, io, dir, "", options, &users);
         sortEntries(entries.items);
         for (entries.items) |e| {
             try sink.emit(index, e);
@@ -111,7 +182,7 @@ pub fn enumerate(
     }
 
     const base_dev = deviceOf(dir.handle, ".") orelse 0;
-    try walk(arena, io, dir, "", base_dev, 0, options.max_depth, options, &index, sink);
+    try walk(arena, io, dir, "", base_dev, 0, options.max_depth, options, &users, &index, sink);
 }
 
 fn walk(
@@ -123,10 +194,11 @@ fn walk(
     depth: u16,
     max_depth: u16,
     options: Options,
+    users: *Users,
     index: *u32,
     sink: Sink,
 ) Error!void {
-    const entries = try readDir(arena, io, dir, prefix, options);
+    const entries = try readDir(arena, io, dir, prefix, options, users);
     sortEntries(entries.items);
 
     for (entries.items) |e| {
@@ -147,11 +219,18 @@ fn walk(
 
         var sub = dir.openDir(io, name, .{ .iterate = true, .follow_symlinks = false }) catch continue;
         defer sub.close(io);
-        try walk(arena, io, sub, e.path, base_dev, depth + 1, max_depth, options, index, sink);
+        try walk(arena, io, sub, e.path, base_dev, depth + 1, max_depth, options, users, index, sink);
     }
 }
 
-fn readDir(arena: Allocator, io: Io, dir: Io.Dir, prefix: []const u8, options: Options) Allocator.Error!std.ArrayList(Entry) {
+fn readDir(
+    arena: Allocator,
+    io: Io,
+    dir: Io.Dir,
+    prefix: []const u8,
+    options: Options,
+    users: *Users,
+) Allocator.Error!std.ArrayList(Entry) {
     var out: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
     while (it.next(io) catch null) |raw_entry| {
@@ -166,6 +245,15 @@ fn readDir(arena: Allocator, io: Io, dir: Io.Dir, prefix: []const u8, options: O
 
         const st = dir.statFile(io, raw_entry.name, .{ .follow_symlinks = false }) catch null;
         const fs_kind: Io.File.Kind = if (st) |s| s.kind else raw_entry.kind;
+
+        var name_buf: [std.Io.Dir.max_name_bytes + 1]u8 = undefined;
+        const owner = owner: {
+            if (raw_entry.name.len >= name_buf.len) break :owner "";
+            @memcpy(name_buf[0..raw_entry.name.len], raw_entry.name);
+            name_buf[raw_entry.name.len] = 0;
+            const uid = ownerUid(dir.handle, name_buf[0..raw_entry.name.len :0]) orelse break :owner "";
+            break :owner users.nameFor(io, uid);
+        };
 
         try out.append(arena, .{
             .path = path,
@@ -185,6 +273,7 @@ fn readDir(arena: Allocator, io: Io, dir: Io.Dir, prefix: []const u8, options: O
             .mtime_s = if (st) |s| s.mtime.toSeconds() else 0,
             .mode = if (st) |s| @truncate(@intFromEnum(s.permissions)) else 0,
             .utf8_ok = std.unicode.utf8ValidateSlice(raw_entry.name),
+            .owner = owner,
         });
     }
     return out;
@@ -274,7 +363,11 @@ pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
 /// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
 /// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
 /// Alinham byte a byte com `writeTableDetails`.
-pub const table_titles = "T │ PERMS     │ SIZE      │ MODIFIED         │ NAME";
+pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME";
+
+/// Cabe `root`, `nobody`, `www-data`. Nome mais longo e truncado: alargar a
+/// coluna sai do espaco do nome, que e o que se edita.
+const table_owner = 8;
 
 /// Metadados para a grade do buffer editavel. Cada campo recebe um divisor
 /// vertical '│'.
@@ -282,6 +375,8 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try w.writeByte(kindChar(e));
     try w.writeAll(" │ ");
     try writeMode(w, e.mode);
+    try w.writeAll(" │ ");
+    try writePadded(w, e.owner, table_owner);
     try w.writeAll(" │ ");
     try writeSize(w, e);
     try w.writeAll(" │ ");
@@ -519,4 +614,30 @@ test "titulos da barra de topo alinham com a grade do buffer" {
         displayColumns(table_titles[0..title_bar]),
         displayColumns(row_text[0..row_bar]),
     );
+}
+
+test "passwd resolve uid e cai no numero quando nao acha" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    const passwd =
+        \\root:x:0:0:root:/root:/bin/bash
+        \\spock:x:1000:1000:Spock:/home/spock:/bin/zsh
+        \\linha invalida sem campos
+        \\daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
+        \\
+    ;
+    try parsePasswd(arena, passwd, &map);
+    try testing.expectEqualStrings("root", map.get(0).?);
+    try testing.expectEqualStrings("spock", map.get(1000).?);
+    try testing.expectEqualStrings("daemon", map.get(1).?);
+    try testing.expectEqual(@as(?[]const u8, null), map.get(4242));
+
+    var users: Users = .{ .arena = arena, .by_uid = map, .loaded = true, .self_uid = 1000 };
+    // O seu proprio uid nao gera texto: a coluna fica vazia.
+    try testing.expectEqualStrings("", users.nameFor(undefined, 1000));
+    try testing.expectEqualStrings("root", users.nameFor(undefined, 0));
+    try testing.expectEqualStrings("4242", users.nameFor(undefined, 4242));
 }
