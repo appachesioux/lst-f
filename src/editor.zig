@@ -28,16 +28,22 @@ const gui_always = [_][]const u8{ "gvim", "nvim-qt", "mvim", "gedit", "kate", "k
 const gui_with_wait = [_][]const u8{ "code", "code-insiders", "codium", "vscodium", "subl", "sublime_text" };
 const wait_flags = [_][]const u8{ "--wait", "-w" };
 
-/// Ordem: opcao explicita, `$VISUAL`, `$EDITOR`.
+/// Ordem de resolucao:
+/// 1. Opcao explicita (--editor <cmd>);
+/// 2. Busca no PATH por `vim`, depois `nvim`. Variaveis como $VISUAL e $EDITOR
+///    sao ignoradas para garantir a chamada a vim/nvim.
 pub fn resolve(
     arena: Allocator,
+    io: Io,
     environ: *const std.process.Environ.Map,
     explicit: ?[]const u8,
 ) ResolveError!Editor {
-    const spec = explicit orelse
-        environ.get("VISUAL") orelse
-        environ.get("EDITOR") orelse
+    const spec = blk: {
+        if (explicit) |e| break :blk e;
+        if (which(arena, io, environ, "vim") != null) break :blk "vim";
+        if (which(arena, io, environ, "nvim") != null) break :blk "nvim";
         return error.NoEditor;
+    };
 
     const trimmed = std.mem.trim(u8, spec, " \t");
     if (trimmed.len == 0) return error.NoEditor;
@@ -130,45 +136,112 @@ fn mapWith(gpa: Allocator, pairs: []const [2][]const u8) !std.process.Environ.Ma
     return map;
 }
 
-test "VISUAL tem precedencia sobre EDITOR" {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    var map = try mapWith(testing.allocator, &.{ .{ "VISUAL", "nvim" }, .{ "EDITOR", "vim" } });
-    defer map.deinit();
-    const e = try resolve(arena_state.allocator(), &map, null);
-    try testing.expectEqualStrings("nvim", e.name());
-}
+test "opcao explicita vence e argumentos sao preservados" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
 
-test "opcao explicita vence o ambiente e argumentos sao preservados" {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    var map = try mapWith(testing.allocator, &.{.{ "EDITOR", "vim" }});
-    defer map.deinit();
-    const e = try resolve(arena_state.allocator(), &map, "code --wait");
-    try testing.expectEqualStrings("code", e.name());
-    try testing.expectEqual(@as(usize, 2), e.argv.len);
-}
-
-test "editor sem editor configurado" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
     var map = try mapWith(testing.allocator, &.{});
     defer map.deinit();
-    try testing.expectError(error.NoEditor, resolve(arena_state.allocator(), &map, null));
-    try testing.expectError(error.NoEditor, resolve(arena_state.allocator(), &map, "   "));
+    const e = try resolve(arena_state.allocator(), io, &map, "code --wait");
+    try testing.expectEqualStrings("code", e.name());
+    try testing.expectEqual(@as(usize, 2), e.argv.len);
+}
+
+test "busca automatica: vim tem precedencia sobre nvim" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "vim", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = "nvim", .data = "" });
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    // Mesmo com VISUAL ou EDITOR setados para outro editor, eles sao ignorados
+    var map = try mapWith(testing.allocator, &.{
+        .{ "PATH", tmp_path },
+        .{ "VISUAL", "outro" },
+        .{ "EDITOR", "outro" },
+    });
+    defer map.deinit();
+
+    const e = try resolve(a, io, &map, null);
+    try testing.expectEqualStrings("vim", e.name());
+}
+
+test "busca automatica: nvim quando vim nao esta presente" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "nvim", .data = "" });
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var map = try mapWith(testing.allocator, &.{
+        .{ "PATH", tmp_path },
+    });
+    defer map.deinit();
+
+    const e = try resolve(a, io, &map, null);
+    try testing.expectEqualStrings("nvim", e.name());
+}
+
+test "editor sem vim nem nvim no PATH" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var map = try mapWith(testing.allocator, &.{
+        .{ "PATH", tmp_path },
+    });
+    defer map.deinit();
+
+    try testing.expectError(error.NoEditor, resolve(a, io, &map, null));
+    try testing.expectError(error.NoEditor, resolve(a, io, &map, "   "));
 }
 
 test "editores que nao seguram o terminal sao recusados" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
     var map = try mapWith(testing.allocator, &.{});
     defer map.deinit();
     const a = arena_state.allocator();
-    try testing.expectError(error.NotForeground, resolve(a, &map, "gvim"));
-    try testing.expectError(error.NotForeground, resolve(a, &map, "/usr/bin/nvim-qt"));
-    try testing.expectError(error.NotForeground, resolve(a, &map, "code"));
-    try testing.expectError(error.NotForeground, resolve(a, &map, "subl"));
-    _ = try resolve(a, &map, "subl -w");
-    _ = try resolve(a, &map, "vim");
-    _ = try resolve(a, &map, "vi");
+    try testing.expectError(error.NotForeground, resolve(a, io, &map, "gvim"));
+    try testing.expectError(error.NotForeground, resolve(a, io, &map, "/usr/bin/nvim-qt"));
+    try testing.expectError(error.NotForeground, resolve(a, io, &map, "code"));
+    try testing.expectError(error.NotForeground, resolve(a, io, &map, "subl"));
+    _ = try resolve(a, io, &map, "subl -w");
+    _ = try resolve(a, io, &map, "vim");
+    _ = try resolve(a, io, &map, "vi");
 }

@@ -4,7 +4,7 @@
 
 `lst-f` é uma CLI para explorar e alterar o filesystem no terminal. Ela combina:
 
-- Vim ou Neovim, invocado pelo `$VISUAL`, `$EDITOR` ou por opção explícita, **como tela**: o diretório é um buffer editável, e é editando esse buffer que se renomeia, move, remove e navega;
+- Vim ou Neovim (busca automática no PATH com precedência para `vim`, ou por `--editor`), **como tela**: o diretório é um buffer editável, e é editando esse buffer que se renomeia, move, remove e navega;
 - `fzf` como buscador fuzzy na árvore, chamado pela diretiva `:find` — não como interface de navegação;
 - um núcleo próprio que transforma a edição em um plano seguro de operações no filesystem.
 

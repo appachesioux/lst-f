@@ -52,7 +52,7 @@ mostra a ajuda, `Esc` cancela.
 
 ## Requisitos
 
-- Vim ou Neovim, apontado por `$VISUAL` ou `$EDITOR` — é a tela, não é opcional
+- Vim ou Neovim no PATH (prioridade para `vim`) ou `--editor <cmd>` — é a tela, não é opcional
 - `fzf` 0.17 ou mais novo, só para o `:find`
 - Zig 0.16.x para compilar
 

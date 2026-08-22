@@ -97,7 +97,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\:sort ou recolar linhas e inofensivo.
         \\
         \\  --find [termo]     abre direto no buscador fuzzy da arvore
-        \\  --editor <cmd>     editor a usar (padrao: $VISUAL, $EDITOR)
+        \\  --editor <cmd>     editor a usar (padrao: vim, nvim)
         \\  --max-depth <n>    profundidade maxima da busca recursiva
         \\  --icons            emite icones na busca
         \\  --no-color         desliga as cores
@@ -241,7 +241,7 @@ fn runSession(
     };
 
     // O editor e requisito, nao conveniencia: sem ele nao ha tela.
-    _ = editor_mod.resolve(arena, environ, opts.editor) catch |err| {
+    _ = editor_mod.resolve(arena, io, environ, opts.editor) catch |err| {
         try explainEditor(out, err);
         return 1;
     };
@@ -295,7 +295,7 @@ fn loop(s: *Session) !void {
         if (!s.keep_buffer) try writeBuffer(s);
         s.keep_buffer = false;
 
-        const editor = editor_mod.resolve(s.arena, s.environ, s.editor_spec) catch |err| {
+        const editor = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
             try explainEditor(s.out, err);
             return;
         };
@@ -890,8 +890,8 @@ fn report(s: *Session, message: []const u8) !void {
 fn explainEditor(w: *Io.Writer, err: editor_mod.ResolveError) !void {
     switch (err) {
         error.NoEditor => try w.writeAll(
-            "lst-f: nenhum editor configurado, e o editor e a tela do lst-f. Defina\n" ++
-                "       $VISUAL ou $EDITOR (por exemplo export EDITOR=vim) ou use --editor.\n",
+            "lst-f: nem vim nem nvim foram encontrados no PATH, e o editor e a tela\n" ++
+                "       do lst-f. Instale o vim ou o nvim, ou use --editor <cmd>.\n",
         ),
         error.NotForeground => try w.writeAll(
             "lst-f: o editor configurado nao segura o terminal e devolveria o controle\n" ++
