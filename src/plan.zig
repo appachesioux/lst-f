@@ -14,6 +14,9 @@ pub const Original = struct {
     id: u32,
     path: []const u8,
     kind: Kind,
+    /// Colunas somente de apresentacao, antes do separador e do caminho
+    /// editavel. O plano nunca depende delas.
+    display: []const u8 = "",
 };
 
 /// Uma linha lida de volta do buffer editado.
@@ -431,6 +434,9 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
 pub const Directive = union(enum) {
     cd: []const u8,
     find: []const u8,
+    /// Inserida pelo helper antes de `:w`, para que salvar sem alteracao
+    /// mantenha a sessao aberta e apenas atualize a listagem.
+    refresh,
     undo,
     quit,
 };
@@ -446,14 +452,60 @@ pub const ParseResult = union(enum) {
     invalid: []const Problem,
 };
 
-/// Le o buffer que voltou do editor. Cada linha util e `<digitos><espacos><caminho>`.
-/// Linhas em branco e linhas iniciadas por `#` sao ignoradas: nenhuma linha de
-/// entrada comeca por `#`, entao nao ha ambiguidade com nome de arquivo.
+fn isHeaderLine(line: []const u8) bool {
+    if (line.len == 0) return true;
+    if (line[0] == '#') return true;
+    if (std.mem.indexOf(u8, line, " · ") != null) return true;
+    if (std.mem.indexOf(u8, line, " v") != null) return true;
+    if (std.mem.startsWith(u8, line, "lst-f")) return true;
+    if (std.mem.startsWith(u8, line, "aviso:")) return true;
+    if (std.mem.startsWith(u8, line, "fora da edicao")) return true;
+    if (std.mem.startsWith(u8, line, "resultado de :find")) return true;
+    if (std.mem.startsWith(u8, line, "T │") or std.mem.startsWith(u8, line, "T│") or std.mem.startsWith(u8, line, "ID  ")) return true;
+    if (std.mem.startsWith(u8, line, "──┼") or std.mem.startsWith(u8, line, "--+") or std.mem.startsWith(u8, line, "──┬") or std.mem.startsWith(u8, line, "───")) return true;
+    if (std.mem.startsWith(u8, line, "╭") or std.mem.startsWith(u8, line, "┌")) return true;
+    if (std.mem.startsWith(u8, line, "│ T") or std.mem.startsWith(u8, line, "│  T")) return true;
+    if (std.mem.startsWith(u8, line, "╰") or std.mem.startsWith(u8, line, "└")) return true;
+    return false;
+}
+
+fn extractPath(body: []const u8) []const u8 {
+    // Formato com grade de colunas: `d │ ... │  caminho`
+    if (body.len >= 54 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[50..54], " │")) {
+        const rest = body[54..];
+        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+        return rest;
+    }
+    // Formato com grade de colunas antiga (com borda externa `│ d │ ...`):
+    if (std.mem.startsWith(u8, body, "│ ") and body.len >= 58 and std.mem.eql(u8, body[54..58], " │")) {
+        const rest = body[58..];
+        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+        return rest;
+    }
+    // Formato com divisor `  │  ` ou ` │ `
+    if (std.mem.lastIndexOf(u8, body, " │ ")) |sep| {
+        const rest = body[sep + " │ ".len ..];
+        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+        return rest;
+    }
+    if (std.mem.indexOf(u8, body, "  │  ")) |sep| {
+        return body[sep + "  │  ".len ..];
+    }
+    return body;
+}
+
+/// Le o buffer que voltou do editor. O cabecalho ocupa o inicio do buffer
+/// e o conteudo util com as entradas fica logo abaixo. Cada linha util e
+/// `<digitos><espacos><caminho>`.
+/// Linhas em branco e linhas iniciadas por `#` sao ignoradas.
 /// O caminho vai ate o fim da linha, sem trim: espaco no fim de nome e legitimo.
 pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResult {
     var edits: std.ArrayList(Edit) = .empty;
     var problems: std.ArrayList(Problem) = .empty;
     var directive: ?Directive = null;
+    var in_header: bool = true;
 
     var line_no: u32 = 0;
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -482,6 +534,8 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
                 directive = .{ .cd = argument };
             } else if (std.mem.eql(u8, name, "find")) {
                 directive = .{ .find = argument };
+            } else if (std.mem.eql(u8, name, "refresh")) {
+                directive = .refresh;
             } else if (std.mem.eql(u8, name, "undo")) {
                 directive = .undo;
             } else if (std.mem.eql(u8, name, "quit") or std.mem.eql(u8, name, "q")) {
@@ -496,22 +550,39 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
 
         var i: usize = 0;
         while (i < line.len and std.ascii.isDigit(line[i])) i += 1;
-        if (i == 0) {
+        if (i == 0 or (i < line.len and line[i] != ' ' and line[i] != '\t')) {
+            if (in_header and isHeaderLine(line)) {
+                continue;
+            }
             try problems.append(arena, .{ .line_without_id = line_no });
             continue;
         }
+
         const id = std.fmt.parseInt(u32, line[0..i], 10) catch {
+            if (in_header and isHeaderLine(line)) {
+                continue;
+            }
             try problems.append(arena, .{ .line_without_id = line_no });
             continue;
         };
+
         var j = i;
         while (j < line.len and (line[j] == ' ' or line[j] == '\t')) j += 1;
         if (j == i and j < line.len) {
             // digitos colados no caminho: nao e uma linha nossa
+            if (in_header and isHeaderLine(line)) {
+                continue;
+            }
             try problems.append(arena, .{ .line_without_id = line_no });
             continue;
         }
-        try edits.append(arena, .{ .id = id, .path = line[j..], .line = line_no });
+
+        // Uma linha valida de entrada foi encontrada: encerra o cabecalho.
+        in_header = false;
+
+        const body = line[j..];
+        const path = extractPath(body);
+        try edits.append(arena, .{ .id = id, .path = path, .line = line_no });
     }
 
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
@@ -520,7 +591,7 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
 
 /// Cabecalho do buffer. E a barra de localizacao desta interface: o buffer do
 /// editor **e** a tela, entao o que um gerenciador de arquivos poria numa barra
-/// de titulo mora aqui, em linhas de comentario.
+/// de titulo mora aqui no topo do arquivo.
 pub const BufferHeader = struct {
     app: []const u8,
     version: []const u8,
@@ -534,24 +605,34 @@ pub const BufferHeader = struct {
 };
 
 /// Escreve o buffer que vai para o editor.
-/// A ajuda e diretivas ficam no helper popup (F1), mantendo o buffer limpo
-/// com o primeiro arquivo diretamente na linha 1.
+/// O cabecalho nao usa caracteres de comentario nem cantos fechados, conectando
+/// os titulos a barra vertical atraves do separador '+'.
 pub fn writeBuffer(
     w: *std.Io.Writer,
     header: BufferHeader,
     originals: []const Original,
 ) std.Io.Writer.Error!void {
-    if (header.scope) |scope| try w.print("# {s}\n", .{scope});
-    for (header.notes) |note| try w.print("# aviso: {s}\n", .{note});
+    try w.print("{s} v{s}  {s}\n", .{ header.app, header.version, header.location });
+    if (header.scope) |scope| try w.print("{s}\n", .{scope});
+    for (header.notes) |note| try w.print("aviso: {s}\n", .{note});
     for (header.unlistable) |name| {
-        try w.writeAll("# fora da edicao, nome nao e UTF-8 valido: ");
+        try w.writeAll("fora da edicao, nome nao e UTF-8 valido: ");
         for (name) |c| {
             if (c >= 0x20 and c < 0x7f) try w.writeByte(c) else try w.print("\\x{x:0>2}", .{c});
         }
         try w.writeByte('\n');
     }
+    // O ID permanece no texto, mas o helper Vim o oculta. As colunas tecnicas
+    // ficam a esquerda, com largura fixa; o nome editavel ocupa o fim livre.
+    try w.writeAll("──┬───────────┬───────────┬──────────────────┬──────────────────────────\n");
+    try w.writeAll("T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)\n");
+    try w.writeAll("──┼───────────┼───────────┼──────────────────┼──────────────────────────\n");
     for (originals) |o| {
-        try w.print("{d:0>4}  {s}\n", .{ o.id, o.path });
+        if (o.display.len > 0) {
+            try w.print("{d:0>4}  {s}  {s}\n", .{ o.id, o.display, o.path });
+        } else {
+            try w.print("{d:0>4}  {s}\n", .{ o.id, o.path });
+        }
     }
 }
 
@@ -859,6 +940,7 @@ test "diretivas de navegacao" {
     try testing.expectEqualStrings("", find_all.directive.?.find);
 
     try testing.expect((try parseBuffer(f.a(), ":undo\n")).ok.directive.? == .undo);
+    try testing.expect((try parseBuffer(f.a(), ":refresh\n")).ok.directive.? == .refresh);
     try testing.expect((try parseBuffer(f.a(), ":quit\n")).ok.directive.? == .quit);
     try testing.expect((try parseBuffer(f.a(), ":q\n")).ok.directive.? == .quit);
 }
@@ -908,4 +990,57 @@ test "round-trip do buffer" {
     try testing.expect(res.ok.directive == null);
     const plan_res = try build(f.a(), &originals, res.ok.edits, .{});
     try testing.expect(plan_res.ok.isEmpty());
+}
+
+test "round-trip do buffer com colunas preserva somente o nome editavel" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{.{
+        .id = 7,
+        .path = "antes.txt",
+        .kind = .file,
+        .display = "- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │",
+    }};
+    var buf: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&buf);
+    try writeBuffer(&w, .{ .app = "lst-f", .version = "0", .location = "~" }, &originals);
+    const doc = (try parseBuffer(f.a(), w.buffered())).ok;
+    try testing.expectEqualStrings("antes.txt", doc.edits[0].path);
+
+    const renamed = (try parseBuffer(f.a(), "0007  - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  depois.txt\n")).ok;
+    try testing.expectEqualStrings("depois.txt", renamed.edits[0].path);
+}
+
+test "buffer sem linhas iniciadas por '#' mantem cabecalho separado do conteudo" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const text =
+        \\lst-f v26.8.21  ~/Devel/lst-f  ·  Neovim
+        \\aviso: area orfa .lst-f-100 (1 item)
+        \\──┬───────────┬───────────┬──────────────────┬──────────────────────────
+        \\T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+        \\──┼───────────┼───────────┼──────────────────┼──────────────────────────
+        \\0001  d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src
+        \\0002  - │ rw-r--r-- │      1.1K │ 2026-08-22 13:20 │  build.zig
+        \\
+    ;
+    const res = try parseBuffer(f.a(), text);
+    const doc = res.ok;
+    try testing.expectEqual(@as(usize, 2), doc.edits.len);
+    try testing.expectEqualStrings("src", doc.edits[0].path);
+    try testing.expectEqualStrings("build.zig", doc.edits[1].path);
+}
+
+test "cabecalho sem entradas nao acusa erro de linha sem ID" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const text =
+        \\lst-f v26.8.21  ~/Devel/lst-f/vazio  ·  Vim
+        \\──┬───────────┬───────────┬──────────────────┬──────────────────────────
+        \\T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+        \\──┼───────────┼───────────┼──────────────────┼──────────────────────────
+        \\
+    ;
+    const res = try parseBuffer(f.a(), text);
+    try testing.expectEqual(@as(usize, 0), res.ok.edits.len);
 }
