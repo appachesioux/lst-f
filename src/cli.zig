@@ -234,6 +234,9 @@ const Session = struct {
     notice: ?[]const u8 = null,
     /// O buffer no disco ja serve; nao regerar (o usuario tem correcoes a fazer).
     keep_buffer: bool = false,
+    /// Cabecalho do buffer que esta aberto agora. O parser precisa do texto
+    /// exato para nao confundir cabecalho com nome de arquivo.
+    header_lines: []const []const u8 = &.{},
 
     area: ?fsops.Area = null,
     area_base: []const u8 = "",
@@ -341,7 +344,7 @@ fn loop(s: *Session) !void {
             s.arena,
             .limited(64 * 1024 * 1024),
         );
-        const parsed = try plan.parseBuffer(s.arena, text);
+        const parsed = try plan.parseBuffer(s.arena, text, s.header_lines);
         switch (parsed) {
             .invalid => |problems| {
                 try reportProblems(s, problems);
@@ -352,7 +355,7 @@ fn loop(s: *Session) !void {
         }
         const document = parsed.ok;
 
-        const built = try plan.build(s.arena, s.entries, document.edits, .{
+        const built = try plan.build(s.arena, s.entries, document.edits, document.creates, .{
             .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
         });
         switch (built) {
@@ -362,6 +365,13 @@ fn loop(s: *Session) !void {
                 continue;
             },
             .ok => {},
+        }
+
+        const collisions = try checkCreatesOnDisk(s, built.ok);
+        if (collisions.len > 0) {
+            try reportProblems(s, collisions);
+            s.keep_buffer = true;
+            continue;
         }
 
         const changed = !built.ok.isEmpty();
@@ -470,11 +480,14 @@ fn writeBuffer(s: *Session) !void {
         if (s.options.show_hidden) "  [all]" else "",
     });
     try s.environ.put(session.env_location, location);
-    try plan.writeBuffer(&writer.interface, .{
+    const header: plan.BufferHeader = .{
         .scope = s.scope,
         .unlistable = s.unlistable,
         .notes = notes.items,
-    }, s.entries);
+    };
+    s.header_lines = try plan.headerLines(s.arena, header);
+    try s.state.writeHeader(s.io, s.arena, s.header_lines);
+    try plan.writeBuffer(s.arena, &writer.interface, header, s.entries);
     try writer.interface.flush();
     // O aviso ja esta no arquivo que sera aberto agora; a proxima navegacao
     // parte de uma tela limpa.
@@ -746,6 +759,34 @@ fn openBase(s: *Session) !Io.Dir {
     return Io.Dir.cwd().openDir(s.io, s.base, .{ .iterate = true });
 }
 
+/// Criacao que colide com o que ja esta no disco sem estar na listagem
+/// (dotfile com `show_hidden` desligado, entrada de outro filtro). Pegar aqui
+/// evita que a falha aconteca no meio da aplicacao e arraste tudo no rollback.
+fn checkCreatesOnDisk(s: *Session, p: plan.Plan) ![]const plan.Problem {
+    if (p.creates.len == 0) return &.{};
+
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
+
+    var out: std.ArrayList(plan.Problem) = .empty;
+    for (p.creates) |c| {
+        const st = base_dir.statFile(s.io, c.path, .{ .follow_symlinks = false }) catch continue;
+        // Pai que ja existe como diretorio e exatamente o que se espera.
+        if (c.implicit and st.kind == .directory) continue;
+        // Nome que uma renomeacao libera antes: as criacoes vem depois dela.
+        if (vacatedByMove(p, c.path)) continue;
+        try out.append(s.arena, .{ .create_exists = .{ .line = c.line, .path = c.path } });
+    }
+    return out.toOwnedSlice(s.arena);
+}
+
+fn vacatedByMove(p: plan.Plan, path: []const u8) bool {
+    for (p.moves) |m| {
+        if (std.mem.eql(u8, m.from, path)) return true;
+    }
+    return false;
+}
+
 /// `false` quando o usuario recusou tudo ou a aplicacao falhou.
 fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
     var base_dir = try openBase(s);
@@ -757,11 +798,18 @@ fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
     var effective = p;
     effective.mkdirs = missing;
 
-    if (p.moves.len > 0 or missing.len > 0) {
-        if (!try confirm(s, "Aplicar renomeacoes e movimentos?")) {
+    if (p.moves.len > 0 or p.creates.len > 0 or missing.len > 0) {
+        const question = if (p.moves.len == 0)
+            "Aplicar as criacoes?"
+        else if (p.creates.len == 0)
+            "Aplicar renomeacoes e movimentos?"
+        else
+            "Aplicar criacoes, renomeacoes e movimentos?";
+        if (!try confirm(s, question)) {
             effective.moves = &.{};
             effective.renames = &.{};
             effective.mkdirs = &.{};
+            effective.creates = &.{};
         }
     }
 
@@ -808,8 +856,9 @@ fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
     }
     s.notice = try std.fmt.allocPrint(
         s.arena,
-        "aplicado: {d} renomeacao(oes), {d} diretorio(s) criado(s), {d} remocao(oes){s}",
+        "aplicado: {d} criacao(oes), {d} renomeacao(oes), {d} diretorio(s)-pai, {d} remocao(oes){s}",
         .{
+            outcome.applied.created.len,
             outcome.applied.renames.len,
             outcome.applied.created_dirs.len,
             outcome.applied.removed.len,
@@ -834,8 +883,24 @@ fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
     const w = s.out;
     try w.writeAll("\n");
 
+    var asked: usize = 0;
+    for (p.creates) |c| {
+        if (!c.implicit) asked += 1;
+    }
+    if (asked > 0) {
+        try w.print("Criar ({d}):\n", .{asked});
+        for (p.creates) |c| {
+            try w.print("  {s}{s}{s}\n", .{
+                c.path,
+                if (c.kind == .dir) "/" else "",
+                if (c.implicit) "  (diretorio-pai)" else "",
+            });
+        }
+        try w.writeAll("\n");
+    }
+
     if (missing.len > 0) {
-        try w.print("Criar diretorio ({d}):\n", .{missing.len});
+        try w.print("Criar diretorio-pai ({d}):\n", .{missing.len});
         for (missing) |d| try w.print("  {s}/\n", .{d});
         try w.writeAll("\n");
     }
@@ -883,6 +948,9 @@ fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
             try w.writeAll("O rollback nao conseguiu desfazer tudo. Estado a recuperar a mao:\n");
             for (outcome.rollback_errors) |e| try w.print("  {s}\n", .{e});
             try w.writeAll("Entradas que continuam aplicadas:\n");
+            for (outcome.applied.created) |c| {
+                try w.print("  {s}{s} criado\n", .{ c.path, if (c.kind == .dir) "/" else "" });
+            }
             for (outcome.applied.renames) |r| try w.print("  {s} -> {s}\n", .{ r.from, r.to });
             for (outcome.applied.removed) |rm| {
                 try w.print("  {s} esta em {s}/{s}\n", .{ rm.path, outcome.applied.area orelse "?", rm.stored });
@@ -892,8 +960,13 @@ fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
     }
 
     try w.print(
-        "\nAplicado: {d} renomeacao(oes), {d} diretorio(s) criado(s), {d} remocao(oes).\n",
-        .{ outcome.applied.renames.len, outcome.applied.created_dirs.len, outcome.applied.removed.len },
+        "\nAplicado: {d} criacao(oes), {d} renomeacao(oes), {d} diretorio(s)-pai, {d} remocao(oes).\n",
+        .{
+            outcome.applied.created.len,
+            outcome.applied.renames.len,
+            outcome.applied.created_dirs.len,
+            outcome.applied.removed.len,
+        },
     );
     if (outcome.applied.removed.len > 0) {
         try w.writeAll("Escreva :undo no buffer para desfazer enquanto a sessao estiver aberta.\n");

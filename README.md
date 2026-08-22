@@ -30,6 +30,7 @@ que você acabou de entrar por SSH.
 | ----------------------------------- | ----------------------------------------- |
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
 | apaga a linha                        | remove, via área de sessão                 |
+| escreve um nome em linha nova        | cria o arquivo (com `/` no fim, o diretório) |
 | `q` no buffer                        | sai do `lst-f`                            |
 | `ZZ`                                  | sai do `lst-f`                            |
 | `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
@@ -107,6 +108,28 @@ lst-f --find relatorio # começa direto no buscador
 Opções: `-a`, `--all`, `--hidden`, `--editor <cmd>`, `--max-depth <n>`, `--icons`, `--no-color`.
 
 Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
+
+## Criação
+
+Uma linha que não começa por ID é um nome novo: `notas.md` cria o arquivo vazio,
+`docs/` cria o diretório, `docs/2026/notas.md` cria os dois níveis que faltarem
+antes do arquivo. As criações acontecem depois das renomeações, então um nome
+liberado no mesmo `:w` pode ser reocupado — arquivar `log.txt` como `log.1.txt`
+e criar um `log.txt` novo funciona em um passo só.
+
+Nada é sobrescrito: se o caminho já existir, o `lst-f` recusa antes de aplicar e
+devolve o buffer. `:undo` apaga o que foi criado, mas só enquanto o arquivo
+continuar vazio — o que você escreveu depois fica.
+
+## Só o nome é editável
+
+O cabeçalho é a barra de título desta tela e as colunas técnicas são leitura:
+o cursor não entra nelas e, se um `:sort`, um `dd` ou uma colagem passar por
+cima, o `lst-f` recompõe a linha na hora. Vim e Neovim não trancam um intervalo
+de linhas — `modifiable` vale para o buffer inteiro —, então isso é feito pelo
+helper, sem plugin. O plano nunca dependeu dessas colunas: elas são descartadas
+na leitura do buffer, então nem uma edição que escape delas muda o que acontece
+no disco.
 
 ## Remoção
 
