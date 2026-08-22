@@ -7,9 +7,9 @@ e ele executa o que você escreveu.
 ```
 lst-f v26.8.21  ~/Devel/lst-f  ·  Vim
 ──┬───────────┬───────────┬──────────────────┬──────────────────────────
-T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
 ──┼───────────┼───────────┼──────────────────┼──────────────────────────
-d │ rwxr-xr-x │         - │ 2026-08-21 19:58 │  src
+d │ rwxr-xr-x │         - │ 2026-08-21 19:58 │  src/
 - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  README.md
 ```
 
@@ -34,10 +34,16 @@ que você acabou de entrar por SSH.
 | `ZZ`                                  | sai do `lst-f`                            |
 | `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
 | `Enter` sobre diretório               | entra nele                                 |
-| `Enter` sobre arquivo                 | abre-o no Vim/Neovim; `:q` volta à lista   |
+| `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista   |
+| `Enter` sobre arquivo binário/mídia   | abre no app padrão via `xdg-open`          |
 | `-`                                   | volta ao diretório anterior                |
 | `\`                                   | abre uma árvore visual do diretório atual  |
+| `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
+| `Ctrl+S`                              | abre/fecha o painel dividido de destino    |
+| `Tab`                                 | alterna o foco entre painel principal e split |
+| `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
+| `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
 | `:undo`                              | desfaz a última operação da sessão         |
 | `:quit`                              | sai (salvar sem mudanças também sai)       |
@@ -65,9 +71,11 @@ mostra a ajuda, `Esc` cancela.
 
 ## Requisitos
 
-- Vim ou Neovim no PATH (prioridade para `vim`) ou `--editor <cmd>` — é a tela, não é opcional
+- Vim ou Neovim (prioridade para `vim`) ou `--editor <cmd>` — é a tela, não é opcional
 - `fzf` 0.17 ou mais novo, só para o `:find`
 - Zig 0.16.x para compilar
+
+Os binários de runtime (`vim`, `nvim`, `fzf`) podem estar instalados no `$PATH` do sistema ou simplesmente colocados na mesma pasta do binário `lst-f` (modo bundle portátil, sem instalação e sem `sudo`).
 
 Sem plugins, sem Node, Python, `fd`, `rg` ou Nerd Font.
 

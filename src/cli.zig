@@ -252,7 +252,7 @@ fn runSession(
         return 1;
     };
 
-    const features = fzf.detect(arena, io) catch |err| blk: {
+    const features = fzf.detect(arena, io, environ) catch |err| blk: {
         try warnFzf(out, err);
         break :blk fzf.Features{ .version = .{ .major = 0, .minor = 0 }, .raw = "" };
     };
@@ -262,7 +262,7 @@ fn runSession(
     defer state.destroy(io);
 
     try environ.put(session.env_state, state.path);
-    try environ.put(session.env_self, try selfPath(arena, io, environ));
+    try environ.put(session.env_self, try editor_mod.selfPath(arena, io, environ));
     // O contrato com o fzf depende de flags exatas, e `FZF_DEFAULT_OPTS` entra
     // antes delas. Uma configuracao pessoal comum como `--preview-window hidden`
     // ja desliga o preview, e um `--bind ...execute(rm -i {})` receberia o
@@ -377,6 +377,7 @@ fn loop(s: *Session) !void {
             .refresh => try loadListing(s),
             .undo => try undoLast(s),
             .cd => |target| try changeDir(s, target),
+            .open => |target| try openFileInEditor(s, target),
             .find => |query| {
                 if (!try runFind(s, query)) try loadListing(s);
             },
@@ -533,6 +534,25 @@ fn changeDir(s: *Session, target: []const u8) !void {
         return;
     }
     s.base = resolved;
+    try loadListing(s);
+}
+
+fn openFileInEditor(s: *Session, target: []const u8) !void {
+    const editor = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
+        try explainEditor(s.out, err);
+        return;
+    };
+    _ = editor_mod.run(
+        s.arena,
+        s.io,
+        editor,
+        s.environ,
+        target,
+        s.base,
+        null,
+    ) catch |err| {
+        try s.out.print("lst-f: falha ao abrir arquivo no editor: {s}\n", .{@errorName(err)});
+    };
     try loadListing(s);
 }
 
@@ -1010,14 +1030,6 @@ fn warnFzf(w: *Io.Writer, err: anyerror) !void {
         ),
         else => try w.print("lst-f: fzf indisponivel ({s}); :find fica fora do ar.\n", .{@errorName(err)}),
     }
-}
-
-fn selfPath(arena: Allocator, io: Io, environ: *const std.process.Environ.Map) ![]const u8 {
-    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
-    if (Io.Dir.cwd().readLink(io, "/proc/self/exe", &buf)) |n| {
-        return arena.dupe(u8, buf[0..n]);
-    } else |_| {}
-    return editor_mod.which(arena, io, environ, "lst-f") orelse "lst-f";
 }
 
 // ---------------------------------------------------------------------------

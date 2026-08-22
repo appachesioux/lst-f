@@ -434,6 +434,7 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
 pub const Directive = union(enum) {
     cd: []const u8,
     find: []const u8,
+    open: []const u8,
     /// Inserida pelo helper antes de `:w`, para que salvar sem alteracao
     /// mantenha a sessao aberta e apenas atualize a listagem.
     refresh,
@@ -532,6 +533,12 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
                     continue;
                 }
                 directive = .{ .cd = argument };
+            } else if (std.mem.eql(u8, name, "open") or std.mem.eql(u8, name, "edit") or std.mem.eql(u8, name, "e")) {
+                if (argument.len == 0) {
+                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = "open" } });
+                    continue;
+                }
+                directive = .{ .open = argument };
             } else if (std.mem.eql(u8, name, "find")) {
                 directive = .{ .find = argument };
             } else if (std.mem.eql(u8, name, "refresh")) {
@@ -625,13 +632,14 @@ pub fn writeBuffer(
     // O ID permanece no texto, mas o helper Vim o oculta. As colunas tecnicas
     // ficam a esquerda, com largura fixa; o nome editavel ocupa o fim livre.
     try w.writeAll("──┬───────────┬───────────┬──────────────────┬──────────────────────────\n");
-    try w.writeAll("T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)\n");
+    try w.writeAll("T │ PERMS     │ SIZE      │ MODIFIED         │ NAME\n");
     try w.writeAll("──┼───────────┼───────────┼──────────────────┼──────────────────────────\n");
     for (originals) |o| {
+        const slash: []const u8 = if (o.kind == .dir and !std.mem.endsWith(u8, o.path, "/")) "/" else "";
         if (o.display.len > 0) {
-            try w.print("{d:0>4}  {s}  {s}\n", .{ o.id, o.display, o.path });
+            try w.print("{d:0>4}  {s}  {s}{s}\n", .{ o.id, o.display, o.path, slash });
         } else {
-            try w.print("{d:0>4}  {s}\n", .{ o.id, o.path });
+            try w.print("{d:0>4}  {s}{s}\n", .{ o.id, o.path, slash });
         }
     }
 }
@@ -939,6 +947,9 @@ test "diretivas de navegacao" {
     const find_all = (try parseBuffer(f.a(), ":find\n")).ok;
     try testing.expectEqualStrings("", find_all.directive.?.find);
 
+    const open_doc = (try parseBuffer(f.a(), ":open src/main.zig\n")).ok;
+    try testing.expectEqualStrings("src/main.zig", open_doc.directive.?.open);
+
     try testing.expect((try parseBuffer(f.a(), ":undo\n")).ok.directive.? == .undo);
     try testing.expect((try parseBuffer(f.a(), ":refresh\n")).ok.directive.? == .refresh);
     try testing.expect((try parseBuffer(f.a(), ":quit\n")).ok.directive.? == .quit);
@@ -1018,16 +1029,16 @@ test "buffer sem linhas iniciadas por '#' mantem cabecalho separado do conteudo"
         \\lst-f v26.8.21  ~/Devel/lst-f  ·  Neovim
         \\aviso: area orfa .lst-f-100 (1 item)
         \\──┬───────────┬───────────┬──────────────────┬──────────────────────────
-        \\T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+        \\T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
         \\──┼───────────┼───────────┼──────────────────┼──────────────────────────
-        \\0001  d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src
+        \\0001  d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src/
         \\0002  - │ rw-r--r-- │      1.1K │ 2026-08-22 13:20 │  build.zig
         \\
     ;
     const res = try parseBuffer(f.a(), text);
     const doc = res.ok;
     try testing.expectEqual(@as(usize, 2), doc.edits.len);
-    try testing.expectEqualStrings("src", doc.edits[0].path);
+    try testing.expectEqualStrings("src/", doc.edits[0].path);
     try testing.expectEqualStrings("build.zig", doc.edits[1].path);
 }
 
@@ -1037,7 +1048,7 @@ test "cabecalho sem entradas nao acusa erro de linha sem ID" {
     const text =
         \\lst-f v26.8.21  ~/Devel/lst-f/vazio  ·  Vim
         \\──┬───────────┬───────────┬──────────────────┬──────────────────────────
-        \\T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+        \\T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
         \\──┼───────────┼───────────┼──────────────────┼──────────────────────────
         \\
     ;

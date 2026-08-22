@@ -39,7 +39,7 @@ Está fora de escopo:
 - Zig 0.16.x. O ambiente de desenvolvimento possui Zig 0.16.0; Rust não será adotado.
 - Biblioteca padrão de Zig como base. Dependências externas exigem benefício concreto e aprovação prévia.
 - Zig é pré-1.0 e quebra a biblioteca padrão a cada release. Contar com manutenção periódica por atualização de versão; não é motivo para abstrair a std por trás de camadas próprias.
-- Executáveis de runtime: `fzf` e um editor `vim` ou `nvim` configurado pelo usuário.
+- Executáveis de runtime: `fzf` e um editor `vim` ou `nvim` configurado pelo usuário. Podem estar instalados no `$PATH` do sistema ou colocados diretamente ao lado do binário do `lst-f` (modo bundle/portátil autocontido).
 - Formatar: `zig fmt .`.
 - Testar: `zig build test`.
 - Compilar: `zig build`.
@@ -86,11 +86,12 @@ Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da op
 ```
 lst-f v26.8.21  ~/Devel/lst-f  ·  Vim
 ──┬───────────┬───────────┬──────────────────┬──────────────────────────
-T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
 ──┼───────────┼───────────┼──────────────────┼──────────────────────────
+d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src/
+d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  docs/
 - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  relatorio.pdf
-- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  notas antigas.txt
-- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  docs/rascunho.md
+- │ rw-r--r-- │      6.1K │ 2026-08-22 13:33 │  README.md
 ```
 
 - O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
@@ -99,15 +100,16 @@ T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
 - Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva.
 - O cabeçalho ocupa o topo do buffer (barra de localização, títulos de colunas com bordas alinhadas, avisos pontuais) e não usa caracteres de comentário `#` para evitar desalinhamento e cores divergentes de sintaxe no editor. O conteúdo (lista de arquivos) fica logo abaixo do cabeçalho. Somente o nome à direita da grade é editável e o parser ignora os metadados.
 
-**Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em um arquivo executa `:edit` no próprio Vim/Neovim, e `:q` retorna à lista. É um mapeamento buffer-local criado pelo binário, não um plugin nem configuração persistente.
+**Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
 
-`-` volta ao diretório-pai. `\` abre uma árvore visual flutuante, gerada pelo enumerador do `lst-f` com os mesmos limites de profundidade, symlinks e pontos de montagem; é apenas contexto, não uma segunda interface de navegação.
+`-` volta ao diretório-pai. `\` abre uma árvore visual flutuante. `Ctrl+P` dispara a busca fuzzy (`fzf`) na árvore inteira imediatamente. `Ctrl+S` abre/fecha o painel dividido de destino (split vertical na direita); `Tab` alterna o foco entre o painel principal e o painel de destino; no painel de destino, `Enter` navega nas pastas e `Y` (ou `yy`) copia o caminho do destino para a área de transferência do Vim para ser colado (`p`) facilmente durante a renomeação.
 
 Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, devolve o controle para a confirmação no terminal e reabre o buffer. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O buffer reabre no cursor salvo e mostra o resultado no cabeçalho; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
 
 **Diretivas.** As ações restantes escrevem-se como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado:
 
 - `:cd <dir>` entra no diretório (`..` sobe; caminho absoluto é aceito, porque navegar não é renomear);
+- `:open <arquivo>` abre o arquivo no editor de texto com retorno garantido ao `lst-f` ao fechar (`:q`);
 - `:find [termo]` chama o `fzf` sobre a árvore e transforma a marcação no conteúdo do buffer;
 - `:undo` desfaz a última operação aplicada na sessão;
 - `:quit` sai.
@@ -208,9 +210,17 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
 
 ## Próximos passos
 
-O MVP está implementado. O que ficou de fora, e por quê, está logo abaixo.
+O MVP e as funcionalidades principais estão implementados.
 
-Fora do MVP: undo entre sessões, que exigiria persistir a área além da execução. É o único caminho aberto, porque a rota alternativa — lixeira do sistema — está fora de escopo em definitivo, assim como a integração com Git.
+### Melhorias futuras registradas:
+
+1. **Portabilidade para Windows Nativo (`lst-f.exe`)**:
+   - Compilação multiplataforma: adaptar as poucas chamadas de sistema específicas de POSIX (ex: `GetCurrentProcessId()` no Windows vs `getpid()` no Linux).
+   - Suporte a letras de unidade (`C:\`, `D:\`) e separador `\` na validação de caminhos e no `plan.normalize`.
+   - Abertura de arquivos binários via `explorer.exe` / `start` no Windows quando `xdg-open` não estiver presente.
+   - Mapeamento de atributos NTFS (ReadOnly, Archive, Hidden) para a coluna `PERMS`.
+
+Fora de escopo: lixeira do sistema (FreeDesktop/Recycle Bin) e integração com Git (fora de escopo em definitivo).
 
 ## Referências
 
