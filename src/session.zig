@@ -565,7 +565,10 @@ pub const State = struct {
             \\    call cursor(s:lstf_start, 1)
             \\  endif
             \\endif
-            \\nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
+            \\" A ajuda pode manter o foco em um popup ou painel auxiliar. Como esta
+            \\" instancia do Vim e exclusiva do lst-f, F1 e global para nunca deixar
+            \\" o Vim abrir :help em um split e alterar a tela controlada.
+            \\nnoremap <silent> <F1> :call LstfHelp()<CR>
             \\nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
             \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
