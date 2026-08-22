@@ -285,14 +285,14 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
 pub fn writeColumnTitles(w: *Io.Writer, options: Options) Io.Writer.Error!void {
     try writePadded(w, "T", columns.kind);
     try w.writeAll(columns.gap);
-    try writePadded(w, "PERMISSAO", columns.mode);
+    try writePadded(w, "PERMS", columns.mode);
     try w.writeAll(columns.gap);
-    try writeRightPadded(w, "TAMANHO", columns.size);
+    try writeRightPadded(w, "SIZE", columns.size);
     try w.writeAll(columns.gap);
-    try writePadded(w, "MODIFICADO", columns.time);
+    try writePadded(w, "MODIFIED", columns.time);
     try w.writeAll(columns.gap);
     if (options.icons) try w.writeAll("   ");
-    try w.writeAll("NOME");
+    try w.writeAll("NAME");
 }
 
 fn writePadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
@@ -416,7 +416,7 @@ test "cabecalho de colunas alinha com a linha de dados" {
 
         const title_text = title.buffered();
         const row_text = row.buffered();
-        const name_col = displayColumns(title_text[0..std.mem.indexOf(u8, title_text, "NOME").?]);
+        const name_col = displayColumns(title_text[0..std.mem.indexOf(u8, title_text, "NAME").?]);
         const value_col = displayColumns(row_text[0..std.mem.indexOf(u8, row_text, "arquivo.txt").?]);
         try testing.expectEqual(name_col, value_col);
     }

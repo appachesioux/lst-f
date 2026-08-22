@@ -102,14 +102,18 @@ pub const State = struct {
             \\    \ '    :quit          Sai da sessao (:cq aborta sem aplicar nada)',
             \\    \ '',
             \\    \ '  Atalhos no buffer:',
+            \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
             \\    \ '    -              Volta ao diretorio-pai',
-            \\    \ '    \\              Mostra a arvore visual do diretorio',
+            \\    \ '    \              Mostra a arvore visual do diretorio',
+            \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
+            \\    \ '    Tab            Alterna foco entre painel principal e destino',
+            \\    \ '    Y ou yy (dest) Copia caminho do destino para colar (p)',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
             \\    \ '',
             \\    \ '  Em terminal estreito, zl/zh rolam horizontalmente',
-            \\     '',
+            \\    \ '',
             \\    \ '  Pressione q, <Esc> ou <Enter> para fechar este popup',
             \\    \ ''
             \\  \ ]
@@ -159,8 +163,7 @@ pub const State = struct {
             \\    call popup_close(a:winid)
             \\    return 1
             \\  endif
-            \\  call popup_close(a:winid)
-            \\  return 0
+            \\  return popup_filter_menu(a:winid, a:key)
             \\endfunction
             \\
             \\function! s:lstf_tree_filter(winid, key) abort
@@ -189,6 +192,39 @@ pub const State = struct {
             \\  return l:body
             \\endfunction
             \\
+            \\function! s:lstf_is_binary(path) abort
+            \\  let l:ext = tolower(fnamemodify(a:path, ':e'))
+            \\  if empty(l:ext)
+            \\    return 0
+            \\  endif
+            \\  let l:bin_exts = [
+            \\    \ 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'epub',
+            \\    \ 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg', 'tif', 'tiff', 'psd', 'raw', 'heic', 'avif',
+            \\    \ 'mp3', 'mp4', 'avi', 'mkv', 'mov', 'flac', 'wav', 'ogg', 'webm', 'm4a', 'aac', 'wma', 'wmv',
+            \\    \ 'zip', 'tar', 'gz', 'bz2', 'xz', '7z', 'rar', 'zst', 'lz4',
+            \\    \ 'exe', 'dll', 'so', 'dylib', 'o', 'a', 'lib', 'bin', 'dat',
+            \\    \ 'ttf', 'otf', 'woff', 'woff2',
+            \\    \ 'class', 'pyc', 'wasm', 'sqlite', 'db'
+            \\    \ ]
+            \\  return index(l:bin_exts, l:ext) >= 0
+            \\endfunction
+            \\
+            \\function! s:lstf_open_external(path) abort
+            \\  if executable('xdg-open')
+            \\    if has('nvim')
+            \\      call jobstart(['xdg-open', a:path], {'detach': v:true})
+            \\    elseif exists('*job_start')
+            \\      call job_start(['xdg-open', a:path], {'stoponexit': ''})
+            \\    else
+            \\      call system('xdg-open ' . shellescape(a:path) . ' >/dev/null 2>&1 &')
+            \\    endif
+            \\    redraw
+            \\    echo 'Aberto via xdg-open: ' . a:path
+            \\    return 1
+            \\  endif
+            \\  return 0
+            \\endfunction
+            \\
             \\function! LstfOpen() abort
             \\  let l:path = s:lstf_entry_path()
             \\  if empty(l:path)
@@ -196,8 +232,11 @@ pub const State = struct {
             \\  endif
             \\  if isdirectory(l:path)
             \\    call s:lstf_navigate(l:path)
+            \\  elseif s:lstf_is_binary(l:path) && s:lstf_open_external(l:path)
+            \\    return
             \\  else
-            \\    execute 'edit ' . fnameescape(l:path)
+            \\    call append('$', ':open ' . l:path)
+            \\    write
             \\  endif
             \\endfunction
             \\
@@ -212,6 +251,11 @@ pub const State = struct {
             \\
             \\function! LstfQuit() abort
             \\  call append('$', ':quit')
+            \\  write
+            \\endfunction
+            \\
+            \\function! LstfFind() abort
+            \\  call append('$', ':find')
             \\  write
             \\endfunction
             \\
@@ -251,6 +295,170 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
+            \\function! s:lstf_format_size(bytes) abort
+            \\  if a:bytes < 0
+            \\    return '-'
+            \\  elseif a:bytes < 1024
+            \\    return string(a:bytes) . 'B'
+            \\  elseif a:bytes < 1048576
+            \\    return printf('%.1fK', a:bytes / 1024.0)
+            \\  elseif a:bytes < 1073741824
+            \\    return printf('%.1fM', a:bytes / 1048576.0)
+            \\  else
+            \\    return printf('%.1fG', a:bytes / 1073741824.0)
+            \\  endif
+            \\endfunction
+            \\
+            \\let s:lstf_dest_dir = ''
+            \\
+            \\function! s:lstf_render_dest(dir) abort
+            \\  let s:lstf_dest_dir = simplify(fnamemodify(a:dir, ':p'))
+            \\  if s:lstf_dest_dir !~# '/$'
+            \\    let s:lstf_dest_dir .= '/'
+            \\  endif
+            \\  let l:raw_entries = globpath(s:lstf_dest_dir, '*', 0, 1) + globpath(s:lstf_dest_dir, '.*', 0, 1)
+            \\  let l:dirs = []
+            \\  let l:files = []
+            \\  for l:item in l:raw_entries
+            \\    let l:tail = fnamemodify(l:item, ':t')
+            \\    if l:tail ==# '.' || l:tail ==# '..'
+            \\      continue
+            \\    endif
+            \\    if isdirectory(l:item)
+            \\      call add(l:dirs, l:tail . '/')
+            \\    else
+            \\      call add(l:files, l:tail)
+            \\    endif
+            \\  endfor
+            \\  call sort(l:dirs)
+            \\  call sort(l:files)
+            \\  let l:lines = [
+            \\    \ 'DESTINATION: ' . s:lstf_dest_dir,
+            \\    \ '──┬───────────┬───────────┬──────────────────┬──────────────────────────',
+            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy path]',
+            \\    \ '──┼───────────┼───────────┼──────────────────┼──────────────────────────',
+            \\    \ 'd │ rwxr-xr-x │         - │                - │  ../'
+            \\    \ ]
+            \\  for l:d in l:dirs
+            \\    let l:full = s:lstf_dest_dir . l:d
+            \\    let l:mtime = strftime('%Y-%m-%d %H:%M', getftime(l:full))
+            \\    let l:perm = getfperm(l:full)
+            \\    if empty(l:perm) | let l:perm = 'rwxr-xr-x' | endif
+            \\    call add(l:lines, printf('d │ %-9s │ %9s │ %-16s │  %s', l:perm, '-', l:mtime, l:d))
+            \\  endfor
+            \\  for l:f in l:files
+            \\    let l:full = s:lstf_dest_dir . l:f
+            \\    let l:sz = getfsize(l:full)
+            \\    let l:sz_str = s:lstf_format_size(l:sz)
+            \\    let l:mtime = strftime('%Y-%m-%d %H:%M', getftime(l:full))
+            \\    let l:perm = getfperm(l:full)
+            \\    if empty(l:perm) | let l:perm = 'rw-r--r--' | endif
+            \\    call add(l:lines, printf('- │ %-9s │ %9s │ %-16s │  %s', l:perm, l:sz_str, l:mtime, l:f))
+            \\  endfor
+            \\  setlocal modifiable
+            \\  silent %delete _
+            \\  call setline(1, l:lines)
+            \\  setlocal nomodified nomodifiable
+            \\  execute 'call cursor(5, 1)'
+            \\endfunction
+            \\
+            \\function! s:lstf_dest_open() abort
+            \\  let l:line = getline('.')
+            \\  let l:sep = strridx(l:line, ' │  ')
+            \\  if l:sep < 0
+            \\    let l:sep = strridx(l:line, ' │ ')
+            \\    if l:sep < 0 | return | endif
+            \\    let l:name = substitute(strpart(l:line, l:sep + 3), '^\s*', '', '')
+            \\  else
+            \\    let l:name = strpart(l:line, l:sep + 4)
+            \\  endif
+            \\  if l:name ==# '../' || l:name ==# '..'
+            \\    let l:parent = fnamemodify(s:lstf_dest_dir, ':h:h')
+            \\    if empty(l:parent) | let l:parent = '/' | endif
+            \\    call s:lstf_render_dest(l:parent)
+            \\    return
+            \\  endif
+            \\  let l:target = s:lstf_dest_dir . l:name
+            \\  if isdirectory(l:target)
+            \\    call s:lstf_render_dest(l:target)
+            \\  else
+            \\    let @\" = l:target
+            \\    let @+ = l:target
+            \\    let @* = l:target
+            \\    echo 'Destino copiado: ' . l:target
+            \\  endif
+            \\endfunction
+            \\
+            \\function! s:lstf_dest_up() abort
+            \\  let l:parent = fnamemodify(s:lstf_dest_dir, ':h:h')
+            \\  if empty(l:parent) | let l:parent = '/' | endif
+            \\  call s:lstf_render_dest(l:parent)
+            \\endfunction
+            \\
+            \\function! s:lstf_dest_yank() abort
+            \\  let l:line = getline('.')
+            \\  let l:sep = strridx(l:line, ' │  ')
+            \\  if l:sep < 0
+            \\    let l:sep = strridx(l:line, ' │ ')
+            \\  endif
+            \\  if l:sep >= 0
+            \\    let l:name = substitute(strpart(l:line, l:sep + 3), '^\s*', '', '')
+            \\  else
+            \\    let l:name = ''
+            \\  endif
+            \\  if !empty(l:name) && l:name !=# '../' && l:name !=# '..'
+            \\    let l:path = s:lstf_dest_dir . l:name
+            \\  else
+            \\    let l:path = s:lstf_dest_dir
+            \\  endif
+            \\  let @\" = l:path
+            \\  let @+ = l:path
+            \\  let @* = l:path
+            \\  echo 'Caminho copiado: ' . l:path
+            \\endfunction
+            \\
+            \\function! LstfToggleSplit() abort
+            \\  if exists('t:lstf_dest_win') && win_id2win(t:lstf_dest_win) > 0
+            \\    let l:w = win_id2win(t:lstf_dest_win)
+            \\    execute l:w . 'close'
+            \\    unlet! t:lstf_dest_win
+            \\    return
+            \\  endif
+            \\  if winnr('$') > 1
+            \\    wincmd w
+            \\    if &buftype ==# 'nofile'
+            \\      close
+            \\      return
+            \\    else
+            \\      wincmd p
+            \\    endif
+            \\  endif
+            \\  botright vsplit __lstf_dest_panel__
+            \\  let t:lstf_dest_win = win_getid()
+            \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
+            \\  setlocal nonumber norelativenumber cursorline
+            \\  nnoremap <buffer> <silent> <CR> :call <SID>lstf_dest_open()<CR>
+            \\  nnoremap <buffer> <silent> - :call <SID>lstf_dest_up()<CR>
+            \\  nnoremap <buffer> <silent> Y :call <SID>lstf_dest_yank()<CR>
+            \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
+            \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
+            \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+            \\  nnoremap <buffer> <silent> q :close<CR>
+            \\  nnoremap <buffer> <silent> <Esc> :close<CR>
+            \\  nnoremap <buffer> <silent> <Tab> :wincmd w<CR>
+            \\  nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
+            \\  nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
+            \\  call s:lstf_render_dest(getcwd())
+            \\endfunction
+            \\
+            \\function! s:lstf_tab_jump() abort
+            \\  if winnr('$') > 1
+            \\    wincmd w
+            \\  else
+            \\    call LstfToggleSplit()
+            \\  endif
+            \\endfunction
+            \\
             \\setglobal laststatus=0
             \\set laststatus=0
             \\if exists('+fillchars')
@@ -283,6 +491,9 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
             \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
+            \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+            \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
+            \\nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
             \\nnoremap <buffer> <silent> q :call LstfQuit()<CR>
             \\nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'

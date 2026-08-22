@@ -9,6 +9,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const session = @import("session.zig");
+const editor_mod = @import("editor.zig");
 
 /// Piso absoluto, definido por `--preview`/`--preview-window` (ago/2017).
 pub const min_version: Version = .{ .major = 0, .minor = 17 };
@@ -29,10 +30,18 @@ pub const Features = struct {
 
 pub const DetectError = error{ FzfNotFound, FzfTooOld, FzfUnusable };
 
+pub fn resolveExecutable(arena: Allocator, io: Io, environ: ?*const std.process.Environ.Map) []const u8 {
+    if (environ) |env| {
+        return editor_mod.which(arena, io, env, "fzf") orelse "fzf";
+    }
+    return "fzf";
+}
+
 /// Uma deteccao por execucao, via `fzf --version`.
-pub fn detect(gpa: Allocator, io: Io) !Features {
+pub fn detect(gpa: Allocator, io: Io, environ: ?*const std.process.Environ.Map) !Features {
+    const exe = resolveExecutable(gpa, io, environ);
     const result = std.process.run(gpa, io, .{
-        .argv = &.{ "fzf", "--version" },
+        .argv = &.{ exe, "--version" },
         .stdout_limit = .limited(1024),
         .stderr_limit = .limited(1024),
     }) catch |err| switch (err) {
@@ -156,9 +165,10 @@ pub const Runner = struct {
 };
 
 pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
+    const exe = resolveExecutable(arena, io, options.environ);
     var argv: std.ArrayList([]const u8) = .empty;
+    try argv.append(arena, exe);
     try argv.appendSlice(arena, &.{
-        "fzf",
         "--read0",
         "--print0",
         "--multi",

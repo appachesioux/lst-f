@@ -121,13 +121,22 @@ pub fn run(
     };
 }
 
-/// Localiza um executavel no PATH. Nao baixa nem instala nada; so responde se
-/// esta la.
-pub fn which(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, name: []const u8) ?[]const u8 {
-    if (std.mem.indexOfScalar(u8, name, '/') != null) {
-        Io.Dir.cwd().access(io, name, .{}) catch return null;
-        return name;
-    }
+pub fn selfPath(arena: Allocator, io: Io, environ: *const std.process.Environ.Map) ![]const u8 {
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    if (Io.Dir.cwd().readLink(io, "/proc/self/exe", &buf)) |n| {
+        return arena.dupe(u8, buf[0..n]);
+    } else |_| {}
+    return whichPathOnly(arena, io, environ, "lst-f") orelse "lst-f";
+}
+
+pub fn selfDir(arena: Allocator, io: Io, environ: *const std.process.Environ.Map) ?[]const u8 {
+    const p = selfPath(arena, io, environ) catch return null;
+    const dir = std.fs.path.dirname(p) orelse return null;
+    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) return null;
+    return dir;
+}
+
+pub fn whichPathOnly(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, name: []const u8) ?[]const u8 {
     const path = environ.get("PATH") orelse return null;
     var it = std.mem.splitScalar(u8, path, ':');
     while (it.next()) |entry| {
@@ -137,6 +146,25 @@ pub fn which(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, 
         return candidate;
     }
     return null;
+}
+
+/// Localiza um executavel. Ordem de busca:
+/// 1. Caminho com barra (direto no disco);
+/// 2. Ao lado do proprio binario lst-f (modo bundle/portatil);
+/// 3. Variavel de ambiente PATH.
+pub fn which(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, name: []const u8) ?[]const u8 {
+    if (std.mem.indexOfScalar(u8, name, '/') != null) {
+        Io.Dir.cwd().access(io, name, .{}) catch return null;
+        return name;
+    }
+    if (selfDir(arena, io, environ)) |dir| {
+        if (std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, name })) |candidate| {
+            if (Io.Dir.cwd().access(io, candidate, .{})) |_| {
+                return candidate;
+            } else |_| {}
+        } else |_| {}
+    }
+    return whichPathOnly(arena, io, environ, name);
 }
 
 // ---------------------------------------------------------------------------
@@ -259,4 +287,30 @@ test "editores que nao seguram o terminal sao recusados" {
     _ = try resolve(a, io, &map, "subl -w");
     _ = try resolve(a, io, &map, "vim");
     _ = try resolve(a, io, &map, "vi");
+}
+
+test "which localiza binarios no PATH e caminhos diretos" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "fzf", .data = "" });
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    var map = try mapWith(testing.allocator, &.{
+        .{ "PATH", tmp_path },
+    });
+    defer map.deinit();
+
+    const fzf_cand = which(a, io, &map, "fzf");
+    try testing.expect(fzf_cand != null);
+    try testing.expect(std.mem.endsWith(u8, fzf_cand.?, "fzf"));
 }
