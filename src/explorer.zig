@@ -271,8 +271,13 @@ pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
     try w.writeAll("  ");
 }
 
+/// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
+/// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
+/// Alinham byte a byte com `writeTableDetails`.
+pub const table_titles = "T │ PERMS     │ SIZE      │ MODIFIED         │ NAME";
+
 /// Metadados para a grade do buffer editavel. Cada campo recebe um divisor
-/// vertical '│', conectando-se ao separador '┼' do cabecalho.
+/// vertical '│'.
 pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try w.writeByte(kindChar(e));
     try w.writeAll(" │ ");
@@ -486,4 +491,32 @@ test "show_hidden filtra ou exibe arquivos ocultos" {
     var col_hidden_on: Collector = .{ .allocator = a };
     try enumerate(a, io, tmp_path, .{ .show_hidden = true }, .{ .ctx = &col_hidden_on, .func = Collector.emit });
     try testing.expectEqual(@as(usize, 4), col_hidden_on.paths.items.len);
+}
+
+test "titulos da barra de topo alinham com a grade do buffer" {
+    // Os titulos sairam do buffer e vao para a barra de topo do editor, longe
+    // da linha de dados: uma coluna que mude de largura nao seria mais obvia
+    // ao olhar o arquivo.
+    const entry: Entry = .{
+        .path = "arquivo.txt",
+        .kind = .file,
+        .symlink = false,
+        .size = 2048,
+        .mtime_s = 1_700_000_000,
+        .mode = 0o644,
+        .utf8_ok = true,
+    };
+    var row_buf: [256]u8 = undefined;
+    var row: Io.Writer = .fixed(&row_buf);
+    try writeTableDetails(&row, entry);
+
+    // O invariante e a grade: os divisores tem que cair na mesma coluna. O
+    // rotulo NAME fica um passo a esquerda do nome, como sempre esteve.
+    const row_text = row.buffered();
+    const title_bar = std.mem.lastIndexOf(u8, table_titles, "│").?;
+    const row_bar = std.mem.lastIndexOf(u8, row_text, "│").?;
+    try testing.expectEqual(
+        displayColumns(table_titles[0..title_bar]),
+        displayColumns(row_text[0..row_bar]),
+    );
 }

@@ -592,21 +592,13 @@ pub const ParseResult = union(enum) {
 /// O cabecalho e reconhecido por identidade, nunca por semelhanca: o buffer e
 /// texto livre e o usuario pode apagar, mover, ordenar ou reescrever essas
 /// linhas. Adivinhar custava dos dois lados -- `relatorio v2.txt` era engolido
-/// como se fosse cabecalho, e um `:sort` mandava a moldura para o meio das
-/// entradas, onde virava pedido de criacao.
+/// como se fosse cabecalho, e um `:sort` mandava linha de cabecalho para o meio
+/// das entradas, onde virava pedido de criacao.
 fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
-    if (isFrame(line)) return true;
     for (header) |h| {
         if (std.mem.eql(u8, h, line)) return true;
     }
     return false;
-}
-
-/// A moldura da grade. O helper Vim a estica ate a largura do terminal, entao
-/// a comparacao e por prefixo -- nome de arquivo nao comeca com moldura.
-fn isFrame(line: []const u8) bool {
-    return std.mem.startsWith(u8, line, "──") or
-        std.mem.startsWith(u8, line, frame_title[0.."T │ PERMS".len]);
 }
 
 fn extractPath(body: []const u8) []const u8 {
@@ -780,14 +772,13 @@ pub const BufferHeader = struct {
     notes: []const []const u8 = &.{},
 };
 
-pub const frame_top = "──┬───────────┬───────────┬──────────────────┬──────────────────────────";
-pub const frame_title = "T │ PERMS     │ SIZE      │ MODIFIED         │ NAME";
-pub const frame_bottom = "──┼───────────┼───────────┼──────────────────┼──────────────────────────";
-
-/// As linhas que vao antes das entradas. Escrita e leitura saem daqui, para que
-/// o parser reconheca o cabecalho pelo texto exato que produziu.
-/// O cabecalho nao usa caracteres de comentario nem cantos fechados, conectando
-/// os titulos a barra vertical atraves do separador '+'.
+/// As linhas que vao antes das entradas -- escopo do `:find` e avisos. Escrita
+/// e leitura saem daqui, para que o parser reconheca o cabecalho pelo texto
+/// exato que produziu.
+///
+/// Os titulos das colunas nao estao aqui: o helper os desenha na barra de topo
+/// do editor. Linha de tela nao rola com a lista, nao pode ser apagada e se
+/// redesenha sozinha quando o terminal muda de tamanho.
 pub fn headerLines(arena: Allocator, header: BufferHeader) Allocator.Error![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (header.scope) |scope| try out.append(arena, scope);
@@ -806,9 +797,6 @@ pub fn headerLines(arena: Allocator, header: BufferHeader) Allocator.Error![]con
         }
         try out.append(arena, line.items);
     }
-    // O ID permanece no texto, mas o helper Vim o oculta. As colunas tecnicas
-    // ficam a esquerda, com largura fixa; o nome editavel ocupa o fim livre.
-    try out.appendSlice(arena, &.{ frame_top, frame_title, frame_bottom });
     return out.toOwnedSlice(arena);
 }
 
@@ -1182,10 +1170,8 @@ test "regras lexicais da criacao" {
 test "linha nova em diretorio vazio nao e engolida pelo cabecalho" {
     var f = Fixture.init();
     defer f.deinit();
-    const scope = "lst-f v26.8.21  ~/Devel/lst-f/vazio  ·  Vim";
-    const text = scope ++ "\n" ++ frame_top ++ "\n" ++ frame_title ++ "\n" ++ frame_bottom ++ "\n" ++
-        "relatorio v2.txt\n";
-    const doc = (try parseBuffer(f.a(), text, &.{scope})).ok;
+    const scope = "resultado de :find (0 marcada(s))";
+    const doc = (try parseBuffer(f.a(), scope ++ "\nrelatorio v2.txt\n", &.{scope})).ok;
     try testing.expectEqual(@as(usize, 0), doc.edits.len);
     try testing.expectEqual(@as(usize, 1), doc.creates.len);
     try testing.expectEqualStrings("relatorio v2.txt", doc.creates[0].path);
@@ -1194,13 +1180,13 @@ test "linha nova em diretorio vazio nao e engolida pelo cabecalho" {
 test "nome novo acima das entradas nao e confundido com cabecalho" {
     var f = Fixture.init();
     defer f.deinit();
-    const scope = "lst-f v26.8.21  ~/Devel/lst-f  ·  Vim";
+    const aviso = "aviso: area orfa .lst-f-1 (1 item)";
     // Nomes que a heuristica antiga engolia: " v", prefixo "lst-f", " · ".
-    const text = scope ++ "\n" ++ frame_bottom ++ "\n" ++
+    const text = aviso ++ "\n" ++
         "relatorio v2.txt\n" ++
         "lst-f-notas.md\n" ++
         "/0001  a.txt\n";
-    const doc = (try parseBuffer(f.a(), text, &.{scope})).ok;
+    const doc = (try parseBuffer(f.a(), text, &.{aviso})).ok;
     try testing.expectEqual(@as(usize, 1), doc.edits.len);
     try testing.expectEqual(@as(usize, 2), doc.creates.len);
     try testing.expectEqualStrings("relatorio v2.txt", doc.creates[0].path);
@@ -1211,24 +1197,12 @@ test "cabecalho deslocado por :sort nao vira pedido de criacao" {
     var f = Fixture.init();
     defer f.deinit();
     const scope = "resultado de :find zig (2 marcada(s))";
-    // Ordenar o buffer inteiro joga a moldura e o escopo para depois das
-    // entradas; reconhecidos por identidade, continuam sendo cabecalho.
-    const text = "/0001  a.txt\n" ++ "/0002  b.txt\n" ++
-        frame_title ++ "\n" ++ "aviso: area orfa .lst-f-1 (1 item)\n" ++
-        scope ++ "\n" ++ frame_top ++ "\n" ++ frame_bottom ++ "\n";
-    const doc = (try parseBuffer(f.a(), text, &.{ scope, "aviso: area orfa .lst-f-1 (1 item)" })).ok;
+    const aviso = "aviso: area orfa .lst-f-1 (1 item)";
+    // Ordenar o buffer inteiro joga escopo e avisos para depois das entradas;
+    // reconhecidos por identidade, continuam sendo cabecalho.
+    const text = "/0001  a.txt\n" ++ "/0002  b.txt\n" ++ aviso ++ "\n" ++ scope ++ "\n";
+    const doc = (try parseBuffer(f.a(), text, &.{ scope, aviso })).ok;
     try testing.expectEqual(@as(usize, 2), doc.edits.len);
-    try testing.expectEqual(@as(usize, 0), doc.creates.len);
-}
-
-test "moldura esticada pelo helper continua sendo cabecalho" {
-    var f = Fixture.init();
-    defer f.deinit();
-    // O helper Vim estica as tres linhas ate a largura do terminal.
-    const text = frame_top ++ "──────\n" ++ frame_title ++ "      \n" ++ frame_bottom ++ "──────\n" ++
-        "/0001  a.txt\n";
-    const doc = (try parseBuffer(f.a(), text, &.{})).ok;
-    try testing.expectEqual(@as(usize, 1), doc.edits.len);
     try testing.expectEqual(@as(usize, 0), doc.creates.len);
 }
 

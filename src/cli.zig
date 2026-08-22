@@ -474,7 +474,7 @@ fn writeBuffer(s: *Session) !void {
             .{ o.name, o.items, o.pid },
         ));
     }
-    if (s.notice) |notice| try notes.append(s.arena, notice);
+    try s.state.writeNotice(s.io, s.notice orelse "");
 
     var file = try Io.Dir.cwd().createFile(s.io, s.buffer_path, .{ .truncate = true });
     defer file.close(s.io);
@@ -492,6 +492,7 @@ fn writeBuffer(s: *Session) !void {
     };
     s.header_lines = try plan.headerLines(s.arena, header);
     try s.state.writeHeader(s.io, s.arena, s.header_lines);
+    try s.state.writeTitles(s.io, explorer.table_titles);
     try plan.writeBuffer(s.arena, &writer.interface, header, s.entries);
     try writer.interface.flush();
     // O aviso ja esta no arquivo que sera aberto agora; a proxima navegacao
@@ -892,18 +893,39 @@ fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
             .applied = outcome.applied,
         };
     }
-    s.notice = try std.fmt.allocPrint(
-        s.arena,
-        "aplicado: {d} criacao(oes), {d} renomeacao(oes), {d} diretorio(s)-pai, {d} remocao(oes){s}",
-        .{
-            outcome.applied.created.len,
-            outcome.applied.renames.len,
-            outcome.applied.created_dirs.len,
-            outcome.applied.removed.len,
-            if (outcome.applied.removed.len > 0) "; :undo esta disponivel nesta sessao" else "",
-        },
-    );
+    s.notice = try appliedNotice(s, outcome.applied);
     return true;
+}
+
+/// Resumo curto para a barra de baixo: so o que aconteceu, sem os zeros. O
+/// relatorio completo continua indo para o terminal, onde ha espaco.
+fn appliedNotice(s: *Session, applied: fsops.Applied) ![]const u8 {
+    var parents: usize = applied.created_dirs.len;
+    var created: usize = 0;
+    for (applied.created) |c| {
+        if (c.implicit) parents += 1 else created += 1;
+    }
+
+    var parts: std.ArrayList([]const u8) = .empty;
+    if (created > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} criado(s)", .{created}));
+    }
+    if (applied.renames.len > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} renomeado(s)", .{applied.renames.len}));
+    }
+    if (parents > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} pai(s)", .{parents}));
+    }
+    if (applied.removed.len > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} removido(s)", .{applied.removed.len}));
+    }
+    if (parts.items.len == 0) return "nada foi aplicado";
+
+    const summary = try std.mem.join(s.arena, ", ", parts.items);
+    if (applied.removed.len > 0) {
+        return std.fmt.allocPrint(s.arena, "aplicado: {s}  ·  :undo desfaz", .{summary});
+    }
+    return std.fmt.allocPrint(s.arena, "aplicado: {s}", .{summary});
 }
 
 fn missingDirs(s: *Session, base_dir: Io.Dir, dirs: []const []const u8) ![]const []const u8 {

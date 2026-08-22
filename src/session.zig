@@ -146,6 +146,18 @@ pub const State = struct {
         return s.dir.createFile(io, "list", .{ .truncate = true });
     }
 
+    /// Aviso de uma operacao concluida. Vai para a barra de baixo, nao para o
+    /// buffer: linha de aviso empurrava a lista para baixo, separando-a da
+    /// barra de titulos.
+    pub fn writeNotice(s: State, io: Io, text: []const u8) !void {
+        try s.dir.writeFile(io, .{ .sub_path = "notice", .data = text });
+    }
+
+    /// Titulos das colunas, desenhados pelo helper na barra de topo.
+    pub fn writeTitles(s: State, io: Io, titles: []const u8) !void {
+        try s.dir.writeFile(io, .{ .sub_path = "titles", .data = titles });
+    }
+
     /// As linhas de cabecalho do buffer aberto. O helper Vim as usa para
     /// recompor a barra de titulo se uma tecla a apagar ou deslocar.
     pub fn writeHeader(s: State, io: Io, arena: Allocator, lines: []const []const u8) !void {
@@ -179,6 +191,10 @@ pub const State = struct {
 
         try w.writeAll(
             \\set nocompatible
+            \\let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
+            \\  \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
+            \\let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
+            \\  \ ? get(readfile($LST_F_STATE . '/titles'), 0, '') : ''
             \\let s:lstf_identity = '
         );
         try w.print("{s} v{s}", .{ app_name, version });
@@ -397,7 +413,9 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_content_start() abort
-            \\  return search('^/\d\+\s\+', 'nW')
+            \\  " Do topo do buffer, nao do cursor: com 'nW' a "primeira entrada"
+            \\  " era sempre a seguinte a ele, e o contador nascia zerado.
+            \\  return match(getline(1, '$'), '^/\d\+\s\+') + 1
             \\endfunction
             \\
             \\" O cabecalho e a barra de titulo desta tela, nao conteudo: se uma
@@ -465,26 +483,40 @@ pub const State = struct {
             \\
             \\function! s:lstf_capture_prefixes() abort
             \\  let b:lstf_prefix = {}
+            \\  let b:lstf_id_width = 0
             \\  for l:line in getline(1, '$')
             \\    let l:id = matchstr(l:line, '^/\d\+')
             \\    if empty(l:id) | continue | endif
+            \\    if b:lstf_id_width == 0
+            \\      let b:lstf_id_width = matchend(l:line, '^/\d\+\s\+')
+            \\    endif
             \\    let l:start = s:lstf_name_start(l:line)
             \\    if l:start > 0 | let b:lstf_prefix[l:id] = strpart(l:line, 0, l:start) | endif
             \\  endfor
             \\endfunction
             \\
-            \\function! s:lstf_stretch_header() abort
-            \\  let l:title = 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME'
-            \\  let l:top = '──┬───────────┬───────────┬──────────────────┬'
-            \\  let l:bottom = '──┼───────────┼───────────┼──────────────────┼'
-            \\  for l:lnum in range(2, line('$') - 1)
-            \\    if getline(l:lnum) !=# l:title | continue | endif
-            \\    call setline(l:lnum - 1, l:top . repeat('─', max([0, &columns - strdisplaywidth(l:top)])))
-            \\    call setline(l:lnum, l:title . repeat(' ', max([0, &columns - strdisplaywidth(l:title)])))
-            \\    call setline(l:lnum + 1, l:bottom . repeat('─', max([0, &columns - strdisplaywidth(l:bottom)])))
-            \\    break
-            \\  endfor
-            \\  setlocal nomodified
+            \\" Barra de topo: os titulos das colunas sao linha de tela, nao de
+            \\" buffer. Nao rolam com a lista, nao dao para apagar e se redesenham
+            \\" sozinhos quando o terminal muda de tamanho.
+            \\" A barra e da tela inteira, mas descreve a janela da lista: a posicao
+            \\" fica guardada aqui, atualizada so de dentro dela, para que o foco no
+            \\" painel de destino nao a faca seguir a janela errada.
+            \\function! s:lstf_follow_scroll() abort
+            \\  let l:left = winsaveview().leftcol
+            \\  let s:lstf_id_width = get(b:, 'lstf_id_width', 0)
+            \\  if l:left == get(s:, 'lstf_leftcol', -1) | return | endif
+            \\  let s:lstf_leftcol = l:left
+            \\  if exists(':redrawtabline') == 2 | redrawtabline | endif
+            \\endfunction
+            \\
+            \\function! LstfTabline() abort
+            \\  if empty(s:lstf_titles) | return '' | endif
+            \\  " Acompanha a rolagem horizontal da lista, senao as colunas sairiam
+            \\  " do lugar assim que um nome longo empurrar a tela. O `leftcol`
+            \\  " conta tambem os caracteres do ID, que estao no buffer mas
+            \\  " ocultos por conceal e nao existem na barra.
+            \\  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
+            \\  return '%#LstfTitles#' . strcharpart(s:lstf_titles, max([0, l:left])) . '%='
             \\endfunction
             \\
             \\function! LstfStatusline() abort
@@ -496,7 +528,12 @@ pub const State = struct {
             \\  let l:location = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
             \\  let l:location = substitute(l:location, '%', '%%', 'g')
             \\  let l:editor = has('nvim') ? 'Neovim' : 'Vim'
-            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . (empty(l:name) ? '' : '  ' . l:name) . '%=%#LstfStatusInfo# ' . s:lstf_identity . '  ' . l:location . '  ·  ' . l:editor . ' %#LstfStatusHelp# F1=Help '
+            \\  " A pasta corrente fica junto do nome, nao na outra ponta da barra:
+            \\  " as duas metades do caminho sob o cursor se leem de uma vez. O
+            \\  " `%<` poe a truncagem no caminho: em terminal estreito o modo e o
+            \\  " contador ficam, e o comeco do caminho e que some.
+            \\  let l:aviso = empty(s:lstf_notice) ? '' : '%#LstfStatusNotice# ' . substitute(s:lstf_notice, '%', '%%', 'g') . ' %#LstfStatusInfo#'
+            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . ' %<' . l:location . (empty(l:name) ? '' : '  ' . l:name) . '%=%#LstfStatusInfo# ' . s:lstf_identity . '  ·  ' . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -687,6 +724,12 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
             \\  nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
             \\  call s:lstf_render_dest(getcwd())
+            \\  " O split estreitou a janela da lista sem passar por ela, entao a
+            \\  " barra de topo ficaria descrevendo a largura antiga.
+            \\  let l:dest = win_getid()
+            \\  wincmd p
+            \\  call s:lstf_follow_scroll()
+            \\  call win_gotoid(l:dest)
             \\endfunction
             \\
             \\function! s:lstf_tab_jump() abort
@@ -700,10 +743,16 @@ pub const State = struct {
             \\highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
             \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\" O sublinhado faz o papel da regua `──┼───` que ficava embaixo dos
+            \\" titulos no buffer; a de cima virou a propria borda da tela.
+            \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
+            \\highlight LstfTitles cterm=bold,underline ctermfg=12 ctermbg=236 gui=bold,underline guifg=#89b4fa guibg=#313244
+            \\highlight! link TabLineFill LstfTitles
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\set laststatus=2
             \\setlocal statusline=%!LstfStatusline()
-            \\set noshowmode showtabline=0
+            \\set noshowmode showtabline=2
+            \\set tabline=%!LstfTabline()
             \\set shortmess+=F
             \\if exists('+fillchars')
             \\  execute "setlocal fillchars+=eob:\\ "
@@ -720,6 +769,8 @@ pub const State = struct {
             \\  autocmd TextChanged <buffer> call s:lstf_restore_header()
             \\  autocmd CursorMoved <buffer> call s:lstf_keep_cursor_below_header()
             \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_keep_cursor_in_name()
+            \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_follow_scroll()
+            \\  autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
             \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
             \\  autocmd InsertLeave <buffer> call s:lstf_restore_header()
             \\  " O painel de destino pode estar aberto: `quit` fecharia so a
@@ -729,20 +780,23 @@ pub const State = struct {
             \\augroup lstf_statusline
             \\  autocmd!
             \\  autocmd ModeChanged * redrawstatus
+            \\  " Abrir o painel de destino estreita a janela da lista sem passar
+            \\  " por ela: sem isto a barra de topo so voltaria a sincronizar no
+            \\  " proximo Tab. Vim antigo nao tem o evento; ai sincroniza no Tab.
+            \\  if exists('##WinScrolled')
+            \\    autocmd WinScrolled * if exists('b:lstf_id_width') | call s:lstf_follow_scroll() | endif
+            \\  endif
             \\augroup END
             \\if filereadable($LST_F_STATE . '/header')
             \\  let b:lstf_header = readfile($LST_F_STATE . '/header')
             \\  call s:lstf_restore_header()
-            \\  " Diretorio vazio: sem uma linha abaixo do cabecalho nao havia
-            \\  " onde pousar o cursor para digitar o primeiro nome.
+            \\  " Cabecalho ocupando o buffer todo: sem uma linha abaixo dele nao
+            \\  " havia onde pousar o cursor para digitar o primeiro nome.
             \\  if line('$') <= len(b:lstf_header) | call append('$', '') | endif
-            \\endif
-            \\call s:lstf_stretch_header()
-            \\if exists('b:lstf_header')
-            \\  " A moldura foi esticada agora ha pouco: a referencia e a tela.
-            \\  let b:lstf_header = getline(1, len(b:lstf_header))
+            \\  setlocal nomodified
             \\endif
             \\call s:lstf_capture_prefixes()
+            \\call s:lstf_follow_scroll()
             \\if filereadable($LST_F_STATE . '/cursor')
             \\  let s:lstf_start = s:lstf_content_start()
             \\  let s:lstf_offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
