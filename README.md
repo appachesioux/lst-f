@@ -5,17 +5,13 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-# lst-f v26.8.21  ·  ~/Devel/lst-f
-#
-# edite o caminho = renomeia ou move  ·  apague a linha = remove
-# o ID casa a linha com a entrada: reordenar ou :sort e inofensivo
-# :cd <dir>  ·  :find [termo]  ·  :undo  ·  :quit    (:cq aborta sem aplicar)
-#
 0001  src/
 0002  build.zig
 0003  relatorio.pdf
 0004  notas antigas.txt
 ```
+
+O buffer começa limpo diretamente na linha 1. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
 
 O ID à esquerda casa a linha com a entrada, então reordenar, rodar `:sort` ou
 recolar linhas é inofensivo. Nada é gravado sem diff e confirmação, e as
@@ -26,10 +22,12 @@ que você acabou de entrar por SSH.
 
 ## O que faz
 
-| você escreve                        | acontece                                  |
+| você escreve / digita               | acontece                                  |
 | ----------------------------------- | ----------------------------------------- |
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
 | apaga a linha                        | remove, via área de sessão                 |
+| `q` no buffer                        | sai do `lst-f`                            |
+| `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
 | `:undo`                              | desfaz a última operação da sessão         |

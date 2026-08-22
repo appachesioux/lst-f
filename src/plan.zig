@@ -534,17 +534,14 @@ pub const BufferHeader = struct {
 };
 
 /// Escreve o buffer que vai para o editor.
+/// A ajuda e diretivas ficam no helper popup (F1), mantendo o buffer limpo
+/// com o primeiro arquivo diretamente na linha 1.
 pub fn writeBuffer(
     w: *std.Io.Writer,
     header: BufferHeader,
     originals: []const Original,
 ) std.Io.Writer.Error!void {
-    try w.print("# {s} v{s}  \u{00b7}  {s}\n", .{ header.app, header.version, header.location });
     if (header.scope) |scope| try w.print("# {s}\n", .{scope});
-    try w.writeAll("#\n");
-    try w.writeAll("# edite o caminho = renomeia ou move  \u{00b7}  apague a linha = remove\n");
-    try w.writeAll("# o ID casa a linha com a entrada: reordenar ou :sort e inofensivo\n");
-    try w.writeAll("# :cd <dir>  \u{00b7}  :find [termo]  \u{00b7}  :undo  \u{00b7}  :quit    (:cq aborta sem aplicar)\n");
     for (header.notes) |note| try w.print("# aviso: {s}\n", .{note});
     for (header.unlistable) |name| {
         try w.writeAll("# fora da edicao, nome nao e UTF-8 valido: ");
@@ -553,7 +550,6 @@ pub fn writeBuffer(
         }
         try w.writeByte('\n');
     }
-    try w.writeAll("#\n");
     for (originals) |o| {
         try w.print("{d:0>4}  {s}\n", .{ o.id, o.path });
     }
