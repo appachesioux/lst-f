@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 
 pub const env_state = "LST_F_STATE";
 pub const env_self = "LST_F_SELF";
+pub const env_location = "LST_F_LOCATION";
 
 pub const State = struct {
     path: []const u8,
@@ -82,6 +83,11 @@ pub const State = struct {
 
         try w.writeAll(
             \\set nocompatible
+            \\let s:lstf_identity = '
+        );
+        try w.print("{s} v{s}", .{ app_name, version });
+        try w.writeAll(
+            \\'
             \\function! LstfHelp() abort
             \\  let l:title = ' 
         );
@@ -106,7 +112,8 @@ pub const State = struct {
             \\    \ '    .              Alterna exibicao de arquivos ocultos',
             \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
-            \\    \ '    -              Volta ao diretorio-pai',
+            \\    \ '    - ou <         Volta ao diretorio-pai',
+            \\    \ '    >              Entra no diretorio da linha',
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
             \\    \ '    Tab            Alterna foco entre painel principal e destino',
@@ -237,13 +244,23 @@ pub const State = struct {
             \\  elseif s:lstf_is_binary(l:path) && s:lstf_open_external(l:path)
             \\    return
             \\  else
-            \\    call append('$', ':open ' . l:path)
-            \\    write
+            \\    call s:lstf_write_directive(':open ' . l:path)
             \\  endif
             \\endfunction
             \\
             \\function! s:lstf_navigate(path) abort
-            \\  call append('$', ':cd ' . a:path)
+            \\  call s:lstf_write_directive(':cd ' . a:path)
+            \\endfunction
+            \\
+            \\function! s:lstf_write_directive(directive) abort
+            \\  " Atalhos podem ser repetidos antes que o Vim feche. Uma unica
+            \\  " diretiva e valida; remover as anteriores evita travar o parser.
+            \\  for l:lnum in reverse(range(1, line('$')))
+            \\    if getline(l:lnum) =~# '^:'
+            \\      execute l:lnum . 'delete _'
+            \\    endif
+            \\  endfor
+            \\  call append('$', a:directive)
             \\  write
             \\endfunction
             \\
@@ -251,19 +268,23 @@ pub const State = struct {
             \\  call s:lstf_navigate('..')
             \\endfunction
             \\
+            \\function! LstfEnterDir() abort
+            \\  let l:path = s:lstf_entry_path()
+            \\  if !empty(l:path) && isdirectory(l:path)
+            \\    call s:lstf_navigate(l:path)
+            \\  endif
+            \\endfunction
+            \\
             \\function! LstfQuit() abort
-            \\  call append('$', ':quit')
-            \\  write
+            \\  call s:lstf_write_directive(':quit')
             \\endfunction
             \\
             \\function! LstfFind() abort
-            \\  call append('$', ':find')
-            \\  write
+            \\  call s:lstf_write_directive(':find')
             \\endfunction
             \\
             \\function! LstfToggleHidden() abort
-            \\  call append('$', ':hidden')
-            \\  write
+            \\  call s:lstf_write_directive(':hidden')
             \\endfunction
             \\
             \\function! s:lstf_prepare_save() abort
@@ -277,6 +298,32 @@ pub const State = struct {
             \\
             \\function! s:lstf_content_start() abort
             \\  return search('^\d\+\s\+', 'nW')
+            \\endfunction
+            \\
+            \\function! s:lstf_stretch_header() abort
+            \\  let l:title = 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME'
+            \\  let l:top = '──┬───────────┬───────────┬──────────────────┬'
+            \\  let l:bottom = '──┼───────────┼───────────┼──────────────────┼'
+            \\  for l:lnum in range(2, line('$') - 1)
+            \\    if getline(l:lnum) !=# l:title | continue | endif
+            \\    call setline(l:lnum - 1, l:top . repeat('─', max([0, &columns - strdisplaywidth(l:top)])))
+            \\    call setline(l:lnum, l:title . repeat(' ', max([0, &columns - strdisplaywidth(l:title)])))
+            \\    call setline(l:lnum + 1, l:bottom . repeat('─', max([0, &columns - strdisplaywidth(l:bottom)])))
+            \\    break
+            \\  endfor
+            \\  setlocal nomodified
+            \\endfunction
+            \\
+            \\function! LstfStatusline() abort
+            \\  let l:start = s:lstf_content_start()
+            \\  let l:total = l:start > 0 ? len(filter(getline(l:start, '$'), 'v:val =~# ''^\d\+\s\+''')) : 0
+            \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^\d\+\s\+''')) : 0
+            \\  let l:mode = mode(1) =~# '^[iR]' ? 'EDIT' : mode(1) =~# '^[vV]' ? 'VISUAL' : 'NORMAL'
+            \\  let l:name = substitute(s:lstf_entry_path(), '%', '%%', 'g')
+            \\  let l:location = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
+            \\  let l:location = substitute(l:location, '%', '%%', 'g')
+            \\  let l:editor = has('nvim') ? 'Neovim' : 'Vim'
+            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . (empty(l:name) ? '' : '  ' . l:name) . '%=%#LstfStatusInfo# ' . s:lstf_identity . '  ' . l:location . '  ·  ' . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -459,7 +506,9 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
             \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
             \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
-            \\  nnoremap <buffer> <silent> q :close<CR>
+            \\  " `q` deve encerrar o lst-f independentemente do painel em foco.
+            \\  " Esc e Ctrl+S continuam sendo as formas de fechar so este painel.
+            \\  nnoremap <buffer> <silent> q :wincmd p<Bar>call LstfQuit()<CR>
             \\  nnoremap <buffer> <silent> <Esc> :close<CR>
             \\  nnoremap <buffer> <silent> <Tab> :wincmd w<CR>
             \\  nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
@@ -475,21 +524,35 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
-            \\setglobal laststatus=0
-            \\set laststatus=0
+            \\highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
+            \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\set laststatus=2
+            \\setlocal statusline=%!LstfStatusline()
+            \\set noshowmode showtabline=0
+            \\set shortmess+=F
             \\if exists('+fillchars')
             \\  execute "setlocal fillchars+=eob:\\ "
             \\endif
             \\set noruler noshowcmd
-            \\setlocal nonumber norelativenumber nowrap sidescrolloff=8
+            \\setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
             \\syntax match LstfInternalId /^\d\+\s\+/ conceal
-            \\setlocal conceallevel=2 concealcursor=nv
+            \\" O sequencial e metadado interno: oculta-lo tambem na linha do
+            \\" cursor evita deslocar as colunas, inclusive ao voltar do :find.
+            \\setlocal conceallevel=2 concealcursor=nvic
             \\augroup lstf_buffer
             \\  autocmd! * <buffer>
             \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
-            \\  autocmd BufWritePost <buffer> quit
-            \\  autocmd VimEnter,BufWinEnter,WinEnter <buffer> setglobal laststatus=0
+            \\  " O painel de destino pode estar aberto: `quit` fecharia so a
+            \\  " janela da lista e deixaria o processo Vim preso no painel.
+            \\  autocmd BufWritePost <buffer> quitall
             \\augroup END
+            \\augroup lstf_statusline
+            \\  autocmd!
+            \\  autocmd ModeChanged * redrawstatus
+            \\augroup END
+            \\call s:lstf_stretch_header()
             \\if filereadable($LST_F_STATE . '/cursor')
             \\  let s:lstf_start = s:lstf_content_start()
             \\  let s:lstf_offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
@@ -507,6 +570,8 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
             \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
             \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
+            \\nnoremap <buffer> <silent> <lt> :call LstfUp()<CR>
+            \\nnoremap <buffer> <silent> > :call LstfEnterDir()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
             \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
             \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
@@ -515,6 +580,7 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
             \\cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
+            \\redrawstatus | echo ''
             \\
         );
         try w.flush();
