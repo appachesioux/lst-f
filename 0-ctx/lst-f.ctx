@@ -23,7 +23,7 @@ São duas diferenças em relação ao `oil.nvim`, e as duas importam:
 1. **Seleção fuzzy recursiva alimentando o buffer.** O oil navega um diretório por vez e não filtra. O caso *"filtrar um termo na árvore inteira, marcar 12 dos 200 resultados espalhados por 6 diretórios, renomear todos de uma vez"* exige colar o oil a um picker externo. No `lst-f` é `:find termo`, marcar, e o resultado **é** o buffer.
 2. **Nada de plugin.** O oil é um plugin de Neovim: exige gerenciador de plugin, exige Neovim, e vive dentro de uma sessão de editor. O `lst-f` é um binário único que funciona com `vim` puro e roda como CLI componível. É a diferença entre "está no meu setup" e "funciona no servidor em que acabei de entrar por SSH".
 
-**Consequência de design**: não há plugin. O `lst-f` gera um pequeno script local para o buffer atual, compatível com Vim e Neovim, que faz `Enter` abrir arquivos ou entrar em diretórios; ele vive só durante a sessão e não instala configuração no editor. As demais ações continuam sendo diretivas escritas no próprio buffer (`:cd`, `:find`, `:undo`, `:quit`), executadas quando o editor sai. Linha de entrada sempre começa por dígito, então uma linha iniciada por `:` nunca é ambígua com nome de arquivo.
+**Consequência de design**: não há plugin. O `lst-f` gera um pequeno script local para o buffer atual, compatível com Vim e Neovim, que faz `Enter` abrir arquivos ou entrar em diretórios; ele vive só durante a sessão e não instala configuração no editor. As demais ações continuam sendo diretivas escritas no próprio buffer (`:cd`, `:find`, `:undo`, `:quit`), executadas quando o editor sai. Linha de entrada sempre começa por `/` seguido de dígitos (o ID, oculto por *conceal*), então nem uma linha iniciada por `:` nem um nome de arquivo qualquer são ambíguos com ela — `/` é o único byte que um nome de arquivo não pode conter.
 
 Está fora de escopo:
 
@@ -97,7 +97,7 @@ d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  docs/
 - O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
-- Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva.
+- Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva. Linha sem ID não é erro: é pedido de criação de arquivo ou diretório.
 - O cabeçalho ocupa o topo do buffer (barra de localização, títulos de colunas com bordas alinhadas, avisos pontuais) e não usa caracteres de comentário `#` para evitar desalinhamento e cores divergentes de sintaxe no editor. O conteúdo (lista de arquivos) fica logo abaixo do cabeçalho. Somente o nome à direita da grade é editável e o parser ignora os metadados.
 
 **Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
@@ -115,7 +115,7 @@ Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` qu
 - `:undo` desfaz a última operação aplicada na sessão;
 - `:quit` sai.
 
-Linha de entrada sempre começa por dígito, então `:` no início nunca colide com nome de arquivo — e um nome que comece por `:` continua editável normalmente, porque vem depois do ID.
+Linha de entrada sempre começa por `/` seguido de dígitos, então `:` no início nunca colide com ela — e um nome que comece por `:` continua editável normalmente, porque vem depois do ID. A barra é o que separa entrada de linha nova: nenhum nome de arquivo pode começar por `/`, então uma linha que não tenha essa forma é sempre um pedido de criação.
 
 **Por que ID e não posição.** Mapeamento posicional falha em silêncio no caso mais provável. Um `:sort` no buffer — coisa natural de fazer numa lista de arquivos — produz uma permutação válida: a contagem de linhas bate, não há colisão, o plano passa em toda validação, e a ferramenta renomeia cada arquivo com o nome de outro. Só o ID torna essa classe de erro impossível.
 

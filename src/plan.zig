@@ -26,8 +26,28 @@ pub const Edit = struct {
     line: u32,
 };
 
+/// Uma linha do buffer que nao comeca por ID: pedido de criacao. Barra no fim
+/// pede diretorio; qualquer pai que falte entra em `Plan.mkdirs`.
+pub const Create = struct {
+    /// Linha no buffer, para o relatorio de problemas.
+    line: u32 = 0,
+    path: []const u8,
+    kind: Kind,
+    /// Diretorio-pai derivado de outra criacao. Ja existir e o caso normal,
+    /// nao um erro -- ao contrario do que a linha pediu explicitamente.
+    implicit: bool = false,
+};
+
 pub const Problem = union(enum) {
-    line_without_id: u32,
+    create_empty_path: struct { line: u32 },
+    create_absolute: struct { line: u32, path: []const u8 },
+    create_escapes_base: struct { line: u32, path: []const u8 },
+    create_reserved: struct { line: u32, path: []const u8 },
+    create_duplicate: struct { line: u32, path: []const u8 },
+    create_occupied: struct { line: u32, path: []const u8 },
+    create_over_removed: struct { line: u32, path: []const u8, id: u32 },
+    create_under_touched: struct { line: u32, path: []const u8, id: u32 },
+    create_exists: struct { line: u32, path: []const u8 },
     id_without_path: struct { line: u32 },
     unknown_id: struct { line: u32, id: u32 },
     duplicate_id: struct { line: u32, id: u32 },
@@ -47,7 +67,21 @@ pub const Problem = union(enum) {
 
     pub fn describe(p: Problem, w: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (p) {
-            .line_without_id => |l| try w.print("linha {d}: nao comeca com um ID", .{l}),
+            .create_empty_path => |v| try w.print("linha {d}: nome vazio", .{v.line}),
+            .create_absolute => |v| try w.print("linha {d}: caminho absoluto nao e aceito ({s})", .{ v.line, v.path }),
+            .create_escapes_base => |v| try w.print("linha {d}: caminho sai do diretorio-base ({s})", .{ v.line, v.path }),
+            .create_reserved => |v| try w.print("linha {d}: nome reservado pelo lst-f ({s})", .{ v.line, v.path }),
+            .create_duplicate => |v| try w.print("linha {d}: duas linhas criam o mesmo caminho ({s})", .{ v.line, v.path }),
+            .create_occupied => |v| try w.print("linha {d}: {s} ja pertence a uma entrada da selecao", .{ v.line, v.path }),
+            .create_over_removed => |v| try w.print(
+                "linha {d}: {s} pertence ao ID {d}, que esta sendo removido; remocoes acontecem por ultimo",
+                .{ v.line, v.path, v.id },
+            ),
+            .create_under_touched => |v| try w.print(
+                "linha {d}: {s} fica dentro do ID {d}, que esta sendo movido ou removido",
+                .{ v.line, v.path, v.id },
+            ),
+            .create_exists => |v| try w.print("linha {d}: {s} ja existe no disco", .{ v.line, v.path }),
             .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
             .unknown_id => |v| try w.print("linha {d}: ID {d} nao pertence a selecao", .{ v.line, v.id }),
             .duplicate_id => |v| try w.print("linha {d}: ID {d} aparece mais de uma vez", .{ v.line, v.id }),
@@ -105,6 +139,9 @@ pub const Plan = struct {
     mkdirs: []const []const u8,
     /// Ordem de execucao, ja resolvida (ciclos e troca de caixa incluidos).
     renames: []const Rename,
+    /// Criacoes pedidas por linha sem ID. Acontecem depois das renomeacoes,
+    /// para que um nome liberado no mesmo passo possa ser reocupado.
+    creates: []const Create = &.{},
     /// Sempre por ultimo.
     removes: []const Remove,
     /// Visao logica, para o diff.
@@ -112,7 +149,7 @@ pub const Plan = struct {
     unchanged: u32,
 
     pub fn isEmpty(p: Plan) bool {
-        return p.renames.len == 0 and p.removes.len == 0 and p.mkdirs.len == 0;
+        return p.renames.len == 0 and p.removes.len == 0 and p.mkdirs.len == 0 and p.creates.len == 0;
     }
 };
 
@@ -135,6 +172,7 @@ pub fn build(
     arena: Allocator,
     originals: []const Original,
     edits: []const Edit,
+    creates: []const Create,
     options: Options,
 ) Allocator.Error!Result {
     var problems: std.ArrayList(Problem) = .empty;
@@ -189,6 +227,32 @@ pub fn build(
         }
         dests[i] = norm;
     }
+
+    // Mesmas regras lexicais para as linhas novas.
+    const create_paths = try arena.alloc(?[]const u8, creates.len);
+    @memset(create_paths, null);
+    for (creates, 0..) |c, i| {
+        if (c.path.len > 0 and c.path[0] == '/') {
+            try problems.append(arena, .{ .create_absolute = .{ .line = c.line, .path = c.path } });
+            continue;
+        }
+        const norm = normalize(arena, c.path) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Escapes => {
+                try problems.append(arena, .{ .create_escapes_base = .{ .line = c.line, .path = c.path } });
+                continue;
+            },
+            error.Empty => {
+                try problems.append(arena, .{ .create_empty_path = .{ .line = c.line } });
+                continue;
+            },
+        };
+        if (isReserved(norm)) {
+            try problems.append(arena, .{ .create_reserved = .{ .line = c.line, .path = c.path } });
+            continue;
+        }
+        create_paths[i] = norm;
+    }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
     // --- 3. Colisoes entre destinos ------------------------------------------
@@ -229,6 +293,45 @@ pub fn build(
             } else {
                 try problems.append(arena, .{
                     .dest_occupied_by_removed = .{ .id = o.id, .other = other.id, .path = d },
+                });
+            }
+        }
+    }
+
+    // Um caminho novo nao pode disputar lugar com destino de rename, com
+    // entrada que fica onde esta, nem com outra linha nova.
+    var create_seen: std.StringHashMapUnmanaged(void) = .empty;
+    for (creates, 0..) |c, i| {
+        const path = create_paths[i] orelse continue;
+        if (seen.get(path) != null) {
+            try problems.append(arena, .{ .create_occupied = .{ .line = c.line, .path = path } });
+            continue;
+        }
+        if ((try create_seen.getOrPut(arena, path)).found_existing) {
+            try problems.append(arena, .{ .create_duplicate = .{ .line = c.line, .path = path } });
+        }
+    }
+
+    // Remocoes acontecem por ultimo, entao criar sobre o caminho de uma entrada
+    // removida sairia trocado. Criar dentro de um diretorio que sai do lugar
+    // levaria o arquivo novo junto, em silencio.
+    for (creates, 0..) |c, i| {
+        const path = create_paths[i] orelse continue;
+        for (originals, 0..) |o, j| {
+            const d = dests[j];
+            if (std.mem.eql(u8, o.path, path)) {
+                if (d == null) {
+                    try problems.append(arena, .{
+                        .create_over_removed = .{ .line = c.line, .path = path, .id = o.id },
+                    });
+                }
+                continue;
+            }
+            if (!isUnder(o.path, path)) continue;
+            const stays = d != null and std.mem.eql(u8, d.?, o.path);
+            if (!stays) {
+                try problems.append(arena, .{
+                    .create_under_touched = .{ .line = c.line, .path = path, .id = o.id },
                 });
             }
         }
@@ -300,12 +403,38 @@ pub fn build(
         }
     }
 
-    // --- 7. Ordem de execucao: ciclos e troca so de caixa --------------------
+    // --- 7. Criacoes, com os pais que faltam na frente -----------------------
+    // Tudo isso acontece depois das renomeacoes, entao os pais nao podem ir
+    // para `mkdirs` (fase anterior): um diretorio novo pode depender de um nome
+    // que so fica livre quando a renomeacao passar.
+    var new_entries: std.ArrayList(Create) = .empty;
+    var new_seen: std.StringHashMapUnmanaged(void) = .empty;
+    for (creates, 0..) |c, i| {
+        const path = create_paths[i] orelse continue;
+        var end: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, path, end, '/')) |slash| {
+            end = slash + 1;
+            const ancestor = path[0..slash];
+            if ((try new_seen.getOrPut(arena, ancestor)).found_existing) continue;
+            try new_entries.append(arena, .{
+                .line = c.line,
+                .path = ancestor,
+                .kind = .dir,
+                .implicit = true,
+            });
+        }
+        // Diretorio que ja entrou como pai implicito nao entra duas vezes.
+        if ((try new_seen.getOrPut(arena, path)).found_existing) continue;
+        try new_entries.append(arena, .{ .line = c.line, .path = path, .kind = c.kind });
+    }
+
+    // --- 8. Ordem de execucao: ciclos e troca so de caixa --------------------
     const renames = try order(arena, moves.items, options);
 
     return .{ .ok = .{
         .mkdirs = try mkdirs.toOwnedSlice(arena),
         .renames = renames,
+        .creates = try new_entries.toOwnedSlice(arena),
         .removes = try removes.toOwnedSlice(arena),
         .moves = try moves.toOwnedSlice(arena),
         .unchanged = unchanged,
@@ -430,7 +559,8 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
 // ---------------------------------------------------------------------------
 
 /// Diretiva de navegacao: a linha comeca por `:`, como um comando ex. Linha de
-/// entrada sempre comeca por digito, entao nao ha ambiguidade com nome de arquivo.
+/// entrada sempre comeca por `/` seguido de digitos, entao nao ha ambiguidade
+/// com nome de arquivo nem com diretiva.
 pub const Directive = union(enum) {
     cd: []const u8,
     find: []const u8,
@@ -445,6 +575,8 @@ pub const Directive = union(enum) {
 
 pub const Document = struct {
     edits: []const Edit,
+    /// Linhas sem ID: pedidos de criacao, na ordem em que aparecem.
+    creates: []const Create = &.{},
     /// No maximo uma por rodada: duas seriam duas telas ao mesmo tempo.
     directive: ?Directive = null,
 };
@@ -454,21 +586,24 @@ pub const ParseResult = union(enum) {
     invalid: []const Problem,
 };
 
-fn isHeaderLine(line: []const u8) bool {
-    if (line.len == 0) return true;
-    if (line[0] == '#') return true;
-    if (std.mem.indexOf(u8, line, " · ") != null) return true;
-    if (std.mem.indexOf(u8, line, " v") != null) return true;
-    if (std.mem.startsWith(u8, line, "lst-f")) return true;
-    if (std.mem.startsWith(u8, line, "aviso:")) return true;
-    if (std.mem.startsWith(u8, line, "fora da edicao")) return true;
-    if (std.mem.startsWith(u8, line, "resultado de :find")) return true;
-    if (std.mem.startsWith(u8, line, "T │") or std.mem.startsWith(u8, line, "T│") or std.mem.startsWith(u8, line, "ID  ")) return true;
-    if (std.mem.startsWith(u8, line, "──┼") or std.mem.startsWith(u8, line, "--+") or std.mem.startsWith(u8, line, "──┬") or std.mem.startsWith(u8, line, "───")) return true;
-    if (std.mem.startsWith(u8, line, "╭") or std.mem.startsWith(u8, line, "┌")) return true;
-    if (std.mem.startsWith(u8, line, "│ T") or std.mem.startsWith(u8, line, "│  T")) return true;
-    if (std.mem.startsWith(u8, line, "╰") or std.mem.startsWith(u8, line, "└")) return true;
+/// O cabecalho e reconhecido por identidade, nunca por semelhanca: o buffer e
+/// texto livre e o usuario pode apagar, mover, ordenar ou reescrever essas
+/// linhas. Adivinhar custava dos dois lados -- `relatorio v2.txt` era engolido
+/// como se fosse cabecalho, e um `:sort` mandava a moldura para o meio das
+/// entradas, onde virava pedido de criacao.
+fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
+    if (isFrame(line)) return true;
+    for (header) |h| {
+        if (std.mem.eql(u8, h, line)) return true;
+    }
     return false;
+}
+
+/// A moldura da grade. O helper Vim a estica ate a largura do terminal, entao
+/// a comparacao e por prefixo -- nome de arquivo nao comeca com moldura.
+fn isFrame(line: []const u8) bool {
+    return std.mem.startsWith(u8, line, "──") or
+        std.mem.startsWith(u8, line, frame_title[0.."T │ PERMS".len]);
 }
 
 fn extractPath(body: []const u8) []const u8 {
@@ -498,16 +633,34 @@ fn extractPath(body: []const u8) []const u8 {
     return body;
 }
 
+/// Linha do corpo que nao comeca por ID: pedido de criacao. O espaco a esquerda
+/// e alinhamento com a coluna NAME, nunca parte do nome.
+fn newEntry(line: []const u8, line_no: u32) ?Create {
+    const body = std.mem.trimStart(u8, extractPath(std.mem.trimStart(u8, line, " \t")), " \t");
+    if (body.len == 0) return null;
+    return .{
+        .line = line_no,
+        .path = body,
+        .kind = if (body[body.len - 1] == '/') .dir else .file,
+    };
+}
+
 /// Le o buffer que voltou do editor. O cabecalho ocupa o inicio do buffer
 /// e o conteudo util com as entradas fica logo abaixo. Cada linha util e
-/// `<digitos><espacos><caminho>`.
+/// `/<digitos><espacos><caminho>`; linha sem ID no corpo pede criacao.
 /// Linhas em branco e linhas iniciadas por `#` sao ignoradas.
 /// O caminho vai ate o fim da linha, sem trim: espaco no fim de nome e legitimo.
-pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResult {
+pub fn parseBuffer(
+    arena: Allocator,
+    text: []const u8,
+    /// As linhas que `writeBuffer` colocou no topo, para reconhece-las onde
+    /// quer que tenham parado.
+    header: []const []const u8,
+) Allocator.Error!ParseResult {
     var edits: std.ArrayList(Edit) = .empty;
+    var creates: std.ArrayList(Create) = .empty;
     var problems: std.ArrayList(Problem) = .empty;
     var directive: ?Directive = null;
-    var in_header: bool = true;
 
     var line_no: u32 = 0;
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -517,6 +670,7 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
         if (line.len > 0 and line[line.len - 1] == '\r') line = line[0 .. line.len - 1];
         if (line.len == 0) continue;
         if (line[0] == '#') continue;
+        if (isHeaderLine(line, header)) continue;
 
         if (line[0] == ':') {
             if (directive != null) {
@@ -568,21 +722,21 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
             continue;
         }
 
-        var i: usize = 0;
+        // `/` e o unico byte que um nome de arquivo nao pode conter, entao
+        // `/<digitos><espaco>` nunca colide com um nome que o usuario digite.
+        var i: usize = 1;
+        if (line[0] != '/') {
+            if (newEntry(line, line_no)) |c| try creates.append(arena, c);
+            continue;
+        }
         while (i < line.len and std.ascii.isDigit(line[i])) i += 1;
-        if (i == 0 or (i < line.len and line[i] != ' ' and line[i] != '\t')) {
-            if (in_header and isHeaderLine(line)) {
-                continue;
-            }
-            try problems.append(arena, .{ .line_without_id = line_no });
+        if (i == 1 or (i < line.len and line[i] != ' ' and line[i] != '\t')) {
+            if (newEntry(line, line_no)) |c| try creates.append(arena, c);
             continue;
         }
 
-        const id = std.fmt.parseInt(u32, line[0..i], 10) catch {
-            if (in_header and isHeaderLine(line)) {
-                continue;
-            }
-            try problems.append(arena, .{ .line_without_id = line_no });
+        const id = std.fmt.parseInt(u32, line[1..i], 10) catch {
+            if (newEntry(line, line_no)) |c| try creates.append(arena, c);
             continue;
         };
 
@@ -590,15 +744,10 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
         while (j < line.len and (line[j] == ' ' or line[j] == '\t')) j += 1;
         if (j == i and j < line.len) {
             // digitos colados no caminho: nao e uma linha nossa
-            if (in_header and isHeaderLine(line)) {
-                continue;
-            }
-            try problems.append(arena, .{ .line_without_id = line_no });
+
+            if (newEntry(line, line_no)) |c| try creates.append(arena, c);
             continue;
         }
-
-        // Uma linha valida de entrada foi encontrada: encerra o cabecalho.
-        in_header = false;
 
         const body = line[j..];
         const path = extractPath(body);
@@ -606,7 +755,11 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
     }
 
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
-    return .{ .ok = .{ .edits = try edits.toOwnedSlice(arena), .directive = directive } };
+    return .{ .ok = .{
+        .edits = try edits.toOwnedSlice(arena),
+        .creates = try creates.toOwnedSlice(arena),
+        .directive = directive,
+    } };
 }
 
 /// Cabecalho do buffer. E a barra de localizacao desta interface: o buffer do
@@ -620,34 +773,52 @@ pub const BufferHeader = struct {
     notes: []const []const u8 = &.{},
 };
 
-/// Escreve o buffer que vai para o editor.
+pub const frame_top = "──┬───────────┬───────────┬──────────────────┬──────────────────────────";
+pub const frame_title = "T │ PERMS     │ SIZE      │ MODIFIED         │ NAME";
+pub const frame_bottom = "──┼───────────┼───────────┼──────────────────┼──────────────────────────";
+
+/// As linhas que vao antes das entradas. Escrita e leitura saem daqui, para que
+/// o parser reconheca o cabecalho pelo texto exato que produziu.
 /// O cabecalho nao usa caracteres de comentario nem cantos fechados, conectando
 /// os titulos a barra vertical atraves do separador '+'.
-pub fn writeBuffer(
-    w: *std.Io.Writer,
-    header: BufferHeader,
-    originals: []const Original,
-) std.Io.Writer.Error!void {
-    if (header.scope) |scope| try w.print("{s}\n", .{scope});
-    for (header.notes) |note| try w.print("aviso: {s}\n", .{note});
+pub fn headerLines(arena: Allocator, header: BufferHeader) Allocator.Error![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    if (header.scope) |scope| try out.append(arena, scope);
+    for (header.notes) |note| {
+        try out.append(arena, try std.fmt.allocPrint(arena, "aviso: {s}", .{note}));
+    }
     for (header.unlistable) |name| {
-        try w.writeAll("fora da edicao, nome nao e UTF-8 valido: ");
+        var line: std.ArrayList(u8) = .empty;
+        try line.appendSlice(arena, "fora da edicao, nome nao e UTF-8 valido: ");
         for (name) |c| {
-            if (c >= 0x20 and c < 0x7f) try w.writeByte(c) else try w.print("\\x{x:0>2}", .{c});
+            if (c >= 0x20 and c < 0x7f) {
+                try line.append(arena, c);
+            } else {
+                try line.appendSlice(arena, try std.fmt.allocPrint(arena, "\\x{x:0>2}", .{c}));
+            }
         }
-        try w.writeByte('\n');
+        try out.append(arena, line.items);
     }
     // O ID permanece no texto, mas o helper Vim o oculta. As colunas tecnicas
     // ficam a esquerda, com largura fixa; o nome editavel ocupa o fim livre.
-    try w.writeAll("──┬───────────┬───────────┬──────────────────┬──────────────────────────\n");
-    try w.writeAll("T │ PERMS     │ SIZE      │ MODIFIED         │ NAME\n");
-    try w.writeAll("──┼───────────┼───────────┼──────────────────┼──────────────────────────\n");
+    try out.appendSlice(arena, &.{ frame_top, frame_title, frame_bottom });
+    return out.toOwnedSlice(arena);
+}
+
+/// Escreve o buffer que vai para o editor.
+pub fn writeBuffer(
+    arena: Allocator,
+    w: *std.Io.Writer,
+    header: BufferHeader,
+    originals: []const Original,
+) !void {
+    for (try headerLines(arena, header)) |line| try w.print("{s}\n", .{line});
     for (originals) |o| {
         const slash: []const u8 = if (o.kind == .dir and !std.mem.endsWith(u8, o.path, "/")) "/" else "";
         if (o.display.len > 0) {
-            try w.print("{d:0>4}  {s}  {s}{s}\n", .{ o.id, o.display, o.path, slash });
+            try w.print("/{d:0>4}  {s}  {s}{s}\n", .{ o.id, o.display, o.path, slash });
         } else {
-            try w.print("{d:0>4}  {s}{s}\n", .{ o.id, o.path, slash });
+            try w.print("/{d:0>4}  {s}{s}\n", .{ o.id, o.path, slash });
         }
     }
 }
@@ -680,6 +851,14 @@ fn edit(id: u32, path: []const u8) Edit {
     return .{ .id = id, .path = path, .line = id };
 }
 
+fn creation(line: u32, path: []const u8) Create {
+    return .{
+        .line = line,
+        .path = path,
+        .kind = if (path[path.len - 1] == '/') .dir else .file,
+    };
+}
+
 fn expectProblem(res: Result, comptime tag: std.meta.Tag(Problem)) !void {
     switch (res) {
         .ok => return error.ExpectedInvalidPlan,
@@ -693,7 +872,7 @@ fn expectProblem(res: Result, comptime tag: std.meta.Tag(Problem)) !void {
 test "renomeacao simples" {
     var f = Fixture.init();
     defer f.deinit();
-    const res = try build(f.a(), &.{orig(1, "a.txt", .file)}, &.{edit(1, "b.txt")}, .{});
+    const res = try build(f.a(), &.{orig(1, "a.txt", .file)}, &.{edit(1, "b.txt")}, &.{}, .{});
     const p = res.ok;
     try testing.expectEqual(@as(usize, 1), p.renames.len);
     try testing.expectEqualStrings("a.txt", p.renames[0].from);
@@ -707,7 +886,7 @@ test "buffer reordenado nao produz renomeacao" {
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file), orig(3, "c", .file) };
     // :sort inverteu as linhas; o ID mantem o casamento.
     const edits = [_]Edit{ edit(3, "c"), edit(1, "a"), edit(2, "b") };
-    const res = try build(f.a(), &originals, &edits, .{});
+    const res = try build(f.a(), &originals, &edits, &.{}, .{});
     try testing.expect(res.ok.isEmpty());
     try testing.expectEqual(@as(u32, 3), res.ok.unchanged);
 }
@@ -723,7 +902,7 @@ test "nomes com espaco, acento e TAB sobrevivem" {
         edit(1, "notas novas (2026).txt"),
         edit(2, "com\tTAB renomeado"),
     };
-    const res = try build(f.a(), &originals, &edits, .{});
+    const res = try build(f.a(), &originals, &edits, &.{}, .{});
     try testing.expectEqual(@as(usize, 2), res.ok.renames.len);
 }
 
@@ -732,7 +911,7 @@ test "colisao de destino" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file) };
     const edits = [_]Edit{ edit(1, "x"), edit(2, "x") };
-    try expectProblem(try build(f.a(), &originals, &edits, .{}), .duplicate_dest);
+    try expectProblem(try build(f.a(), &originals, &edits, &.{}, .{}), .duplicate_dest);
 }
 
 test "destino ocupado por entrada inalterada" {
@@ -740,11 +919,11 @@ test "destino ocupado por entrada inalterada" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file) };
     const edits = [_]Edit{ edit(1, "b"), edit(2, "b") };
-    try expectProblem(try build(f.a(), &originals, &edits, .{}), .duplicate_dest);
+    try expectProblem(try build(f.a(), &originals, &edits, &.{}, .{}), .duplicate_dest);
 
     const edits_b = [_]Edit{edit(1, "b")};
     // ID 2 fora do buffer: seria remocao, e o destino de 1 colide com ele.
-    try expectProblem(try build(f.a(), &originals, &edits_b, .{}), .dest_occupied_by_removed);
+    try expectProblem(try build(f.a(), &originals, &edits_b, &.{}, .{}), .dest_occupied_by_removed);
 }
 
 test "troca ciclica passa por temporario" {
@@ -752,7 +931,7 @@ test "troca ciclica passa por temporario" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file) };
     const edits = [_]Edit{ edit(1, "b"), edit(2, "a") };
-    const p = (try build(f.a(), &originals, &edits, .{})).ok;
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
     try testing.expectEqual(@as(usize, 3), p.renames.len);
     try testing.expect(p.renames[0].staging);
     try testing.expectEqual(@as(usize, 2), p.moves.len); // o diff nao ve o temporario
@@ -774,7 +953,7 @@ test "ciclo de tres" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file), orig(3, "c", .file) };
     const edits = [_]Edit{ edit(1, "b"), edit(2, "c"), edit(3, "a") };
-    const p = (try build(f.a(), &originals, &edits, .{})).ok;
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
 
     var fs_state: std.StringHashMapUnmanaged(void) = .empty;
     for ([_][]const u8{ "a", "b", "c" }) |n| try fs_state.put(f.a(), n, {});
@@ -792,7 +971,7 @@ test "cadeia sem ciclo nao usa temporario" {
     // b -> c precisa acontecer antes de a -> b.
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file) };
     const edits = [_]Edit{ edit(1, "b"), edit(2, "c") };
-    const p = (try build(f.a(), &originals, &edits, .{})).ok;
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
     try testing.expectEqual(@as(usize, 2), p.renames.len);
     for (p.renames) |r| try testing.expect(!r.staging);
     try testing.expectEqualStrings("b", p.renames[0].from);
@@ -802,7 +981,7 @@ test "cadeia sem ciclo nao usa temporario" {
 test "rename so de caixa sempre passa por temporario" {
     var f = Fixture.init();
     defer f.deinit();
-    const res = try build(f.a(), &.{orig(1, "arquivo.txt", .file)}, &.{edit(1, "ARQUIVO.TXT")}, .{});
+    const res = try build(f.a(), &.{orig(1, "arquivo.txt", .file)}, &.{edit(1, "ARQUIVO.TXT")}, &.{}, .{});
     const p = res.ok;
     try testing.expectEqual(@as(usize, 2), p.renames.len);
     try testing.expect(p.renames[0].staging);
@@ -812,7 +991,7 @@ test "rename so de caixa sempre passa por temporario" {
 test "criacao de diretorios pai" {
     var f = Fixture.init();
     defer f.deinit();
-    const res = try build(f.a(), &.{orig(1, "doc.txt", .file)}, &.{edit(1, "docs/sub/doc.txt")}, .{});
+    const res = try build(f.a(), &.{orig(1, "doc.txt", .file)}, &.{edit(1, "docs/sub/doc.txt")}, &.{}, .{});
     const p = res.ok;
     try testing.expectEqual(@as(usize, 2), p.mkdirs.len);
     try testing.expectEqualStrings("docs", p.mkdirs[0]);
@@ -823,29 +1002,29 @@ test "ID desconhecido, duplicado e linha sem caminho" {
     var f = Fixture.init();
     defer f.deinit();
     const originals = [_]Original{orig(1, "a", .file)};
-    try expectProblem(try build(f.a(), &originals, &.{edit(9, "x")}, .{}), .unknown_id);
+    try expectProblem(try build(f.a(), &originals, &.{edit(9, "x")}, &.{}, .{}), .unknown_id);
     try expectProblem(
-        try build(f.a(), &originals, &.{ edit(1, "x"), edit(1, "y") }, .{}),
+        try build(f.a(), &originals, &.{ edit(1, "x"), edit(1, "y") }, &.{}, .{}),
         .duplicate_id,
     );
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, "")}, .{}), .id_without_path);
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, "")}, &.{}, .{}), .id_without_path);
 }
 
 test "caminho absoluto, escape do base e nome reservado" {
     var f = Fixture.init();
     defer f.deinit();
     const originals = [_]Original{orig(1, "a", .file)};
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, "/etc/passwd")}, .{}), .absolute_path);
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, "../fora")}, .{}), .escapes_base);
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, "sub/../../fora")}, .{}), .escapes_base);
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, ".lst-f-99/x")}, .{}), .reserved_name);
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, "./.")}, .{}), .empty_path);
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, "/etc/passwd")}, &.{}, .{}), .absolute_path);
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, "../fora")}, &.{}, .{}), .escapes_base);
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, "sub/../../fora")}, &.{}, .{}), .escapes_base);
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, ".lst-f-99/x")}, &.{}, .{}), .reserved_name);
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, "./.")}, &.{}, .{}), .empty_path);
 }
 
 test "normalizacao lexical mantem o que e legitimo" {
     var f = Fixture.init();
     defer f.deinit();
-    const res = try build(f.a(), &.{orig(1, "a", .file)}, &.{edit(1, "sub/./../b")}, .{});
+    const res = try build(f.a(), &.{orig(1, "a", .file)}, &.{edit(1, "sub/./../b")}, &.{}, .{});
     try testing.expectEqualStrings("b", res.ok.renames[0].to);
 }
 
@@ -853,7 +1032,7 @@ test "remocao simples" {
     var f = Fixture.init();
     defer f.deinit();
     const originals = [_]Original{ orig(1, "a", .file), orig(2, "b", .file) };
-    const p = (try build(f.a(), &originals, &.{edit(1, "a")}, .{})).ok;
+    const p = (try build(f.a(), &originals, &.{edit(1, "a")}, &.{}, .{})).ok;
     try testing.expectEqual(@as(usize, 1), p.removes.len);
     try testing.expectEqual(@as(u32, 2), p.removes[0].id);
     try testing.expectEqual(@as(u32, 1), p.unchanged);
@@ -867,7 +1046,7 @@ test "pai e filho ambos removidos: absorve o filho" {
         orig(2, "dir/x.txt", .file),
         orig(3, "dir/sub/y.txt", .file),
     };
-    const p = (try build(f.a(), &originals, &.{}, .{})).ok;
+    const p = (try build(f.a(), &originals, &.{}, &.{}, .{})).ok;
     try testing.expectEqual(@as(usize, 1), p.removes.len);
     try testing.expectEqualStrings("dir", p.removes[0].path);
 }
@@ -877,7 +1056,7 @@ test "pai removido com filho renomeado e contradicao" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "dir", .dir), orig(2, "dir/x.txt", .file) };
     try expectProblem(
-        try build(f.a(), &originals, &.{edit(2, "dir/y.txt")}, .{}),
+        try build(f.a(), &originals, &.{edit(2, "dir/y.txt")}, &.{}, .{}),
         .parent_removed_child_moved,
     );
 }
@@ -887,11 +1066,11 @@ test "pai movido com filho alterado e contradicao" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "dir", .dir), orig(2, "dir/x.txt", .file) };
     try expectProblem(
-        try build(f.a(), &originals, &.{ edit(1, "outro"), edit(2, "dir/y.txt") }, .{}),
+        try build(f.a(), &originals, &.{ edit(1, "outro"), edit(2, "dir/y.txt") }, &.{}, .{}),
         .parent_moved_child_touched,
     );
     // Filho inalterado viaja junto com o pai: sem problema.
-    const ok = try build(f.a(), &originals, &.{ edit(1, "outro"), edit(2, "dir/x.txt") }, .{});
+    const ok = try build(f.a(), &originals, &.{ edit(1, "outro"), edit(2, "dir/x.txt") }, &.{}, .{});
     try testing.expectEqual(@as(usize, 1), ok.ok.moves.len);
 }
 
@@ -900,20 +1079,161 @@ test "destino que engole outro destino" {
     defer f.deinit();
     const originals = [_]Original{ orig(1, "a", .dir), orig(2, "b", .file) };
     try expectProblem(
-        try build(f.a(), &originals, &.{ edit(1, "novo"), edit(2, "novo/b") }, .{}),
+        try build(f.a(), &originals, &.{ edit(1, "novo"), edit(2, "novo/b") }, &.{}, .{}),
         .dest_under_dest,
     );
+}
+
+test "criacao monta arquivo, diretorio e os pais que faltam" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const p = (try build(f.a(), &.{}, &.{}, &.{
+        creation(5, "novo.txt"),
+        creation(6, "docs/sub/nota.md"),
+        creation(7, "vazio/"),
+    }, .{})).ok;
+
+    // Os pais nao entram em `mkdirs`: aquela fase roda antes das renomeacoes.
+    try testing.expectEqual(@as(usize, 0), p.mkdirs.len);
+    try testing.expectEqual(@as(usize, 5), p.creates.len);
+    try testing.expectEqualStrings("novo.txt", p.creates[0].path);
+    try testing.expectEqualStrings("docs", p.creates[1].path);
+    try testing.expect(p.creates[1].implicit);
+    try testing.expectEqual(Kind.dir, p.creates[1].kind);
+    try testing.expectEqualStrings("docs/sub", p.creates[2].path);
+    try testing.expectEqualStrings("docs/sub/nota.md", p.creates[3].path);
+    try testing.expectEqual(Kind.file, p.creates[3].kind);
+    // A barra final some na normalizacao; o tipo que ela pediu fica.
+    try testing.expectEqualStrings("vazio", p.creates[4].path);
+    try testing.expectEqual(Kind.dir, p.creates[4].kind);
+    try testing.expect(!p.creates[4].implicit);
+    try testing.expect(!p.isEmpty());
+}
+
+test "criacao nao disputa caminho com a selecao" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{
+        orig(1, "a.txt", .file),
+        orig(2, "dir", .dir),
+        orig(3, "dir/x.txt", .file),
+    };
+    const keep = [_]Edit{ edit(1, "a.txt"), edit(2, "dir"), edit(3, "dir/x.txt") };
+
+    // Entrada que fica onde esta.
+    try expectProblem(
+        try build(f.a(), &originals, &keep, &.{creation(9, "a.txt")}, .{}),
+        .create_occupied,
+    );
+    // Duas linhas novas com o mesmo nome.
+    try expectProblem(
+        try build(f.a(), &originals, &keep, &.{ creation(9, "n.txt"), creation(10, "n.txt") }, .{}),
+        .create_duplicate,
+    );
+    // O ID da linha foi apagado por acidente: remove o original e cria um
+    // vazio no lugar. Erro, nao perda silenciosa.
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(2, "dir"), edit(3, "dir/x.txt") }, &.{creation(9, "a.txt")}, .{}),
+        .create_over_removed,
+    );
+    // Dentro de diretorio que sai do lugar, o arquivo novo iria junto.
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "a.txt"), edit(2, "outro"), edit(3, "outro/x.txt") }, &.{creation(9, "dir/n.txt")}, .{}),
+        .create_under_touched,
+    );
+    // Dentro de diretorio removido, o arquivo novo iria para a area da sessao.
+    try expectProblem(
+        try build(f.a(), &originals, &.{edit(1, "a.txt")}, &.{creation(9, "dir/n.txt")}, .{}),
+        .create_under_touched,
+    );
+}
+
+test "criacao ocupa nome que a renomeacao libera" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const p = (try build(
+        f.a(),
+        &.{orig(1, "log.txt", .file)},
+        &.{edit(1, "log.1.txt")},
+        &.{creation(9, "log.txt")},
+        .{},
+    )).ok;
+    try testing.expectEqual(@as(usize, 1), p.renames.len);
+    try testing.expectEqual(@as(usize, 1), p.creates.len);
+    try testing.expectEqualStrings("log.txt", p.creates[0].path);
+}
+
+test "regras lexicais da criacao" {
+    var f = Fixture.init();
+    defer f.deinit();
+    try expectProblem(try build(f.a(), &.{}, &.{}, &.{creation(9, "/etc/passwd")}, .{}), .create_absolute);
+    try expectProblem(try build(f.a(), &.{}, &.{}, &.{creation(9, "../fora")}, .{}), .create_escapes_base);
+    try expectProblem(try build(f.a(), &.{}, &.{}, &.{creation(9, ".lst-f-99/x")}, .{}), .create_reserved);
+    try expectProblem(try build(f.a(), &.{}, &.{}, &.{creation(9, "./")}, .{}), .create_empty_path);
+}
+
+test "linha nova em diretorio vazio nao e engolida pelo cabecalho" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const scope = "lst-f v26.8.21  ~/Devel/lst-f/vazio  ·  Vim";
+    const text = scope ++ "\n" ++ frame_top ++ "\n" ++ frame_title ++ "\n" ++ frame_bottom ++ "\n" ++
+        "relatorio v2.txt\n";
+    const doc = (try parseBuffer(f.a(), text, &.{scope})).ok;
+    try testing.expectEqual(@as(usize, 0), doc.edits.len);
+    try testing.expectEqual(@as(usize, 1), doc.creates.len);
+    try testing.expectEqualStrings("relatorio v2.txt", doc.creates[0].path);
+}
+
+test "nome novo acima das entradas nao e confundido com cabecalho" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const scope = "lst-f v26.8.21  ~/Devel/lst-f  ·  Vim";
+    // Nomes que a heuristica antiga engolia: " v", prefixo "lst-f", " · ".
+    const text = scope ++ "\n" ++ frame_bottom ++ "\n" ++
+        "relatorio v2.txt\n" ++
+        "lst-f-notas.md\n" ++
+        "/0001  a.txt\n";
+    const doc = (try parseBuffer(f.a(), text, &.{scope})).ok;
+    try testing.expectEqual(@as(usize, 1), doc.edits.len);
+    try testing.expectEqual(@as(usize, 2), doc.creates.len);
+    try testing.expectEqualStrings("relatorio v2.txt", doc.creates[0].path);
+    try testing.expectEqualStrings("lst-f-notas.md", doc.creates[1].path);
+}
+
+test "cabecalho deslocado por :sort nao vira pedido de criacao" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const scope = "resultado de :find zig (2 marcada(s))";
+    // Ordenar o buffer inteiro joga a moldura e o escopo para depois das
+    // entradas; reconhecidos por identidade, continuam sendo cabecalho.
+    const text = "/0001  a.txt\n" ++ "/0002  b.txt\n" ++
+        frame_title ++ "\n" ++ "aviso: area orfa .lst-f-1 (1 item)\n" ++
+        scope ++ "\n" ++ frame_top ++ "\n" ++ frame_bottom ++ "\n";
+    const doc = (try parseBuffer(f.a(), text, &.{ scope, "aviso: area orfa .lst-f-1 (1 item)" })).ok;
+    try testing.expectEqual(@as(usize, 2), doc.edits.len);
+    try testing.expectEqual(@as(usize, 0), doc.creates.len);
+}
+
+test "moldura esticada pelo helper continua sendo cabecalho" {
+    var f = Fixture.init();
+    defer f.deinit();
+    // O helper Vim estica as tres linhas ate a largura do terminal.
+    const text = frame_top ++ "──────\n" ++ frame_title ++ "      \n" ++ frame_bottom ++ "──────\n" ++
+        "/0001  a.txt\n";
+    const doc = (try parseBuffer(f.a(), text, &.{})).ok;
+    try testing.expectEqual(@as(usize, 1), doc.edits.len);
+    try testing.expectEqual(@as(usize, 0), doc.creates.len);
 }
 
 test "parser do buffer" {
     var f = Fixture.init();
     defer f.deinit();
     const text = "# comentario\n" ++
-        "0001  a.txt\n" ++
-        "0002\tsub/b.txt\n" ++
+        "/0001  a.txt\n" ++
+        "/0002\tsub/b.txt\n" ++
         "\n" ++
-        "0003   nome com  espacos .txt\n";
-    const res = try parseBuffer(f.a(), text);
+        "/0003   nome com  espacos .txt\n";
+    const res = try parseBuffer(f.a(), text, &.{});
     const edits = res.ok.edits;
     try testing.expectEqual(@as(usize, 3), edits.len);
     try testing.expectEqual(@as(u32, 1), edits[0].id);
@@ -923,20 +1243,44 @@ test "parser do buffer" {
     try testing.expectEqual(@as(u32, 5), edits[2].line);
 }
 
-test "parser recusa linha sem ID" {
+test "nome novo pode comecar com digitos e espaco" {
     var f = Fixture.init();
     defer f.deinit();
-    const res = try parseBuffer(f.a(), "0001 a.txt\nlixo colado\n");
-    switch (res) {
-        .ok => return error.ExpectedInvalid,
-        .invalid => |ps| try testing.expect(ps[0] == .line_without_id),
-    }
+    // A marca do ID e `/` + digitos, e `/` e o unico byte que um nome de
+    // arquivo nao pode conter: nenhum nome colide com a forma de uma entrada.
+    const doc = (try parseBuffer(f.a(), "/0001  a.txt\n2026 relatorio.txt\n", &.{})).ok;
+    try testing.expectEqual(@as(usize, 1), doc.edits.len);
+    try testing.expectEqual(@as(u32, 1), doc.edits[0].id);
+    try testing.expectEqual(@as(usize, 1), doc.creates.len);
+    try testing.expectEqualStrings("2026 relatorio.txt", doc.creates[0].path);
+}
+
+test "caminho absoluto em linha nova continua sendo erro" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const doc = (try parseBuffer(f.a(), "/etc/passwd\n", &.{})).ok;
+    try testing.expectEqual(@as(usize, 1), doc.creates.len);
+    try expectProblem(try build(f.a(), &.{}, &.{}, doc.creates, .{}), .create_absolute);
+}
+
+test "linha sem ID vira criacao" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const doc = (try parseBuffer(f.a(), "/0001 a.txt\nnovo.txt\n    sub/dir/\n", &.{})).ok;
+    try testing.expectEqual(@as(usize, 1), doc.edits.len);
+    try testing.expectEqual(@as(usize, 2), doc.creates.len);
+    try testing.expectEqualStrings("novo.txt", doc.creates[0].path);
+    try testing.expectEqual(Kind.file, doc.creates[0].kind);
+    try testing.expectEqual(@as(u32, 2), doc.creates[0].line);
+    // Espaco a esquerda e alinhamento com a coluna NAME.
+    try testing.expectEqualStrings("sub/dir/", doc.creates[1].path);
+    try testing.expectEqual(Kind.dir, doc.creates[1].kind);
 }
 
 test "parser preserva espaco no fim do nome" {
     var f = Fixture.init();
     defer f.deinit();
-    const res = try parseBuffer(f.a(), "0001  nome com espaco no fim \n");
+    const res = try parseBuffer(f.a(), "/0001  nome com espaco no fim \n", &.{});
     try testing.expectEqualStrings("nome com espaco no fim ", res.ok.edits[0].path);
 }
 
@@ -944,24 +1288,24 @@ test "diretivas de navegacao" {
     var f = Fixture.init();
     defer f.deinit();
 
-    const cd = (try parseBuffer(f.a(), "#\n:cd src\n0001  a.txt\n")).ok;
+    const cd = (try parseBuffer(f.a(), "#\n:cd src\n/0001  a.txt\n", &.{})).ok;
     try testing.expectEqualStrings("src", cd.directive.?.cd);
     try testing.expectEqual(@as(usize, 1), cd.edits.len);
 
-    const find = (try parseBuffer(f.a(), ":find  plan.zig\n")).ok;
+    const find = (try parseBuffer(f.a(), ":find  plan.zig\n", &.{})).ok;
     try testing.expectEqualStrings("plan.zig", find.directive.?.find);
 
     // :find sem termo e legitimo: abre o buscador na arvore inteira.
-    const find_all = (try parseBuffer(f.a(), ":find\n")).ok;
+    const find_all = (try parseBuffer(f.a(), ":find\n", &.{})).ok;
     try testing.expectEqualStrings("", find_all.directive.?.find);
 
-    const open_doc = (try parseBuffer(f.a(), ":open src/main.zig\n")).ok;
+    const open_doc = (try parseBuffer(f.a(), ":open src/main.zig\n", &.{})).ok;
     try testing.expectEqualStrings("src/main.zig", open_doc.directive.?.open);
 
-    try testing.expect((try parseBuffer(f.a(), ":undo\n")).ok.directive.? == .undo);
-    try testing.expect((try parseBuffer(f.a(), ":refresh\n")).ok.directive.? == .refresh);
-    try testing.expect((try parseBuffer(f.a(), ":quit\n")).ok.directive.? == .quit);
-    try testing.expect((try parseBuffer(f.a(), ":q\n")).ok.directive.? == .quit);
+    try testing.expect((try parseBuffer(f.a(), ":undo\n", &.{})).ok.directive.? == .undo);
+    try testing.expect((try parseBuffer(f.a(), ":refresh\n", &.{})).ok.directive.? == .refresh);
+    try testing.expect((try parseBuffer(f.a(), ":quit\n", &.{})).ok.directive.? == .quit);
+    try testing.expect((try parseBuffer(f.a(), ":q\n", &.{})).ok.directive.? == .quit);
 }
 
 test "diretivas invalidas abortam sem aplicar nada" {
@@ -973,7 +1317,7 @@ test "diretivas invalidas abortam sem aplicar nada" {
         .{ .text = ":cd a\n:cd b\n", .tag = .multiple_directives },
     };
     for (cases) |case| {
-        switch (try parseBuffer(f.a(), case.text)) {
+        switch (try parseBuffer(f.a(), case.text, &.{})) {
             .ok => return error.ExpectedInvalid,
             .invalid => |ps| try testing.expect(ps[0] == case.tag),
         }
@@ -984,7 +1328,7 @@ test "nome de arquivo nunca e confundido com diretiva" {
     var f = Fixture.init();
     defer f.deinit();
     // A linha de entrada comeca por digito, entao `:` no nome e so um byte.
-    const doc = (try parseBuffer(f.a(), "0001  :cd nao sou diretiva\n")).ok;
+    const doc = (try parseBuffer(f.a(), "/0001  :cd nao sou diretiva\n", &.{})).ok;
     try testing.expect(doc.directive == null);
     try testing.expectEqualStrings(":cd nao sou diretiva", doc.edits[0].path);
 }
@@ -998,13 +1342,16 @@ test "round-trip do buffer" {
     };
     var buf: [2048]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try writeBuffer(&w, .{
+    const head: BufferHeader = .{
         .unlistable = &.{"invalido-\xff.txt"},
         .notes = &.{"area orfa .lst-f-1 (2 itens)"},
-    }, &originals);
-    const res = try parseBuffer(f.a(), w.buffered());
+    };
+    try writeBuffer(f.a(), &w, head, &originals);
+    const res = try parseBuffer(f.a(), w.buffered(), try headerLines(f.a(), head));
     try testing.expect(res.ok.directive == null);
-    const plan_res = try build(f.a(), &originals, res.ok.edits, .{});
+    // Nenhuma linha do cabecalho pode ser confundida com pedido de criacao.
+    try testing.expectEqual(@as(usize, 0), res.ok.creates.len);
+    const plan_res = try build(f.a(), &originals, res.ok.edits, res.ok.creates, .{});
     try testing.expect(plan_res.ok.isEmpty());
 }
 
@@ -1019,11 +1366,11 @@ test "round-trip do buffer com colunas preserva somente o nome editavel" {
     }};
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try writeBuffer(&w, .{}, &originals);
-    const doc = (try parseBuffer(f.a(), w.buffered())).ok;
+    try writeBuffer(f.a(), &w, .{}, &originals);
+    const doc = (try parseBuffer(f.a(), w.buffered(), &.{})).ok;
     try testing.expectEqualStrings("antes.txt", doc.edits[0].path);
 
-    const renamed = (try parseBuffer(f.a(), "0007  - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  depois.txt\n")).ok;
+    const renamed = (try parseBuffer(f.a(), "/0007  - │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  depois.txt\n", &.{})).ok;
     try testing.expectEqualStrings("depois.txt", renamed.edits[0].path);
 }
 
@@ -1036,11 +1383,11 @@ test "buffer sem linhas iniciadas por '#' mantem cabecalho separado do conteudo"
         \\──┬───────────┬───────────┬──────────────────┬──────────────────────────
         \\T │ PERMS     │ SIZE      │ MODIFIED         │ NAME (editable)
         \\──┼───────────┼───────────┼──────────────────┼──────────────────────────
-        \\0001  d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src/
-        \\0002  - │ rw-r--r-- │      1.1K │ 2026-08-22 13:20 │  build.zig
+        \\/0001  d │ rwxr-xr-x │         - │ 2026-08-22 13:19 │  src/
+        \\/0002  - │ rw-r--r-- │      1.1K │ 2026-08-22 13:20 │  build.zig
         \\
     ;
-    const res = try parseBuffer(f.a(), text);
+    const res = try parseBuffer(f.a(), text, &.{});
     const doc = res.ok;
     try testing.expectEqual(@as(usize, 2), doc.edits.len);
     try testing.expectEqualStrings("src/", doc.edits[0].path);
@@ -1057,7 +1404,7 @@ test "cabecalho sem entradas nao acusa erro de linha sem ID" {
         \\──┼───────────┼───────────┼──────────────────┼──────────────────────────
         \\
     ;
-    const res = try parseBuffer(f.a(), text);
+    const res = try parseBuffer(f.a(), text, &.{});
     try testing.expectEqual(@as(usize, 0), res.ok.edits.len);
 }
 
@@ -1065,13 +1412,13 @@ test "diretiva :hidden eh parseada corretamente" {
     var f = Fixture.init();
     defer f.deinit();
 
-    const t1 = (try parseBuffer(f.a(), "0001  a.txt\n:hidden\n")).ok;
+    const t1 = (try parseBuffer(f.a(), "/0001  a.txt\n:hidden\n", &.{})).ok;
     try testing.expect(t1.directive.? == .hidden);
     try testing.expectEqual(@as(?bool, null), t1.directive.?.hidden);
 
-    const t2 = (try parseBuffer(f.a(), "0001  a.txt\n:hidden on\n")).ok;
+    const t2 = (try parseBuffer(f.a(), "/0001  a.txt\n:hidden on\n", &.{})).ok;
     try testing.expectEqual(@as(?bool, true), t2.directive.?.hidden);
 
-    const t3 = (try parseBuffer(f.a(), "0001  a.txt\n:hidden off\n")).ok;
+    const t3 = (try parseBuffer(f.a(), "/0001  a.txt\n:hidden off\n", &.{})).ok;
     try testing.expectEqual(@as(?bool, false), t3.directive.?.hidden);
 }

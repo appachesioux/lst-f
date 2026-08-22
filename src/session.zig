@@ -57,6 +57,13 @@ pub const State = struct {
         return s.dir.createFile(io, "list", .{ .truncate = true });
     }
 
+    /// As linhas de cabecalho do buffer aberto. O helper Vim as usa para
+    /// recompor a barra de titulo se uma tecla a apagar ou deslocar.
+    pub fn writeHeader(s: State, io: Io, arena: Allocator, lines: []const []const u8) !void {
+        const joined = try std.mem.join(arena, "\n", lines);
+        try s.dir.writeFile(io, .{ .sub_path = "header", .data = joined });
+    }
+
     /// Arvore visual da listagem local. E consumida somente pelo helper Vim;
     /// nao participa do plano de operacoes nem e um plugin persistente.
     pub fn treeFile(s: State, io: Io) !Io.File {
@@ -99,7 +106,9 @@ pub const State = struct {
             \\    \ '  • Edite o caminho e use :w: renomeia ou move (cria os pais que faltarem)',
             \\    \ '  • :w sem edicao apenas atualiza a lista e mantem a sessao aberta',
             \\    \ '  • Apague a linha  : remove a entrada (area de sessao temporaria)',
-            \\    \ '  • ID de 4 digitos : vincula a linha (:sort e reordenar sao seguros)',
+            \\    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretorio)',
+            \\    \ '  • So o nome e editavel: cabecalho e colunas voltam sozinhos',
+            \\    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar sao seguros)',
             \\    \ '',
             \\    \ '  Diretivas (escreva no buffer e salve):',
             \\    \ '    :cd <dir>      Entra no diretorio (.. sobe)',
@@ -185,10 +194,10 @@ pub const State = struct {
             \\
             \\function! s:lstf_entry_path() abort
             \\  let l:line = getline('.')
-            \\  if l:line !~# '^\d\+\s\+'
+            \\  if l:line !~# '^/\d\+\s\+'
             \\    return ''
             \\  endif
-            \\  let l:body = substitute(l:line, '^\d\+\s\+', '', '')
+            \\  let l:body = substitute(l:line, '^/\d\+\s\+', '', '')
             \\  let l:sep = strridx(l:body, ' │ ')
             \\  if l:sep >= 0
             \\    let l:res = strpart(l:body, l:sep + 5)
@@ -297,7 +306,80 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_content_start() abort
-            \\  return search('^\d\+\s\+', 'nW')
+            \\  return search('^/\d\+\s\+', 'nW')
+            \\endfunction
+            \\
+            \\" O cabecalho e a barra de titulo desta tela, nao conteudo: se uma
+            \\" tecla o apagar ou um :sort o deslocar, ele volta para o topo.
+            \\function! s:lstf_restore_header() abort
+            \\  let l:want = get(b:, 'lstf_header', [])
+            \\  if empty(l:want) | return | endif
+            \\  if getline(1, len(l:want)) ==# l:want | return | endif
+            \\  let l:view = winsaveview()
+            \\  let l:body = filter(getline(1, '$'),
+            \\    \ 'index(l:want, v:val) < 0 && v:val !~# "^──" && v:val !~# "^T │ PERMS"')
+            \\  silent! undojoin
+            \\  call setline(1, l:want + l:body)
+            \\  let l:total = len(l:want) + len(l:body)
+            \\  if line('$') > l:total
+            \\    silent! execute (l:total + 1) . ',$delete _'
+            \\  endif
+            \\  call winrestview(l:view)
+            \\  call s:lstf_keep_cursor_below_header()
+            \\endfunction
+            \\
+            \\" Nem Vim nem Neovim trancam um intervalo de linhas: 'modifiable' e
+            \\" do buffer inteiro. O par abaixo faz o papel -- o cursor nao entra
+            \\" no cabecalho e o que passar por cima dele volta na hora.
+            \\function! s:lstf_keep_cursor_below_header() abort
+            \\  let l:end = len(get(b:, 'lstf_header', []))
+            \\  if l:end <= 0 || line('.') > l:end | return | endif
+            \\  if line('$') <= l:end | return | endif
+            \\  if mode() =~# "^[vV\x16]" | return | endif
+            \\  call cursor(l:end + 1, col('.'))
+            \\endfunction
+            \\
+            \\" Comeco do nome na linha: depois do ID e da grade de colunas.
+            \\function! s:lstf_name_start(line) abort
+            \\  return matchend(a:line, '^/\d\+\s\+\%(.*│  \)\?')
+            \\endfunction
+            \\
+            \\" So o nome e editavel. As colunas tecnicas ja eram ignoradas pelo
+            \\" plano; aqui elas param de ser alcancaveis pelo cursor, e o que
+            \\" escapar (:s, colagem) volta ao lugar assim que o texto muda.
+            \\function! s:lstf_keep_cursor_in_name() abort
+            \\  let l:line = getline('.')
+            \\  " Linha nova (sem ID) e editavel inteira.
+            \\  let l:id = matchstr(l:line, '^/\d\+')
+            \\  if empty(l:id) || !has_key(get(b:, 'lstf_prefix', {}), l:id) | return | endif
+            \\  let l:start = s:lstf_name_start(l:line)
+            \\  if l:start <= 0 | return | endif
+            \\  if col('.') <= l:start | call cursor(line('.'), l:start + 1) | endif
+            \\endfunction
+            \\
+            \\function! s:lstf_restore_columns() abort
+            \\  if !exists('b:lstf_prefix') | return | endif
+            \\  let l:line = getline('.')
+            \\  let l:id = matchstr(l:line, '^/\d\+')
+            \\  if empty(l:id) || !has_key(b:lstf_prefix, l:id) | return | endif
+            \\  let l:want = b:lstf_prefix[l:id]
+            \\  if strpart(l:line, 0, len(l:want)) ==# l:want | return | endif
+            \\  let l:name = matchstr(l:line, '.*│\s*\zs.*')
+            \\  if empty(l:name) | let l:name = matchstr(l:line, '^/\d\+\s\+\zs.*') | endif
+            \\  let l:view = winsaveview()
+            \\  silent! undojoin
+            \\  call setline(line('.'), l:want . l:name)
+            \\  call winrestview(l:view)
+            \\endfunction
+            \\
+            \\function! s:lstf_capture_prefixes() abort
+            \\  let b:lstf_prefix = {}
+            \\  for l:line in getline(1, '$')
+            \\    let l:id = matchstr(l:line, '^/\d\+')
+            \\    if empty(l:id) | continue | endif
+            \\    let l:start = s:lstf_name_start(l:line)
+            \\    if l:start > 0 | let b:lstf_prefix[l:id] = strpart(l:line, 0, l:start) | endif
+            \\  endfor
             \\endfunction
             \\
             \\function! s:lstf_stretch_header() abort
@@ -316,8 +398,8 @@ pub const State = struct {
             \\
             \\function! LstfStatusline() abort
             \\  let l:start = s:lstf_content_start()
-            \\  let l:total = l:start > 0 ? len(filter(getline(l:start, '$'), 'v:val =~# ''^\d\+\s\+''')) : 0
-            \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^\d\+\s\+''')) : 0
+            \\  let l:total = l:start > 0 ? len(filter(getline(l:start, '$'), 'v:val =~# ''^/\d\+\s\+''')) : 0
+            \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^/\d\+\s\+''')) : 0
             \\  let l:mode = mode(1) =~# '^[iR]' ? 'EDIT' : mode(1) =~# '^[vV]' ? 'VISUAL' : 'NORMAL'
             \\  let l:name = substitute(s:lstf_entry_path(), '%', '%%', 'g')
             \\  let l:location = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
@@ -537,13 +619,18 @@ pub const State = struct {
             \\endif
             \\set noruler noshowcmd
             \\setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
-            \\syntax match LstfInternalId /^\d\+\s\+/ conceal
+            \\syntax match LstfInternalId /^\/\d\+\s\+/ conceal
             \\" O sequencial e metadado interno: oculta-lo tambem na linha do
             \\" cursor evita deslocar as colunas, inclusive ao voltar do :find.
             \\setlocal conceallevel=2 concealcursor=nvic
             \\augroup lstf_buffer
             \\  autocmd! * <buffer>
             \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
+            \\  autocmd TextChanged <buffer> call s:lstf_restore_header()
+            \\  autocmd CursorMoved <buffer> call s:lstf_keep_cursor_below_header()
+            \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_keep_cursor_in_name()
+            \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
+            \\  autocmd InsertLeave <buffer> call s:lstf_restore_header()
             \\  " O painel de destino pode estar aberto: `quit` fecharia so a
             \\  " janela da lista e deixaria o processo Vim preso no painel.
             \\  autocmd BufWritePost <buffer> quitall
@@ -552,7 +639,19 @@ pub const State = struct {
             \\  autocmd!
             \\  autocmd ModeChanged * redrawstatus
             \\augroup END
+            \\if filereadable($LST_F_STATE . '/header')
+            \\  let b:lstf_header = readfile($LST_F_STATE . '/header')
+            \\  call s:lstf_restore_header()
+            \\  " Diretorio vazio: sem uma linha abaixo do cabecalho nao havia
+            \\  " onde pousar o cursor para digitar o primeiro nome.
+            \\  if line('$') <= len(b:lstf_header) | call append('$', '') | endif
+            \\endif
             \\call s:lstf_stretch_header()
+            \\if exists('b:lstf_header')
+            \\  " A moldura foi esticada agora ha pouco: a referencia e a tela.
+            \\  let b:lstf_header = getline(1, len(b:lstf_header))
+            \\endif
+            \\call s:lstf_capture_prefixes()
             \\if filereadable($LST_F_STATE . '/cursor')
             \\  let s:lstf_start = s:lstf_content_start()
             \\  let s:lstf_offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')

@@ -23,12 +23,16 @@ pub const Removed = struct {
 /// O que efetivamente aconteceu no disco. Serve ao rollback e ao undo.
 pub const Applied = struct {
     created_dirs: []const []const u8 = &.{},
+    /// Criacoes pedidas por linha sem ID. Saem antes de desfazer as
+    /// renomeacoes: podem estar ocupando um nome que precisa voltar.
+    created: []const plan.Create = &.{},
     renames: []const plan.Rename = &.{},
     removed: []const Removed = &.{},
     area: ?[]const u8 = null,
 
     pub fn isEmpty(a: Applied) bool {
-        return a.created_dirs.len == 0 and a.renames.len == 0 and a.removed.len == 0;
+        return a.created_dirs.len == 0 and a.created.len == 0 and
+            a.renames.len == 0 and a.removed.len == 0;
     }
 };
 
@@ -106,6 +110,7 @@ pub fn apply(
     area: ?*Area,
 ) Allocator.Error!Outcome {
     var created: std.ArrayList([]const u8) = .empty;
+    var new_entries: std.ArrayList(plan.Create) = .empty;
     var renamed: std.ArrayList(plan.Rename) = .empty;
     var removed: std.ArrayList(Removed) = .empty;
 
@@ -155,7 +160,31 @@ pub fn apply(
         }
     }
 
-    // Fase 3: remocoes, sempre por ultimo.
+    // Fase 3: criacoes. Depois das renomeacoes, para que um nome liberado no
+    // mesmo passo possa ser reocupado. `exclusive` garante que nenhuma criacao
+    // sobrescreva o que ja estiver la.
+    if (failure == null) {
+        for (p.creates) |c| {
+            if (c.kind == .dir) {
+                // Pai que ja existe e o caso normal; quem pediu explicitamente
+                // um diretorio que ja existe foi barrado antes, na validacao.
+                if (dirStatus(io, base, c.path) == .dir) continue;
+                base.createDir(io, c.path, .default_dir) catch |err| {
+                    failure = .{ .phase = "criar", .detail = c.path, .err = err };
+                    break;
+                };
+            } else {
+                var file = base.createFile(io, c.path, .{ .exclusive = true }) catch |err| {
+                    failure = .{ .phase = "criar", .detail = c.path, .err = err };
+                    break;
+                };
+                file.close(io);
+            }
+            try new_entries.append(arena, c);
+        }
+    }
+
+    // Fase 4: remocoes, sempre por ultimo.
     if (failure == null and p.removes.len > 0) {
         const a = area.?;
         for (p.removes) |rm| {
@@ -173,6 +202,7 @@ pub fn apply(
 
     var applied: Applied = .{
         .created_dirs = try created.toOwnedSlice(arena),
+        .created = try new_entries.toOwnedSlice(arena),
         .renames = try renamed.toOwnedSlice(arena),
         .removed = try removed.toOwnedSlice(arena),
         .area = if (area) |a| a.name else null,
@@ -209,6 +239,53 @@ pub fn revert(
                 ));
             };
         }
+    }
+
+    var c = applied.created.len;
+    while (c > 0) {
+        c -= 1;
+        const entry = applied.created[c];
+        if (entry.kind == .dir) {
+            base.deleteDir(io, entry.path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                error.DirNotEmpty => try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "{s}/ foi mantido: nao esta mais vazio",
+                    .{entry.path},
+                )),
+                else => try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "remover {s}/ criado: {s}",
+                    .{ entry.path, @errorName(err) },
+                )),
+            };
+            continue;
+        }
+        // O undo nao pode apagar o que voce escreveu depois de criar o arquivo.
+        const st = base.statFile(io, entry.path, .{ .follow_symlinks = false }) catch |err| {
+            if (err != error.FileNotFound) try errors.append(arena, try std.fmt.allocPrint(
+                arena,
+                "remover {s} criado: {s}",
+                .{ entry.path, @errorName(err) },
+            ));
+            continue;
+        };
+        if (st.size != 0) {
+            try errors.append(arena, try std.fmt.allocPrint(
+                arena,
+                "{s} foi mantido: nao esta mais vazio",
+                .{entry.path},
+            ));
+            continue;
+        }
+        base.deleteFile(io, entry.path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => try errors.append(arena, try std.fmt.allocPrint(
+                arena,
+                "remover {s} criado: {s}",
+                .{ entry.path, @errorName(err) },
+            )),
+        };
     }
 
     var i = applied.renames.len;
@@ -367,7 +444,7 @@ fn planFor(
     originals: []const plan.Original,
     edits: []const plan.Edit,
 ) !plan.Plan {
-    const res = try plan.build(arena, originals, edits, .{});
+    const res = try plan.build(arena, originals, edits, &.{}, .{});
     return switch (res) {
         .ok => |p| p,
         .invalid => error.UnexpectedInvalidPlan,
@@ -606,4 +683,109 @@ test "symlink no caminho do pai bloqueia a criacao" {
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(error.SymlinkInPath, outcome.failure.?.err);
     try testing.expect(h.exists("f.txt"));
+}
+
+test "cria arquivo e diretorio no disco" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .creates = &.{
+            .{ .path = "docs", .kind = .dir, .implicit = true },
+            .{ .path = "docs/nota.md", .kind = .file },
+            .{ .path = "vazio", .kind = .dir },
+        },
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+    };
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure == null);
+    try testing.expectEqual(@as(usize, 3), outcome.applied.created.len);
+    try testing.expect(h.exists("docs/nota.md"));
+    try testing.expect(h.exists("vazio"));
+    try testing.expectEqualStrings("", try h.read("docs/nota.md"));
+}
+
+test "criacao nunca sobrescreve o que ja esta la" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("ocupado.txt", "nao me trunque");
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .creates = &.{.{ .path = "ocupado.txt", .kind = .file }},
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+    };
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure != null);
+    try testing.expectEqualStrings("nao me trunque", try h.read("ocupado.txt"));
+}
+
+test "falha depois da criacao desfaz o que foi criado" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("um", "1");
+
+    const name = try areaName(h.a(), 4246);
+    var area = try openArea(h.a(), io, h.dir(), name);
+    defer area.close(io);
+    // Colisao plantada na area: a remocao, que vem por ultimo, vai falhar.
+    try h.touch(".lst-f-4246/0001", "impostor");
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .creates = &.{
+            .{ .path = "novo", .kind = .dir, .implicit = true },
+            .{ .path = "novo/x.txt", .kind = .file },
+        },
+        .removes = &.{.{ .id = 1, .path = "um", .kind = .file }},
+        .moves = &.{},
+        .unchanged = 0,
+    };
+    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    try testing.expect(outcome.failure != null);
+    try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
+    try testing.expect(!h.exists("novo/x.txt"));
+    try testing.expect(!h.exists("novo"));
+    try testing.expect(h.exists("um"));
+}
+
+test "desfazer mantem o arquivo criado que deixou de estar vazio" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("vazio.md", "");
+    try h.touch("escrito.md", "conteudo que voce digitou depois");
+
+    const applied: Applied = .{
+        .created = &.{
+            .{ .path = "vazio.md", .kind = .file },
+            .{ .path = "escrito.md", .kind = .file },
+        },
+    };
+    const errors = try revert(h.a(), io, h.dir(), applied, null);
+    try testing.expectEqual(@as(usize, 1), errors.len);
+    try testing.expect(!h.exists("vazio.md"));
+    try testing.expect(h.exists("escrito.md"));
 }
