@@ -39,6 +39,7 @@ pub const Options = struct {
     icons: bool = false,
     /// Cores discretas via ANSI; o fzf recebe `--ansi` quando ligado.
     color: bool = false,
+    show_hidden: bool = false,
 };
 
 /// Larguras das colunas de exibicao. Ficam aqui, junto de quem escreve as
@@ -100,7 +101,7 @@ pub fn enumerate(
             });
             index += 1;
         }
-        const entries = try readDir(arena, io, dir, "");
+        const entries = try readDir(arena, io, dir, "", options);
         sortEntries(entries.items);
         for (entries.items) |e| {
             try sink.emit(index, e);
@@ -110,7 +111,7 @@ pub fn enumerate(
     }
 
     const base_dev = deviceOf(dir.handle, ".") orelse 0;
-    try walk(arena, io, dir, "", base_dev, 0, options.max_depth, &index, sink);
+    try walk(arena, io, dir, "", base_dev, 0, options.max_depth, options, &index, sink);
 }
 
 fn walk(
@@ -121,10 +122,11 @@ fn walk(
     base_dev: u64,
     depth: u16,
     max_depth: u16,
+    options: Options,
     index: *u32,
     sink: Sink,
 ) Error!void {
-    const entries = try readDir(arena, io, dir, prefix);
+    const entries = try readDir(arena, io, dir, prefix, options);
     sortEntries(entries.items);
 
     for (entries.items) |e| {
@@ -145,15 +147,17 @@ fn walk(
 
         var sub = dir.openDir(io, name, .{ .iterate = true, .follow_symlinks = false }) catch continue;
         defer sub.close(io);
-        try walk(arena, io, sub, e.path, base_dev, depth + 1, max_depth, index, sink);
+        try walk(arena, io, sub, e.path, base_dev, depth + 1, max_depth, options, index, sink);
     }
 }
 
-fn readDir(arena: Allocator, io: Io, dir: Io.Dir, prefix: []const u8) Allocator.Error!std.ArrayList(Entry) {
+fn readDir(arena: Allocator, io: Io, dir: Io.Dir, prefix: []const u8, options: Options) Allocator.Error!std.ArrayList(Entry) {
     var out: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
     while (it.next(io) catch null) |raw_entry| {
+        if (std.mem.eql(u8, raw_entry.name, ".") or std.mem.eql(u8, raw_entry.name, "..")) continue;
         if (std.mem.startsWith(u8, raw_entry.name, plan.area_prefix)) continue;
+        if (!options.show_hidden and raw_entry.name.len > 0 and raw_entry.name[0] == '.') continue;
 
         const path = if (prefix.len == 0)
             try arena.dupe(u8, raw_entry.name)
@@ -440,4 +444,46 @@ test "display neutraliza bytes de controle e marca nao-UTF-8" {
     try testing.expect(std.mem.indexOf(u8, out, "!com") != null);
     try testing.expect(std.mem.indexOf(u8, out, "2.0K") != null);
     try testing.expect(std.mem.indexOf(u8, out, "rw-r--r--") != null);
+}
+
+test "show_hidden filtra ou exibe arquivos ocultos" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var tmp = testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+
+    try tmp.dir.writeFile(io, .{ .sub_path = "visivel.txt", .data = "" });
+    try tmp.dir.writeFile(io, .{ .sub_path = ".oculto.txt", .data = "" });
+    try tmp.dir.createDir(io, ".oculto_dir", .default_dir);
+    try tmp.dir.createDir(io, "visivel_dir", .default_dir);
+
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
+
+    const Collector = struct {
+        paths: std.ArrayList([]const u8) = .empty,
+        allocator: Allocator,
+
+        fn emit(ctx: *anyopaque, _: u32, e: Entry) anyerror!void {
+            const c: *@This() = @ptrCast(@alignCast(ctx));
+            if (e.parent) return;
+            try c.paths.append(c.allocator, e.path);
+        }
+    };
+
+    // 1. Oculto desligado (padrao)
+    var col_hidden_off: Collector = .{ .allocator = a };
+    try enumerate(a, io, tmp_path, .{ .show_hidden = false }, .{ .ctx = &col_hidden_off, .func = Collector.emit });
+    try testing.expectEqual(@as(usize, 2), col_hidden_off.paths.items.len);
+    try testing.expectEqualStrings("visivel_dir", col_hidden_off.paths.items[0]);
+    try testing.expectEqualStrings("visivel.txt", col_hidden_off.paths.items[1]);
+
+    // 2. Oculto ligado
+    var col_hidden_on: Collector = .{ .allocator = a };
+    try enumerate(a, io, tmp_path, .{ .show_hidden = true }, .{ .ctx = &col_hidden_on, .func = Collector.emit });
+    try testing.expectEqual(@as(usize, 4), col_hidden_on.paths.items.len);
 }

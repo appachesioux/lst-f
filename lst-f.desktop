@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=lst-f - File Explorer
+Comment=File Explorer
+Exec=/usr/bin/lst-f
+Icon=lst-f
+Type=Application
+Terminal=true
+StartupWMClass=lst-f
+Categories=Utility;
+Keywords=find;files;search;

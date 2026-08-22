@@ -50,7 +50,11 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             if (i >= args.len) return error.MissingValue;
             return .{ .preview_index = std.fmt.parseInt(u32, args[i], 10) catch return error.BadValue };
         }
-        if (std.mem.eql(u8, arg, "--icons")) {
+        if (std.mem.eql(u8, arg, "--hidden") or std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--all")) {
+            browse.options.show_hidden = true;
+        } else if (std.mem.eql(u8, arg, "--no-hidden")) {
+            browse.options.show_hidden = false;
+        } else if (std.mem.eql(u8, arg, "--icons")) {
             browse.options.icons = true;
         } else if (std.mem.eql(u8, arg, "--no-icons")) {
             browse.options.icons = false;
@@ -96,6 +100,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\para remover. O ID casa a linha com a entrada, entao reordenar, rodar
         \\:sort ou recolar linhas e inofensivo.
         \\
+        \\  -a, --all, --hidden  mostra arquivos e diretorios ocultos
         \\  --find [termo]     abre direto no buscador fuzzy da arvore
         \\  --editor <cmd>     editor a usar (padrao: vim, nvim)
         \\  --max-depth <n>    profundidade maxima da busca recursiva
@@ -106,10 +111,12 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\
         \\diretivas, escritas no proprio buffer:
         \\  :cd <dir>          entra no diretorio (.. sobe)
+        \\  :hidden            alterna exibicao de arquivos ocultos
         \\  :find [termo]      busca fuzzy na arvore com o fzf; o que voce marcar
         \\                     vira o conteudo do buffer
         \\  :undo              desfaz a ultima operacao aplicada nesta sessao
         \\  :quit              sai (salvar sem mudancas tambem sai; :cq aborta)
+        \\  .                  alterna exibicao de arquivos ocultos
         \\  Enter              abre o arquivo da linha ou entra no diretorio
         \\
         \\no buscador:
@@ -378,6 +385,14 @@ fn loop(s: *Session) !void {
             .undo => try undoLast(s),
             .cd => |target| try changeDir(s, target),
             .open => |target| try openFileInEditor(s, target),
+            .hidden => |opt| {
+                if (opt) |val| {
+                    s.options.show_hidden = val;
+                } else {
+                    s.options.show_hidden = !s.options.show_hidden;
+                }
+                try loadListing(s);
+            },
             .find => |query| {
                 if (!try runFind(s, query)) try loadListing(s);
             },
@@ -450,8 +465,9 @@ fn writeBuffer(s: *Session) !void {
     try plan.writeBuffer(&writer.interface, .{
         .app = build_options.app_name,
         .version = build_options.version,
-        .location = try std.fmt.allocPrint(s.arena, "{s}  ·  {s}", .{
+        .location = try std.fmt.allocPrint(s.arena, "{s}{s}  ·  {s}", .{
             abbreviateHome(s.arena, s.environ, s.base),
+            if (s.options.show_hidden) "  [all]" else "",
             s.editor_name,
         }),
         .scope = s.scope,
@@ -666,8 +682,9 @@ fn findHeader(s: *Session) ![]const u8 {
     const w = &buf.writer;
     const width: usize = @max(40, terminalWidth() -| gutter);
 
-    const location = try std.fmt.allocPrint(s.arena, "{s}  [arvore]", .{
+    const location = try std.fmt.allocPrint(s.arena, "{s}  [arvore]{s}", .{
         abbreviateHome(s.arena, s.environ, s.base),
+        if (s.options.show_hidden) " [all]" else "",
     });
     const badge = try std.fmt.allocPrint(s.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
         fzf.Keys.help_label,
@@ -1088,4 +1105,16 @@ test "recursivo nao e flag de linha de comando" {
     // A busca na arvore e a diretiva `:find`, escrita no buffer. Exigir decidir
     // antes de abrir seria pior: o que se quer so aparece navegando.
     try testing.expectError(error.UnknownOption, parse(arena_state.allocator(), &.{ "lst-f", "--recursive" }));
+}
+
+test "flags de arquivos ocultos (-a, --all, --hidden, --no-hidden)" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    try testing.expect(!((try parse(a, &.{"lst-f"})).browse.options.show_hidden));
+    try testing.expect((try parse(a, &.{ "lst-f", "-a" })).browse.options.show_hidden);
+    try testing.expect((try parse(a, &.{ "lst-f", "--all" })).browse.options.show_hidden);
+    try testing.expect((try parse(a, &.{ "lst-f", "--hidden" })).browse.options.show_hidden);
+    try testing.expect(!((try parse(a, &.{ "lst-f", "-a", "--no-hidden" })).browse.options.show_hidden));
 }

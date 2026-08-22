@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <defs>
+    <linearGradient id="folder" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#f9e2af"/>
+      <stop offset="100%" stop-color="#e8a832"/>
+    </linearGradient>
+    <linearGradient id="term" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#40a02b"/>
+      <stop offset="100%" stop-color="#2d7a1e"/>
+    </linearGradient>
+  </defs>
+  <!-- Folder body -->
+  <path d="M12 38 L12 100 Q12 108 20 108 L108 108 Q116 108 116 100 L116 48 Q116 40 108 40 L62 40 L54 28 Q51 24 46 24 L20 24 Q12 24 12 32Z" fill="url(#folder)"/>
+  <!-- Folder tab highlight -->
+  <path d="M12 38 Q12 24 20 24 L46 24 Q51 24 54 28 L62 40 L12 40Z" fill="#fce8b2" opacity="0.5"/>
+  <!-- Folder edge shadow -->
+  <path d="M12 100 L12 38 L62 40 L116 40 L116 100 Q116 108 108 108 L20 108 Q12 108 12 100Z" fill="none" stroke="#c4993a" stroke-width="1.5" opacity="0.4"/>
+  <!-- Terminal chevron -->
+  <path d="M32 58 L50 72 L32 86" fill="none" stroke="url(#term)" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Terminal underscore -->
+  <line x1="56" y1="86" x2="80" y2="86" stroke="url(#term)" stroke-width="6" stroke-linecap="round"/>
+</svg>

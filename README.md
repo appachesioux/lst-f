@@ -36,6 +36,7 @@ que você acabou de entrar por SSH.
 | `Enter` sobre diretório               | entra nele                                 |
 | `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista   |
 | `Enter` sobre arquivo binário/mídia   | abre no app padrão via `xdg-open`          |
+| `.`                                   | alterna exibição de arquivos ocultos       |
 | `-`                                   | volta ao diretório anterior                |
 | `\`                                   | abre uma árvore visual do diretório atual  |
 | `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
@@ -43,6 +44,7 @@ que você acabou de entrar por SSH.
 | `Tab`                                 | alterna o foco entre painel principal e split |
 | `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
+| `:hidden`                            | alterna exibição de arquivos ocultos       |
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
 | `:undo`                              | desfaz a última operação da sessão         |
@@ -98,10 +100,11 @@ zig build -Doptimize=ReleaseSafe -Dtarget=x86_64-linux-gnu.2.28
 ```sh
 lst-f                  # abre o diretório atual no editor
 lst-f ~/projetos       # abre outro diretório
+lst-f -a               # inclui arquivos ocultos (dotfiles)
 lst-f --find relatorio # começa direto no buscador
 ```
 
-Opções: `--editor <cmd>`, `--max-depth <n>`, `--icons`, `--no-color`.
+Opções: `-a`, `--all`, `--hidden`, `--editor <cmd>`, `--max-depth <n>`, `--icons`, `--no-color`.
 
 Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
 
