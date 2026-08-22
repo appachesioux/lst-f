@@ -212,6 +212,7 @@ const Session = struct {
     state: session.State,
     pid: std.posix.pid_t,
     buffer_path: []const u8,
+    helper_path: []const u8,
 
     base: []const u8,
     /// Conteudo corrente do buffer.
@@ -264,6 +265,9 @@ fn runSession(
     try environ.put("FZF_DEFAULT_OPTS", "");
     try environ.put("FZF_DEFAULT_OPTS_FILE", "");
 
+    const helper_path = try std.fmt.allocPrint(arena, "{s}/helper.vim", .{state.path});
+    try state.writeHelperScript(io, build_options.app_name, build_options.version);
+
     var s: Session = .{
         .arena = arena,
         .io = io,
@@ -276,6 +280,7 @@ fn runSession(
         .state = state,
         .pid = pid,
         .buffer_path = try std.fmt.allocPrint(arena, "{s}/lst-f.lstf", .{state.path}),
+        .helper_path = helper_path,
         .base = base,
     };
     defer cleanupAreas(&s);
@@ -306,6 +311,7 @@ fn loop(s: *Session) !void {
             s.environ,
             s.buffer_path,
             s.base,
+            s.helper_path,
         ) catch |err| {
             try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
             return;

@@ -93,7 +93,7 @@ Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da op
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
 - Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva.
-- Linhas iniciadas por `#` são comentário e formam o cabeçalho: versão, caminho corrente, gramática, diretivas, avisos de área órfã e as entradas de nome não-UTF-8, que aparecem escapadas e fora da edição.
+- Linhas iniciadas por `#` são comentários para avisos pontuais (área órfã, entradas não-UTF-8). A ajuda, atalhos e diretivas moram no helper popup flutuante (`F1`), mantendo o buffer limpo com a primeira entrada na linha 1.
 
 **Diretivas.** Sem plugin não há tecla nossa dentro do editor, então toda ação que não é editar um caminho se escreve como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado:
 

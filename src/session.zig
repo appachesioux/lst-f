@@ -66,4 +66,97 @@ pub const State = struct {
         }
         return out.toOwnedSlice(arena);
     }
+
+    pub fn writeHelperScript(s: State, io: Io, app_name: []const u8, version: []const u8) !void {
+        var file = try s.dir.createFile(io, "helper.vim", .{ .truncate = true });
+        defer file.close(io);
+        var buffer: [4096]u8 = undefined;
+        var writer: Io.File.Writer = .init(file, io, &buffer);
+        const w = &writer.interface;
+
+        try w.writeAll(
+            \\set nocompatible
+            \\function! LstfHelp() abort
+            \\  let l:title = ' 
+        );
+        try w.print("{s} v{s}", .{ app_name, version });
+        try w.writeAll(
+            \\ — Ajuda (F1) '
+            \\  let l:lines = [
+            \\    \ '',
+            \\    \ '  • Edite o caminho : renomeia ou move (cria os pais que faltarem)',
+            \\    \ '  • Apague a linha  : remove a entrada (area de sessao temporaria)',
+            \\    \ '  • ID de 4 digitos : vincula a linha (:sort e reordenar sao seguros)',
+            \\    \ '',
+            \\    \ '  Diretivas (escreva no buffer e salve):',
+            \\    \ '    :cd <dir>      Entra no diretorio (.. sobe)',
+            \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
+            \\    \ '    :undo          Desfaz a ultima operacao aplicada na sessao',
+            \\    \ '    :quit          Sai da sessao (:cq aborta sem aplicar nada)',
+            \\    \ '',
+            \\    \ '  Atalhos no buffer:',
+            \\    \ '    q              Sai do lst-f (:q)',
+            \\    \ '    F1 ou ?        Abre este popup de ajuda',
+            \\    \ '',
+            \\    \ '  Pressione q, <Esc> ou <Enter> para fechar este popup',
+            \\    \ ''
+            \\  \ ]
+            \\
+            \\  if has('nvim')
+            \\    let l:buf = nvim_create_buf(v:false, v:true)
+            \\    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+            \\    let l:max_w = 72
+            \\    for l:line in l:lines
+            \\      let l:max_w = max([l:max_w, strdisplaywidth(l:line) + 4])
+            \\    endfor
+            \\    let l:width = min([l:max_w, &columns - 4])
+            \\    let l:height = len(l:lines)
+            \\    let l:row = max([1, (&lines - l:height) / 2 - 1])
+            \\    let l:col = max([1, (&columns - l:width) / 2])
+            \\    let l:opts = {
+            \\      \ 'relative': 'editor',
+            \\      \ 'row': l:row,
+            \\      \ 'col': l:col,
+            \\      \ 'width': l:width,
+            \\      \ 'height': l:height,
+            \\      \ 'style': 'minimal',
+            \\      \ 'border': 'rounded',
+            \\      \ 'title': l:title,
+            \\      \ 'title_pos': 'center'
+            \\    \ }
+            \\    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+            \\    let l:close_cmd = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
+            \\    for l:k in ['q', '<Esc>', '<CR>', '<Space>', '<F1>', '?']
+            \\      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close_cmd
+            \\    endfor
+            \\  elseif exists('*popup_create')
+            \\    let l:win = popup_create(l:lines, {
+            \\      \ 'title': l:title,
+            \\      \ 'border': [],
+            \\      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+            \\      \ 'padding': [0, 1, 0, 1],
+            \\      \ 'pos': 'center',
+            \\      \ 'filter': function('s:lstf_popup_filter'),
+            \\      \ 'close': 'none'
+            \\    \ })
+            \\  endif
+            \\endfunction
+            \\
+            \\function! s:lstf_popup_filter(winid, key) abort
+            \\  if a:key ==# 'q' || a:key ==# "\<Esc>" || a:key ==# "\<CR>" || a:key ==# ' ' || a:key ==# "\<F1>" || a:key ==# '?'
+            \\    call popup_close(a:winid)
+            \\    return 1
+            \\  endif
+            \\  call popup_close(a:winid)
+            \\  return 0
+            \\endfunction
+            \\
+            \\setlocal nonumber norelativenumber nowrap
+            \\nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
+            \\nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
+            \\nnoremap <buffer> <silent> q :q<CR>
+            \\
+        );
+        try w.flush();
+    }
 };

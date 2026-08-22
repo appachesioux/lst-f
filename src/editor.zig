@@ -20,6 +20,14 @@ pub const Editor = struct {
     pub fn name(e: Editor) []const u8 {
         return std.fs.path.basename(e.argv[0]);
     }
+
+    pub fn isVimOrNvim(e: Editor) bool {
+        const base = e.name();
+        return std.mem.eql(u8, base, "vim") or
+            std.mem.eql(u8, base, "nvim") or
+            std.mem.endsWith(u8, base, "vim") or
+            std.mem.endsWith(u8, base, "nvim");
+    }
 };
 
 /// Editores que nao seguram o terminal. Alguns aceitam uma flag de espera;
@@ -86,9 +94,16 @@ pub fn run(
     /// O editor abre com o diretorio-base como cwd, para que `:e`, `gf` e
     /// completacao funcionem sobre os caminhos que estao no buffer.
     cwd: []const u8,
+    helper_script: ?[]const u8,
 ) !RunResult {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, e.argv);
+    if (helper_script) |script| {
+        if (e.isVimOrNvim()) {
+            try argv.append(arena, "-c");
+            try argv.append(arena, try std.fmt.allocPrint(arena, "source {s}", .{script}));
+        }
+    }
     try argv.append(arena, path);
 
     var child = try std.process.spawn(io, .{
