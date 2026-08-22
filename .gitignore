@@ -1,5 +1,2 @@
 .zig-cache/
 zig-out/
-.deploy-targets
-0-deploy
-0-ctx/0-scratchpad.md
