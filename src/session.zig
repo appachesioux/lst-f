@@ -15,6 +15,95 @@ pub const env_state = "LST_F_STATE";
 pub const env_self = "LST_F_SELF";
 pub const env_location = "LST_F_LOCATION";
 
+/// Diretorios visitados na sessao, no modelo de navegador: `back` e `forward`
+/// andam sobre o que ja foi visitado, e entrar em um diretorio novo depois de
+/// ter voltado descarta o caminho que estava a frente.
+pub const History = struct {
+    items: std.ArrayList([]const u8) = .empty,
+    pos: usize = 0,
+
+    /// Registra a chegada em `path`. Ficar onde ja se esta nao empilha, senao
+    /// um `:refresh` ou um `:cd .` encheriam o historico de repeticoes.
+    pub fn push(h: *History, arena: Allocator, path: []const u8) Allocator.Error!void {
+        if (h.items.items.len == 0) {
+            try h.items.append(arena, path);
+            h.pos = 0;
+            return;
+        }
+        if (std.mem.eql(u8, h.items.items[h.pos], path)) return;
+        h.items.shrinkRetainingCapacity(h.pos + 1);
+        try h.items.append(arena, path);
+        h.pos = h.items.items.len - 1;
+    }
+
+    /// `null` na ponta: nao ha para onde ir, e a posicao nao se mexe.
+    pub fn back(h: *History) ?[]const u8 {
+        if (h.pos == 0) return null;
+        h.pos -= 1;
+        return h.items.items[h.pos];
+    }
+
+    pub fn forward(h: *History) ?[]const u8 {
+        if (h.pos + 1 >= h.items.items.len) return null;
+        h.pos += 1;
+        return h.items.items[h.pos];
+    }
+};
+
+const testing = std.testing;
+
+test "historico anda para tras e para frente" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var h: History = .{};
+    try h.push(arena, "/a");
+    try h.push(arena, "/b");
+    try h.push(arena, "/c");
+
+    try testing.expectEqualStrings("/b", h.back().?);
+    try testing.expectEqualStrings("/a", h.back().?);
+    try testing.expectEqual(@as(?[]const u8, null), h.back());
+    try testing.expectEqualStrings("/b", h.forward().?);
+    try testing.expectEqualStrings("/c", h.forward().?);
+    try testing.expectEqual(@as(?[]const u8, null), h.forward());
+}
+
+test "entrar em diretorio novo descarta o caminho a frente" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var h: History = .{};
+    try h.push(arena, "/a");
+    try h.push(arena, "/b");
+    try h.push(arena, "/c");
+    _ = h.back();
+    _ = h.back();
+    try h.push(arena, "/d");
+
+    try testing.expectEqual(@as(usize, 2), h.items.items.len);
+    try testing.expectEqual(@as(?[]const u8, null), h.forward());
+    try testing.expectEqualStrings("/a", h.back().?);
+}
+
+test "ficar no mesmo diretorio nao empilha" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    var h: History = .{};
+    try h.push(arena, "/a");
+    try h.push(arena, "/a");
+    try h.push(arena, "/b");
+    _ = h.back();
+    // Um `:refresh` no meio do historico nao pode virar uma ida nova.
+    try h.push(arena, "/a");
+    try testing.expectEqual(@as(usize, 2), h.items.items.len);
+    try testing.expectEqualStrings("/b", h.forward().?);
+}
+
 pub const State = struct {
     path: []const u8,
     dir: Io.Dir,
@@ -114,6 +203,7 @@ pub const State = struct {
             \\    \ '    :cd <dir>      Entra no diretorio (.. sobe)',
             \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
             \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
+            \\    \ '    :back/:forward Andam pelos diretorios visitados na sessao',
             \\    \ '    :undo          Desfaz a ultima operacao aplicada na sessao',
             \\    \ '    :quit          Sai da sessao (:cq aborta sem aplicar nada)',
             \\    \ '',
@@ -121,8 +211,8 @@ pub const State = struct {
             \\    \ '    .              Alterna exibicao de arquivos ocultos',
             \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
-            \\    \ '    - ou <         Volta ao diretorio-pai',
-            \\    \ '    >              Entra no diretorio da linha',
+            \\    \ '    -              Sobe para o diretorio-pai',
+            \\    \ '    < e >          Voltam e avancam nos diretorios visitados',
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
             \\    \ '    Tab            Alterna foco entre painel principal e destino',
@@ -277,11 +367,12 @@ pub const State = struct {
             \\  call s:lstf_navigate('..')
             \\endfunction
             \\
-            \\function! LstfEnterDir() abort
-            \\  let l:path = s:lstf_entry_path()
-            \\  if !empty(l:path) && isdirectory(l:path)
-            \\    call s:lstf_navigate(l:path)
-            \\  endif
+            \\function! LstfBack() abort
+            \\  call s:lstf_write_directive(':back')
+            \\endfunction
+            \\
+            \\function! LstfForward() abort
+            \\  call s:lstf_write_directive(':forward')
             \\endfunction
             \\
             \\function! LstfQuit() abort
@@ -672,8 +763,8 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
             \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
             \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
-            \\nnoremap <buffer> <silent> <lt> :call LstfUp()<CR>
-            \\nnoremap <buffer> <silent> > :call LstfEnterDir()<CR>
+            \\nnoremap <buffer> <silent> <lt> :call LstfBack()<CR>
+            \\nnoremap <buffer> <silent> > :call LstfForward()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
             \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
             \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>

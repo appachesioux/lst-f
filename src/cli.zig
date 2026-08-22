@@ -237,6 +237,8 @@ const Session = struct {
     /// Cabecalho do buffer que esta aberto agora. O parser precisa do texto
     /// exato para nao confundir cabecalho com nome de arquivo.
     header_lines: []const []const u8 = &.{},
+    /// Diretorios visitados, para `:back` e `:forward`.
+    history: session.History = .{},
 
     area: ?fsops.Area = null,
     area_base: []const u8 = "",
@@ -300,6 +302,7 @@ fn runSession(
         .base = base,
     };
     defer cleanupAreas(&s);
+    try s.history.push(arena, s.base);
 
     if (opts.find) |query| {
         if (!try runFind(&s, query)) try loadListing(&s);
@@ -396,6 +399,8 @@ fn loop(s: *Session) !void {
             .quit => return,
             .refresh => try loadListing(s),
             .undo => try undoLast(s),
+            .back => try goBack(s),
+            .forward => try goForward(s),
             .cd => |target| try changeDir(s, target),
             .open => |target| try openFileInEditor(s, target),
             .hidden => |opt| {
@@ -564,7 +569,40 @@ fn changeDir(s: *Session, target: []const u8) !void {
         return;
     }
     s.base = resolved;
+    try s.history.push(s.arena, resolved);
     try loadListing(s);
+}
+
+fn goBack(s: *Session) !void {
+    const target = s.history.back() orelse {
+        s.notice = "nao ha para onde voltar nesta sessao";
+        return;
+    };
+    if (!try enterVisited(s, target)) _ = s.history.forward();
+}
+
+fn goForward(s: *Session) !void {
+    const target = s.history.forward() orelse {
+        s.notice = "nao ha para onde avancar nesta sessao";
+        return;
+    };
+    if (!try enterVisited(s, target)) _ = s.history.back();
+}
+
+/// Volta a um diretorio ja visitado. `false` quando ele sumiu no meio da
+/// sessao: o passo e desfeito e a tela nao sai do lugar.
+fn enterVisited(s: *Session, target: []const u8) !bool {
+    const st = Io.Dir.cwd().statFile(s.io, target, .{}) catch {
+        s.notice = try std.fmt.allocPrint(s.arena, "{s} nao esta mais acessivel", .{target});
+        return false;
+    };
+    if (st.kind != .directory) {
+        s.notice = try std.fmt.allocPrint(s.arena, "{s} nao e mais um diretorio", .{target});
+        return false;
+    }
+    s.base = target;
+    try loadListing(s);
+    return true;
 }
 
 fn openFileInEditor(s: *Session, target: []const u8) !void {

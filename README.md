@@ -38,7 +38,8 @@ que você acabou de entrar por SSH.
 | `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista   |
 | `Enter` sobre arquivo binário/mídia   | abre no app padrão via `xdg-open`          |
 | `.`                                   | alterna exibição de arquivos ocultos       |
-| `-`                                   | volta ao diretório anterior                |
+| `-`                                   | sobe para o diretório-pai                  |
+| `<` e `>`                             | voltam e avançam nos diretórios visitados na sessão |
 | `\`                                   | abre uma árvore visual do diretório atual  |
 | `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
 | `Ctrl+S`                              | abre/fecha o painel dividido de destino    |
@@ -48,6 +49,7 @@ que você acabou de entrar por SSH.
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
+| `:back` / `:forward`                 | andam pelos diretórios visitados na sessão |
 | `:undo`                              | desfaz a última operação da sessão         |
 | `:quit`                              | sai (salvar sem mudanças também sai)       |
 | `:cq` no editor                      | aborta sem aplicar nada                    |
