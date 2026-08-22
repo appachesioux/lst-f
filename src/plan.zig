@@ -571,6 +571,9 @@ pub const Directive = union(enum) {
     refresh,
     undo,
     quit,
+    /// Andam sobre os diretorios ja visitados na sessao.
+    back,
+    forward,
 };
 
 pub const Document = struct {
@@ -708,6 +711,10 @@ pub fn parseBuffer(
                         .unknown_directive = .{ .line = line_no, .name = try arena.dupe(u8, name) },
                     });
                 }
+            } else if (std.mem.eql(u8, name, "back")) {
+                directive = .back;
+            } else if (std.mem.eql(u8, name, "forward")) {
+                directive = .forward;
             } else if (std.mem.eql(u8, name, "refresh")) {
                 directive = .refresh;
             } else if (std.mem.eql(u8, name, "undo")) {

@@ -72,7 +72,7 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 ## Fluxo principal
 
 1. `lst-f [diretório]` monta o buffer daquele diretório e abre o editor do usuário, com o diretório-base como *cwd* — assim `:e`, `gf` e completação funcionam sobre os caminhos listados.
-2. O usuário edita: muda caminhos, apaga linhas, ou escreve **uma** diretiva (`:cd <dir>`, `:find [termo]`, `:undo`, `:quit`). Salva e sai.
+2. O usuário edita: muda caminhos, apaga linhas, ou escreve **uma** diretiva (`:cd <dir>`, `:find [termo]`, `:back`, `:forward`, `:undo`, `:quit`). Salva e sai.
 3. Sair com código diferente de zero (`:cq`) aborta tudo. Salvar sem nenhuma mudança e sem diretiva encerra a sessão: não há o que fazer.
 4. `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear ou remover.
 5. Antes de gravar, exibe o diff do plano e exige confirmação. Remoções aparecem em bloco próprio e exigem confirmação separada. Em falha de validação, não executa alteração alguma e o buffer volta como o usuário o deixou, para corrigir.
