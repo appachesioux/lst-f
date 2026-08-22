@@ -102,7 +102,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\
         \\  -a, --all, --hidden  mostra arquivos e diretorios ocultos
         \\  --find [termo]     abre direto no buscador fuzzy da arvore
-        \\  --editor <cmd>     editor a usar (padrao: vim, nvim)
+        \\  --editor <cmd>     editor a usar (padrao: vim; nvim so se explicito)
         \\  --max-depth <n>    profundidade maxima da busca recursiva
         \\  --icons            emite icones na busca
         \\  --no-color         desliga as cores
@@ -124,7 +124,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  {s}              abre e fecha o preview (comeca fechado)
         \\  {s}                 esta ajuda            Esc    cancela
         \\
-        \\Precisa do fzf ({d}.{d}+) e de um Vim ou Neovim no PATH.
+        \\Precisa do fzf ({d}.{d}+) e do Vim no PATH (ou --editor <cmd>).
         \\
     , .{
         build_options.app_name,
@@ -367,7 +367,10 @@ fn loop(s: *Session) !void {
         const changed = !built.ok.isEmpty();
         if (changed) {
             if (!try confirmAndApply(s, built.ok)) {
-                s.keep_buffer = true;
+                // Depois de recusar a confirmacao, o buffer ainda contem as
+                // linhas apagadas. Reabri-lo assim faria a mesma remocao ser
+                // proposta indefinidamente, inclusive ao tentar sair.
+                try loadListing(s);
                 continue;
             }
         }
@@ -462,14 +465,12 @@ fn writeBuffer(s: *Session) !void {
     defer file.close(s.io);
     var buffer: [64 * 1024]u8 = undefined;
     var writer: Io.File.Writer = .init(file, s.io, &buffer);
+    const location = try std.fmt.allocPrint(s.arena, "{s}{s}", .{
+        abbreviateHome(s.arena, s.environ, s.base),
+        if (s.options.show_hidden) "  [all]" else "",
+    });
+    try s.environ.put(session.env_location, location);
     try plan.writeBuffer(&writer.interface, .{
-        .app = build_options.app_name,
-        .version = build_options.version,
-        .location = try std.fmt.allocPrint(s.arena, "{s}{s}  ·  {s}", .{
-            abbreviateHome(s.arena, s.environ, s.base),
-            if (s.options.show_hidden) "  [all]" else "",
-            s.editor_name,
-        }),
         .scope = s.scope,
         .unlistable = s.unlistable,
         .notes = notes.items,
@@ -745,7 +746,7 @@ fn openBase(s: *Session) !Io.Dir {
     return Io.Dir.cwd().openDir(s.io, s.base, .{ .iterate = true });
 }
 
-/// `false` quando o usuario recusou tudo: o buffer volta como estava.
+/// `false` quando o usuario recusou tudo ou a aplicacao falhou.
 fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
@@ -1024,8 +1025,8 @@ fn report(s: *Session, message: []const u8) !void {
 fn explainEditor(w: *Io.Writer, err: editor_mod.ResolveError) !void {
     switch (err) {
         error.NoEditor => try w.writeAll(
-            "lst-f: nem vim nem nvim foram encontrados no PATH, e o editor e a tela\n" ++
-                "       do lst-f. Instale o vim ou o nvim, ou use --editor <cmd>.\n",
+            "lst-f: vim nao foi encontrado no PATH, e o editor e a tela\n" ++
+                "       do lst-f. Instale o vim ou use --editor <cmd> (ex.: nvim).\n",
         ),
         error.NotForeground => try w.writeAll(
             "lst-f: o editor configurado nao segura o terminal e devolveria o controle\n" ++

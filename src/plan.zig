@@ -613,10 +613,6 @@ pub fn parseBuffer(arena: Allocator, text: []const u8) Allocator.Error!ParseResu
 /// editor **e** a tela, entao o que um gerenciador de arquivos poria numa barra
 /// de titulo mora aqui no topo do arquivo.
 pub const BufferHeader = struct {
-    app: []const u8,
-    version: []const u8,
-    /// Caminho ja pronto para exibicao (com `~`, se for o caso).
-    location: []const u8,
     /// Origem do conteudo, quando nao e a listagem do diretorio.
     scope: ?[]const u8 = null,
     /// Nomes que nao sao UTF-8 valido: aparecem, mas fora da edicao.
@@ -632,7 +628,6 @@ pub fn writeBuffer(
     header: BufferHeader,
     originals: []const Original,
 ) std.Io.Writer.Error!void {
-    try w.print("{s} v{s}  {s}\n", .{ header.app, header.version, header.location });
     if (header.scope) |scope| try w.print("{s}\n", .{scope});
     for (header.notes) |note| try w.print("aviso: {s}\n", .{note});
     for (header.unlistable) |name| {
@@ -1004,9 +999,6 @@ test "round-trip do buffer" {
     var buf: [2048]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
     try writeBuffer(&w, .{
-        .app = "lst-f",
-        .version = "0.0.0",
-        .location = "~/base",
         .unlistable = &.{"invalido-\xff.txt"},
         .notes = &.{"area orfa .lst-f-1 (2 itens)"},
     }, &originals);
@@ -1027,7 +1019,7 @@ test "round-trip do buffer com colunas preserva somente o nome editavel" {
     }};
     var buf: [1024]u8 = undefined;
     var w: std.Io.Writer = .fixed(&buf);
-    try writeBuffer(&w, .{ .app = "lst-f", .version = "0", .location = "~" }, &originals);
+    try writeBuffer(&w, .{}, &originals);
     const doc = (try parseBuffer(f.a(), w.buffered())).ok;
     try testing.expectEqualStrings("antes.txt", doc.edits[0].path);
 

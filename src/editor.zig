@@ -38,8 +38,9 @@ const wait_flags = [_][]const u8{ "--wait", "-w" };
 
 /// Ordem de resolucao:
 /// 1. Opcao explicita (--editor <cmd>);
-/// 2. Busca no PATH por `vim`, depois `nvim`. Variaveis como $VISUAL e $EDITOR
-///    sao ignoradas para garantir a chamada a vim/nvim.
+/// 2. Busca no PATH somente por `vim`. Variaveis como $VISUAL e $EDITOR
+///    sao ignoradas para garantir uma tela previsivel. O Neovim continua
+///    disponivel por `--editor nvim`, mas nunca e escolhido automaticamente.
 pub fn resolve(
     arena: Allocator,
     io: Io,
@@ -49,7 +50,6 @@ pub fn resolve(
     const spec = blk: {
         if (explicit) |e| break :blk e;
         if (which(arena, io, environ, "vim") != null) break :blk "vim";
-        if (which(arena, io, environ, "nvim") != null) break :blk "nvim";
         return error.NoEditor;
     };
 
@@ -98,6 +98,22 @@ pub fn run(
 ) !RunResult {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, e.argv);
+    // O buffer do lst-f e uma tela controlada pela aplicacao. Iniciar Vim/Neovim
+    // sem configuracao pessoal impede temas e plugins de restaurarem statusline,
+    // numeros ou outras opcoes depois que o helper termina de configurar a tela.
+    // Arquivos abertos pela diretiva :open seguem por outro fluxo e continuam
+    // usando a configuracao normal do usuario.
+    if (helper_script != null and e.isVimOrNvim()) {
+        // `-c` roda tarde demais para a mensagem "arquivo, N linhas". `--cmd`
+        // e avaliado antes de o buffer ser lido, entao a linha de comando fica
+        // reservada apenas para mensagens que o usuario realmente provocar.
+        try argv.appendSlice(arena, &.{ "--cmd", "set shortmess+=F" });
+        if (std.mem.indexOf(u8, e.name(), "nvim") != null) {
+            try argv.append(arena, "--clean");
+        } else {
+            try argv.appendSlice(arena, &.{ "-u", "NONE", "-U", "NONE", "-i", "NONE", "--noplugin" });
+        }
+    }
     if (helper_script) |script| {
         if (e.isVimOrNvim()) {
             try argv.append(arena, "-c");
@@ -193,7 +209,7 @@ test "opcao explicita vence e argumentos sao preservados" {
     try testing.expectEqual(@as(usize, 2), e.argv.len);
 }
 
-test "busca automatica: vim tem precedencia sobre nvim" {
+test "busca automatica: vim e escolhido mesmo com nvim no PATH" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -222,7 +238,7 @@ test "busca automatica: vim tem precedencia sobre nvim" {
     try testing.expectEqualStrings("vim", e.name());
 }
 
-test "busca automatica: nvim quando vim nao esta presente" {
+test "busca automatica nao escolhe nvim" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -243,8 +259,7 @@ test "busca automatica: nvim quando vim nao esta presente" {
     });
     defer map.deinit();
 
-    const e = try resolve(a, io, &map, null);
-    try testing.expectEqualStrings("nvim", e.name());
+    try testing.expectError(error.NoEditor, resolve(a, io, &map, null));
 }
 
 test "editor sem vim nem nvim no PATH" {
