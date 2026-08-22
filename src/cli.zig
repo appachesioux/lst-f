@@ -110,6 +110,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\                     vira o conteudo do buffer
         \\  :undo              desfaz a ultima operacao aplicada nesta sessao
         \\  :quit              sai (salvar sem mudancas tambem sai; :cq aborta)
+        \\  Enter              abre o arquivo da linha ou entra no diretorio
         \\
         \\no buscador:
         \\  Tab                marca / desmarca      Enter  aceita a marcacao
@@ -213,6 +214,8 @@ const Session = struct {
     pid: std.posix.pid_t,
     buffer_path: []const u8,
     helper_path: []const u8,
+    /// Identidade exibida na barra permanente do buffer.
+    editor_name: []const u8,
 
     base: []const u8,
     /// Conteudo corrente do buffer.
@@ -220,6 +223,8 @@ const Session = struct {
     /// De onde o conteudo veio, quando nao e a listagem do diretorio.
     scope: ?[]const u8 = null,
     unlistable: []const []const u8 = &.{},
+    /// Aviso de uma operacao concluida, mostrado uma vez no buffer reaberto.
+    notice: ?[]const u8 = null,
     /// O buffer no disco ja serve; nao regerar (o usuario tem correcoes a fazer).
     keep_buffer: bool = false,
 
@@ -242,7 +247,7 @@ fn runSession(
     };
 
     // O editor e requisito, nao conveniencia: sem ele nao ha tela.
-    _ = editor_mod.resolve(arena, io, environ, opts.editor) catch |err| {
+    const initial_editor = editor_mod.resolve(arena, io, environ, opts.editor) catch |err| {
         try explainEditor(out, err);
         return 1;
     };
@@ -276,6 +281,7 @@ fn runSession(
         .tty = Tty.open(arena, io),
         .options = opts.options,
         .editor_spec = opts.editor,
+        .editor_name = editorLabel(initial_editor),
         .features = features,
         .state = state,
         .pid = pid,
@@ -368,6 +374,7 @@ fn loop(s: *Session) !void {
 
         switch (directive) {
             .quit => return,
+            .refresh => try loadListing(s),
             .undo => try undoLast(s),
             .cd => |target| try changeDir(s, target),
             .find => |query| {
@@ -395,10 +402,13 @@ const Collector = struct {
             try c.unlistable.append(c.session.arena, e.path);
             return;
         }
+        var display: std.Io.Writer.Allocating = .init(c.session.arena);
+        try explorer.writeTableDetails(&display.writer, e);
         try c.entries.append(c.session.arena, .{
             .id = index,
             .path = e.path,
             .kind = e.kind,
+            .display = display.written(),
         });
     }
 
@@ -430,6 +440,7 @@ fn writeBuffer(s: *Session) !void {
             .{ o.name, o.items, o.pid },
         ));
     }
+    if (s.notice) |notice| try notes.append(s.arena, notice);
 
     var file = try Io.Dir.cwd().createFile(s.io, s.buffer_path, .{ .truncate = true });
     defer file.close(s.io);
@@ -438,12 +449,69 @@ fn writeBuffer(s: *Session) !void {
     try plan.writeBuffer(&writer.interface, .{
         .app = build_options.app_name,
         .version = build_options.version,
-        .location = abbreviateHome(s.arena, s.environ, s.base),
+        .location = try std.fmt.allocPrint(s.arena, "{s}  ·  {s}", .{
+            abbreviateHome(s.arena, s.environ, s.base),
+            s.editor_name,
+        }),
         .scope = s.scope,
         .unlistable = s.unlistable,
         .notes = notes.items,
     }, s.entries);
     try writer.interface.flush();
+    // O aviso ja esta no arquivo que sera aberto agora; a proxima navegacao
+    // parte de uma tela limpa.
+    s.notice = null;
+    try writeTree(s);
+}
+
+fn editorLabel(editor: editor_mod.Editor) []const u8 {
+    const name = editor.name();
+    return if (std.mem.indexOf(u8, name, "nvim") != null) "Neovim" else "Vim";
+}
+
+const TreeWriter = struct {
+    writer: *Io.Writer,
+    count: usize = 0,
+
+    const limit: usize = 2_000;
+    const LimitReached = error{TreeLimitReached};
+
+    fn emit(ctx: *anyopaque, _: u32, e: explorer.Entry) anyerror!void {
+        const t: *TreeWriter = @ptrCast(@alignCast(ctx));
+        if (e.parent) return;
+        if (t.count >= limit) return LimitReached.TreeLimitReached;
+        t.count += 1;
+        const depth = std.mem.count(u8, e.path, "/");
+        try t.writer.splatBytesAll("│   ", depth);
+        try t.writer.writeAll("├── ");
+        try t.writer.writeAll(std.fs.path.basename(e.path));
+        if (e.kind == .dir) try t.writer.writeByte('/');
+        if (e.symlink) try t.writer.writeAll(" @");
+        try t.writer.writeByte('\n');
+    }
+
+    fn sink(t: *TreeWriter) explorer.Sink {
+        return .{ .ctx = t, .func = emit };
+    }
+};
+
+/// Produz uma arvore visual pelo mesmo enumerador que aplica os limites de
+/// profundidade, symlinks e pontos de montagem da CLI.
+fn writeTree(s: *Session) !void {
+    var tree = try s.state.treeFile(s.io);
+    defer tree.close(s.io);
+    var buffer: [64 * 1024]u8 = undefined;
+    var writer: Io.File.Writer = .init(tree, s.io, &buffer);
+    const w = &writer.interface;
+    try w.print("{s}\n", .{abbreviateHome(s.arena, s.environ, s.base)});
+    var options = s.options;
+    options.recursive = true;
+    var out: TreeWriter = .{ .writer = w };
+    explorer.enumerate(s.arena, s.io, s.base, options, out.sink()) catch |err| {
+        if (err != TreeWriter.LimitReached.TreeLimitReached) return err;
+        try w.print("… arvore truncada em {d} entradas\n", .{TreeWriter.limit});
+    };
+    try w.flush();
 }
 
 fn changeDir(s: *Session, target: []const u8) !void {
@@ -553,7 +621,14 @@ fn runFind(s: *Session, query: []const u8) !bool {
             try unlistable.append(s.arena, e.path);
             continue;
         }
-        try entries.append(s.arena, .{ .id = index, .path = e.path, .kind = e.kind });
+        var display: std.Io.Writer.Allocating = .init(s.arena);
+        try explorer.writeTableDetails(&display.writer, e);
+        try entries.append(s.arena, .{
+            .id = index,
+            .path = e.path,
+            .kind = e.kind,
+            .display = display.written(),
+        });
     }
     if (entries.items.len == 0 and unlistable.items.len == 0) return false;
 
@@ -677,16 +752,32 @@ fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
     }
 
     const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr);
-    try reportOutcome(s, outcome);
+    if (outcome.failure) |failure| {
+        // Em falha, o relatorio precisa permanecer visivel antes de voltar ao
+        // editor para que o estado e a recuperacao manual fiquem claros.
+        _ = failure;
+        try reportOutcome(s, outcome);
+        try pause(s);
+        return false;
+    }
 
-    if (outcome.failure == null and !outcome.applied.isEmpty()) {
+    if (!outcome.applied.isEmpty()) {
         s.undo = .{
             .base = s.base,
             .area = if (area_ptr) |a| a.name else null,
             .applied = outcome.applied,
         };
     }
-    try pause(s);
+    s.notice = try std.fmt.allocPrint(
+        s.arena,
+        "aplicado: {d} renomeacao(oes), {d} diretorio(s) criado(s), {d} remocao(oes){s}",
+        .{
+            outcome.applied.renames.len,
+            outcome.applied.created_dirs.len,
+            outcome.applied.removed.len,
+            if (outcome.applied.removed.len > 0) "; :undo esta disponivel nesta sessao" else "",
+        },
+    );
     return true;
 }
 
@@ -827,13 +918,13 @@ fn undoLast(s: *Session) !void {
 
     const errors = try fsops.revert(s.arena, s.io, base_dir, u.applied, area_dir);
     if (errors.len == 0) {
-        try s.out.writeAll("\nUltima operacao desfeita.\n");
         s.undo = null;
+        s.notice = "ultima operacao desfeita";
     } else {
         try s.out.writeAll("\nO undo nao conseguiu desfazer tudo:\n");
         for (errors) |e| try s.out.print("  {s}\n", .{e});
     }
-    try pause(s);
+    if (errors.len > 0) try pause(s);
     try loadListing(s);
 }
 

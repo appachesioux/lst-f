@@ -23,7 +23,7 @@ São duas diferenças em relação ao `oil.nvim`, e as duas importam:
 1. **Seleção fuzzy recursiva alimentando o buffer.** O oil navega um diretório por vez e não filtra. O caso *"filtrar um termo na árvore inteira, marcar 12 dos 200 resultados espalhados por 6 diretórios, renomear todos de uma vez"* exige colar o oil a um picker externo. No `lst-f` é `:find termo`, marcar, e o resultado **é** o buffer.
 2. **Nada de plugin.** O oil é um plugin de Neovim: exige gerenciador de plugin, exige Neovim, e vive dentro de uma sessão de editor. O `lst-f` é um binário único que funciona com `vim` puro e roda como CLI componível. É a diferença entre "está no meu setup" e "funciona no servidor em que acabei de entrar por SSH".
 
-**Consequência de design**: não há plugin, logo não há tecla nossa dentro do editor. Toda ação que não seja editar um caminho é uma **diretiva escrita no próprio buffer** (`:cd`, `:find`, `:undo`, `:quit`), executada quando o editor sai. Linha de entrada sempre começa por dígito, então uma linha iniciada por `:` nunca é ambígua com nome de arquivo. O preço é uma ida e volta ao editor por passo de navegação; o ganho é funcionar com qualquer Vim, sem instalar nada.
+**Consequência de design**: não há plugin. O `lst-f` gera um pequeno script local para o buffer atual, compatível com Vim e Neovim, que faz `Enter` abrir arquivos ou entrar em diretórios; ele vive só durante a sessão e não instala configuração no editor. As demais ações continuam sendo diretivas escritas no próprio buffer (`:cd`, `:find`, `:undo`, `:quit`), executadas quando o editor sai. Linha de entrada sempre começa por dígito, então uma linha iniciada por `:` nunca é ambígua com nome de arquivo.
 
 Está fora de escopo:
 
@@ -84,18 +84,28 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da operação:
 
 ```
-0001  relatorio.pdf
-0002  notas antigas.txt
-0003  docs/rascunho.md
+lst-f v26.8.21  ~/Devel/lst-f  ·  Vim
+──┬───────────┬───────────┬──────────────────┬──────────────────────────
+T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+──┼───────────┼───────────┼──────────────────┼──────────────────────────
+- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  relatorio.pdf
+- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  notas antigas.txt
+- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  docs/rascunho.md
 ```
 
 - O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
 - Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, linha sem ID, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva.
-- Linhas iniciadas por `#` são comentários para avisos pontuais (área órfã, entradas não-UTF-8). A ajuda, atalhos e diretivas moram no helper popup flutuante (`F1`), mantendo o buffer limpo com a primeira entrada na linha 1.
+- O cabeçalho ocupa o topo do buffer (barra de localização, títulos de colunas com bordas alinhadas, avisos pontuais) e não usa caracteres de comentário `#` para evitar desalinhamento e cores divergentes de sintaxe no editor. O conteúdo (lista de arquivos) fica logo abaixo do cabeçalho. Somente o nome à direita da grade é editável e o parser ignora os metadados.
 
-**Diretivas.** Sem plugin não há tecla nossa dentro do editor, então toda ação que não é editar um caminho se escreve como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado:
+**Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em um arquivo executa `:edit` no próprio Vim/Neovim, e `:q` retorna à lista. É um mapeamento buffer-local criado pelo binário, não um plugin nem configuração persistente.
+
+`-` volta ao diretório-pai. `\` abre uma árvore visual flutuante, gerada pelo enumerador do `lst-f` com os mesmos limites de profundidade, symlinks e pontos de montagem; é apenas contexto, não uma segunda interface de navegação.
+
+Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, devolve o controle para a confirmação no terminal e reabre o buffer. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O buffer reabre no cursor salvo e mostra o resultado no cabeçalho; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
+
+**Diretivas.** As ações restantes escrevem-se como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado:
 
 - `:cd <dir>` entra no diretório (`..` sobe; caminho absoluto é aceito, porque navegar não é renomear);
 - `:find [termo]` chama o `fzf` sobre a árvore e transforma a marcação no conteúdo do buffer;
@@ -177,6 +187,7 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
   - Os temporários vão obrigatoriamente no mesmo diretório e filesystem, para que `rename()` seja atômico e sem cópia entre pontos de montagem.
 - **Orquestração de TTY e subprocessos**: o controle do terminal transita Explorer -> `fzf` -> `$EDITOR` -> prompt `[y/N]`. Os descritores de I/O de cada `ChildProcess` devem ser repassados e gerenciados junto ao `/dev/tty` para preservar o estado do terminal.
 - **Busca recursiva em árvore grande**: a listagem local é barata, mas o atalho de recursão pode gerar dezenas de milhares de entradas a partir de um `$HOME`. Enumerar em streaming para o `fzf` em vez de montar a lista inteira antes; `stat` por entrada é o custo dominante em NFS. Respeitar limite de profundidade e não atravessar ponto de montagem nem symlink de diretório — sem isso, um toque na tecla de recursão no lugar errado vira varredura do sistema. Não atravessar montagem também é o que sustenta o invariante de filesystem único da área de sessão.
+- **Árvore visual**: é limitada a 2.000 entradas e informa truncamento. Ela é contexto e não pode tornar a abertura da listagem local proporcional ao tamanho de uma árvore inteira.
 
 ## Recomendações de arquitetura e implementação
 
@@ -209,3 +220,6 @@ Fora do MVP: undo entre sessões, que exigiria persistir a área além da execu�
 - Diretório como buffer editável: `https://github.com/stevearc/oil.nvim`.
 - Área temporária de sessão com aviso de órfã: arquivos de swap do Vim (`:help swap-file`).
 - Bloco de notas privado e provisório: `0-ctx/0-scratchpad.md`.
+- :Explore do vim
+- https://github.com/nvim-neo-tree/neo-tree.nvim
+- https://github.com/nvim-tree/nvim-tree.lua

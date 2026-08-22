@@ -5,13 +5,17 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-0001  src/
-0002  build.zig
-0003  relatorio.pdf
-0004  notas antigas.txt
+lst-f v26.8.21  ~/Devel/lst-f  ·  Vim
+──┬───────────┬───────────┬──────────────────┬──────────────────────────
+T │ PERMISSAO │ TAMANHO   │ MODIFICADO       │ NOME (editavel)
+──┼───────────┼───────────┼──────────────────┼──────────────────────────
+d │ rwxr-xr-x │         - │ 2026-08-21 19:58 │  src
+- │ rw-r--r-- │      1.1K │ 2026-08-21 21:14 │  README.md
 ```
 
-O buffer começa limpo diretamente na linha 1. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
+O cabeçalho ocupa as primeiras linhas e as entradas vêm logo abaixo. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
+
+A primeira linha mostra permanentemente a versão, o diretório atual e se a sessão está usando **Vim** ou **Neovim**.
 
 O ID à esquerda casa a linha com a entrada, então reordenar, rodar `:sort` ou
 recolar linhas é inofensivo. Nada é gravado sem diff e confirmação, e as
@@ -27,12 +31,23 @@ que você acabou de entrar por SSH.
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
 | apaga a linha                        | remove, via área de sessão                 |
 | `q` no buffer                        | sai do `lst-f`                            |
+| `ZZ`                                  | sai do `lst-f`                            |
 | `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
+| `Enter` sobre diretório               | entra nele                                 |
+| `Enter` sobre arquivo                 | abre-o no Vim/Neovim; `:q` volta à lista   |
+| `-`                                   | volta ao diretório anterior                |
+| `\`                                   | abre uma árvore visual do diretório atual  |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
 | `:undo`                              | desfaz a última operação da sessão         |
 | `:quit`                              | sai (salvar sem mudanças também sai)       |
 | `:cq` no editor                      | aborta sem aplicar nada                    |
+
+Na árvore, use `j`/`k` ou as setas para navegar; `q`, `Esc`, `Enter` ou `\` a fecha. Para manter a abertura rápida em árvores grandes, ela mostra até 2.000 entradas e informa quando foi truncada.
+
+Use `:w` para aplicar a edição no filesystem — mesmo sem alterações ele só atualiza a lista e mantém a sessão aberta. O `lst-f` fecha e reabre sua instância temporária do editor automaticamente após a confirmação; a sessão permanece no explorador, com um aviso no cabeçalho e o cursor na mesma linha aproximada. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
+
+Em terminais estreitos, o nome editável pode ficar fora da área visível; use `zl` e `zh` para rolar horizontalmente.
 
 O editor abre com o diretório atual como *cwd*, então `:e`, `gf` e completação
 funcionam direto sobre os caminhos listados.

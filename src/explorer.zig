@@ -226,23 +226,7 @@ fn deviceOf(dir_fd: std.posix.fd_t, sub_path: [:0]const u8) ?u64 {
 /// Linha de exibicao do fzf. Bytes de controle viram `?` -- o campo e so
 /// visual, o caminho real vem do indice.
 pub fn writeDisplay(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!void {
-    if (e.parent) {
-        if (options.color) try w.writeAll(ansi.dim);
-        try w.writeAll("d  ---------          -  ----------------  ..");
-        if (options.color) try w.writeAll(ansi.reset);
-        return;
-    }
-    if (options.color) try w.writeAll(ansi.dim);
-    try w.writeByte(kindChar(e));
-    try w.writeAll("  ");
-    try writeMode(w, e.mode);
-    try w.writeAll("  ");
-    try writeSize(w, e);
-    try w.writeAll("  ");
-    try writeTime(w, e.mtime_s);
-    try w.writeAll("  ");
-    if (options.color) try w.writeAll(ansi.reset);
-
+    try writeDetails(w, e, options);
     if (options.icons) {
         try w.writeAll(if (e.kind == .dir) "\u{1F4C1} " else "\u{1F4C4} ");
     }
@@ -261,6 +245,39 @@ pub fn writeDisplay(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
     if (e.kind == .dir) try w.writeByte('/');
     if (e.symlink) try w.writeAll(" @");
     if (options.color) try w.writeAll(ansi.reset);
+}
+
+/// Colunas que precedem o nome. Tambem sao usadas no buffer do editor, onde o
+/// nome fica depois de um separador para continuar sendo o unico campo editavel.
+pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!void {
+    if (e.parent) {
+        if (options.color) try w.writeAll(ansi.dim);
+        try w.writeAll("d  ---------          -  ----------------  ");
+        if (options.color) try w.writeAll(ansi.reset);
+        return;
+    }
+    if (options.color) try w.writeAll(ansi.dim);
+    try w.writeByte(kindChar(e));
+    try w.writeAll("  ");
+    try writeMode(w, e.mode);
+    try w.writeAll("  ");
+    try writeSize(w, e);
+    try w.writeAll("  ");
+    try writeTime(w, e.mtime_s);
+    try w.writeAll("  ");
+}
+
+/// Metadados para a grade do buffer editavel. Cada campo recebe um divisor
+/// vertical '│', conectando-se ao separador '┼' do cabecalho.
+pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
+    try w.writeByte(kindChar(e));
+    try w.writeAll(" │ ");
+    try writeMode(w, e.mode);
+    try w.writeAll(" │ ");
+    try writeSize(w, e);
+    try w.writeAll(" │ ");
+    try writeTime(w, e.mtime_s);
+    try w.writeAll(" │");
 }
 
 /// Cabecalho de colunas, no estilo de lista do Dolphin ou do Nautilus.
