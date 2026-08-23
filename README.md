@@ -5,14 +5,14 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.8.21 ─╮   ← moldura
+╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.8.23 ─╮   ← moldura
 
 ──────────────────────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos
-d │ rwxr-xr-x │          │         - │ 2026-08-21 19:58 │  src/
-- │ rw-r--r-- │          │      1.1K │ 2026-08-21 21:14 │  README.md
-- │ rw-r--r-- │ root     │       220 │ 2026-08-20 08:03 │  instalado-pelo-sistema.conf
- NORMAL  2/3  README.md                                                  Vim  F1=Help
+d │ rwxr-xr-x │          │         - │ 2026-08-21 22:58 │  src/
+- │ rw-r--r-- │ root     │      220B │ 2026-08-20 11:03 │  instalado-pelo-sistema.conf
+- │ rw-r--r-- │          │      1.1K │ 2026-08-22 00:14 │  README.md
+ NORMAL  2/3  instalado-pelo-sistema.conf                                Vim  F1=Help
 ```
 
 A coluna `OWNER` fica em branco no que é seu — repetir o seu nome em toda linha
