@@ -7,6 +7,7 @@ e ele executa o que você escreveu.
 ```
 ╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.8.21 ─╮   ← moldura
 
+──────────────────────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos
 d │ rwxr-xr-x │          │         - │ 2026-08-21 19:58 │  src/
 - │ rw-r--r-- │          │      1.1K │ 2026-08-21 21:14 │  README.md

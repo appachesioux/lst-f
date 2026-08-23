@@ -86,6 +86,7 @@ Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da op
 ```
 ╭─ ~/Devel/lst-f ───────────────────────────────── lst-f v26.8.21 ─╮   ← moldura
 
+────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME         ← títulos
 d │ rwxr-xr-x │          │         - │ 2026-08-22 13:19 │  src/
 d │ rwxr-xr-x │ root     │         - │ 2026-08-22 13:19 │  docs/
