@@ -84,7 +84,7 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da operação:
 
 ```
-╭─ ~/Devel/lst-f ───────────────────────────────── lst-f v26.8.21 ─╮   ← moldura
+╭─ ~/Devel/lst-f ───────────────────────────────── lst-f v26.8.23 ─╮   ← moldura
 
 ────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME         ← títulos
