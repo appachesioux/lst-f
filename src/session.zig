@@ -541,7 +541,7 @@ pub const State = struct {
             \\    let l:sep = matchstr(l:rest, ' \=│ \=')
             \\    if empty(l:sep) | break | endif
             \\    let l:i = match(l:rest, ' \=│ \=')
-            \\    let l:out .= '%#LstfTitles#' . strpart(l:rest, 0, l:i) . '%#LstfFrame#' . l:sep
+            \\    let l:out .= '%#LstfTitles#' . strpart(l:rest, 0, l:i) . '%#LstfTitlesSep#' . l:sep
             \\    let l:rest = strpart(l:rest, l:i + len(l:sep))
             \\  endwhile
             \\  return l:out . '%#LstfTitles#' . l:rest . repeat(' ', l:pad)
@@ -569,15 +569,17 @@ pub const State = struct {
             \\  let s:lstf_frame_width = winwidth(0)
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
             \\  setlocal modifiable
-            \\  " A linha 2 fica vazia: e o respiro entre a moldura e a faixa de
-            \\  " titulos, que e a statusline desta mesma janela.
-            \\  call setline(1, [join(l:parts, ''), ''])
+            \\  " Linha 2 vazia e linha 3 a regua que fecha o topo da faixa de
+            \\  " titulos -- que e a statusline desta mesma janela. A regua tem
+            \\  " linha propria, e nao o sublinhado da moldura, senao encosta no
+            \\  " caminho: e assim que o xpl-f desenha.
+            \\  call setline(1, [join(l:parts, ''), '', repeat('─', s:lstf_frame_width)])
             \\  setlocal nomodifiable nomodified
             \\  " A linha inteira e moldura; caminho e versao vem por cima, com
             \\  " prioridade maior. Sem sintaxe: o texto e nosso e as colunas de
             \\  " byte ja sao conhecidas aqui.
             \\  call clearmatches()
-            \\  call matchaddpos('LstfFrame', [[1]], -5)
+            \\  call matchaddpos('LstfFrame', [[1], [3]], -5)
             \\  let l:spots = []
             \\  let l:at = len(l:parts[0]) + 1
             \\  if len(l:parts[1]) > 0 | call add(l:spots, [1, l:at, len(l:parts[1])]) | endif
@@ -587,8 +589,8 @@ pub const State = struct {
             \\  noautocmd call win_gotoid(l:cur)
             \\endfunction
             \\
-            \\" Janela de duas linhas no topo: a primeira e a moldura, a segunda e um
-            \\" respiro, e a statusline dela sao os titulos das colunas. Precisa ser
+            \\" Janela de tres linhas no topo: moldura, respiro e a regua que fecha o
+            \\" topo da faixa de titulos, que e a statusline dela. Precisa ser
             \\" janela -- a `tabline` do Vim e uma linha so, e `winbar` nao existe
             \\" fora do Neovim.
             \\function! s:lstf_open_header() abort
@@ -596,12 +598,12 @@ pub const State = struct {
             \\  " Terminal baixo demais nao tem onde por a janela: o split falharia
             \\  " com E36 e o erro tomaria a tela. Sem cabecalho, caminho e versao
             \\  " voltam para a barra de baixo.
-            \\  if &lines < 6
+            \\  if &lines < 7
             \\    let s:lstf_frame = 0
             \\    return
             \\  endif
             \\  let s:lstf_list_win = win_getid()
-            \\  noautocmd topleft 2split __lstf_header__
+            \\  noautocmd topleft 3split __lstf_header__
             \\  let s:lstf_header_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
@@ -866,11 +868,13 @@ pub const State = struct {
             \\" titulos no buffer; a de cima virou a propria borda da tela.
             \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
             \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. O sublinhado
-            \\" tem que estar nos tres grupos, senao a regua abaixo de cada linha se
-            \\" quebra no divisor de coluna.
+            \\" A regua sob a faixa e o sublinhado dela.
             \\highlight LstfTitles cterm=bold,underline ctermfg=253 ctermbg=235 gui=bold,underline guifg=#b4bedc guibg=#232332
-            \\highlight LstfFrame cterm=underline ctermfg=245 gui=underline guifg=#6c7086 guibg=NONE
-            \\highlight LstfPath cterm=bold,underline ctermfg=11 gui=bold,underline guifg=#f9e2af guibg=NONE
+            \\highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
+            \\highlight LstfPath cterm=bold ctermfg=11 gui=bold guifg=#f9e2af guibg=NONE
+            \\" O divisor fica na faixa, entao carrega o sublinhado dela: sem isso a
+            \\" regua de baixo da faixa se quebra em cada coluna.
+            \\highlight LstfTitlesSep cterm=underline ctermfg=245 gui=underline guifg=#6c7086
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\" Cores por natureza da entrada, as mesmas do xpl-f. O par cterm
             \\" nao e enfeite: servidor sem truecolor so enxerga esse lado.
