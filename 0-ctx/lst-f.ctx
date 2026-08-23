@@ -8,7 +8,7 @@
 - `fzf` como buscador fuzzy na árvore, chamado pela diretiva `:find` — não como interface de navegação;
 - um núcleo próprio que transforma a edição em um plano seguro de operações no filesystem.
 
-A tela é o buffer. O que um gerenciador de arquivos poria numa barra de título fica fora do texto: os títulos das colunas numa barra de topo e o caminho corrente na barra de status — linhas de tela, que não rolam com a lista nem podem ser editadas. Só escopo do `:find` e avisos ocupam linhas do buffer, acima das entradas. Uma entrada por linha, com ID à esquerda, diretórios antes de arquivos. O `fzf`, quando chamado, apresenta lista plana com metadados e preview — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
+A tela é o buffer. O que um gerenciador de arquivos poria numa barra de título fica fora do texto: o caminho corrente numa moldura no topo e os títulos das colunas na barra logo abaixo — linhas de tela, que não rolam com a lista nem podem ser editadas. Só escopo do `:find` e avisos ocupam linhas do buffer, acima das entradas. Uma entrada por linha, com ID à esquerda, diretórios antes de arquivos. O `fzf`, quando chamado, apresenta lista plana com metadados e preview — uma linha por entrada, caminho relativo à raiz —, nunca um widget de árvore com nós expansíveis.
 
 ### Diferenciação
 
@@ -84,7 +84,8 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 Uma entrada por linha, ID à esquerda, caminho relativo ao diretório-base da operação:
 
 ```
-T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME    ← barra de topo
+╭─ ~/Devel/lst-f ───────────────────────────────── lst-f v26.8.21 ─╮   ← moldura
+T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME         ← títulos
 d │ rwxr-xr-x │          │         - │ 2026-08-22 13:19 │  src/
 d │ rwxr-xr-x │ root     │         - │ 2026-08-22 13:19 │  docs/
 - │ rw-r--r-- │          │      1.1K │ 2026-08-21 21:14 │  relatorio.pdf
@@ -95,7 +96,7 @@ d │ rwxr-xr-x │ root     │         - │ 2026-08-22 13:19 │  docs/
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
 - Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva. Linha sem ID não é erro: é pedido de criação de arquivo ou diretório.
-- O cabeçalho não é texto do buffer: títulos de colunas na barra de topo, caminho corrente e resultado da última operação na barra de baixo. Linha de tela não rola com a lista, não pode ser apagada e acompanha o tamanho do terminal. Ocupam linhas do buffer, acima das entradas, apenas o escopo do `:find`, os avisos de área órfã e os nomes fora da edição — coisas que precisam sobreviver a uma leitura atenta, não a um piscar de barra. Somente o nome à direita da grade é editável e o parser ignora os metadados.
+- O cabeçalho não é texto do buffer: caminho corrente e versão na moldura do topo, títulos de colunas na barra logo abaixo dela, resultado da última operação na barra de baixo. Linha de tela não rola com a lista, não pode ser apagada e acompanha o tamanho do terminal. Ocupam linhas do buffer, acima das entradas, apenas o escopo do `:find`, os avisos de área órfã e os nomes fora da edição — coisas que precisam sobreviver a uma leitura atenta, não a um piscar de barra. Somente o nome à direita da grade é editável e o parser ignora os metadados.
 
 **Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
 

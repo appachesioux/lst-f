@@ -200,6 +200,9 @@ pub const State = struct {
         try w.print("{s} v{s}", .{ app_name, version });
         try w.writeAll(
             \\'
+            \\" Sem titulos nao ha grade para descrever, e a janela de cabecalho
+            \\" nao chega a existir.
+            \\let s:lstf_frame = !empty(s:lstf_titles)
             \\function! LstfHelp() abort
             \\  let l:title = ' 
         );
@@ -502,21 +505,124 @@ pub const State = struct {
             \\" fica guardada aqui, atualizada so de dentro dela, para que o foco no
             \\" painel de destino nao a faca seguir a janela errada.
             \\function! s:lstf_follow_scroll() abort
+            \\  " A moldura e texto de buffer, entao nao se reajusta sozinha quando a
+            \\  " largura muda. A janela de cabecalho tem sempre a largura da lista:
+            \\  " o painel de destino e um vsplit de altura inteira, ao lado das duas.
+            \\  if s:lstf_frame && winwidth(0) != get(s:, 'lstf_frame_width', -1)
+            \\    call s:lstf_draw_frame()
+            \\  endif
             \\  let l:left = winsaveview().leftcol
             \\  let s:lstf_id_width = get(b:, 'lstf_id_width', 0)
             \\  if l:left == get(s:, 'lstf_leftcol', -1) | return | endif
             \\  let s:lstf_leftcol = l:left
-            \\  if exists(':redrawtabline') == 2 | redrawtabline | endif
+            \\  " Os titulos sao a statusline da janela de cabecalho, que so se
+            \\  " redesenha sob pedido: `!` alcanca a janela que nao esta em foco.
+            \\  if s:lstf_frame | redrawstatus! | endif
             \\endfunction
             \\
-            \\function! LstfTabline() abort
+            \\" Os titulos com um fundo por coluna e o divisor sobre o fundo da tela,
+            \\" como na grade do xpl-f. Sao a statusline da janela de cabecalho: e
+            \\" o `%!` que permite um grupo de destaque por coluna.
+            \\function! LstfTitlesBar() abort
             \\  if empty(s:lstf_titles) | return '' | endif
             \\  " Acompanha a rolagem horizontal da lista, senao as colunas sairiam
             \\  " do lugar assim que um nome longo empurrar a tela. O `leftcol`
             \\  " conta tambem os caracteres do ID, que estao no buffer mas
             \\  " ocultos por conceal e nao existem na barra.
             \\  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
-            \\  return '%#LstfTitles#' . strcharpart(s:lstf_titles, max([0, l:left])) . '%='
+            \\  let l:rest = strcharpart(s:lstf_titles, max([0, l:left]))
+            \\  " A faixa vai ate a borda da janela por conta propria: o
+            \\  " preenchimento de `%=` sairia no grupo StatusLineNC, que e da
+            \\  " barra de baixo tambem.
+            \\  let l:win = exists('g:statusline_winid') ? win_id2win(g:statusline_winid) : 0
+            \\  let l:pad = max([0, winwidth(l:win) - strdisplaywidth(l:rest)])
+            \\  let l:out = ''
+            \\  while 1
+            \\    let l:sep = matchstr(l:rest, ' \=│ \=')
+            \\    if empty(l:sep) | break | endif
+            \\    let l:i = match(l:rest, ' \=│ \=')
+            \\    let l:out .= '%#LstfTitles#' . strpart(l:rest, 0, l:i) . '%#LstfFrame#' . l:sep
+            \\    let l:rest = strpart(l:rest, l:i + len(l:sep))
+            \\  endwhile
+            \\  return l:out . '%#LstfTitles#' . l:rest . repeat(' ', l:pad)
+            \\endfunction
+            \\
+            \\" Linha de moldura: caminho a esquerda, versao a direita, regua ligando
+            \\" os dois -- a barra de titulo que o xpl-f desenha no topo da tela.
+            \\" Volta em pedacos porque quem pinta e `matchaddpos`, por coluna de
+            \\" byte: e conteudo de buffer, nao expressao de statusline.
+            \\function! s:lstf_frame_parts(width) abort
+            \\  let l:path = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
+            \\  " 8 colunas sao a moldura fixa: '╭─ ', ' ', ' ' e ' ─╮'.
+            \\  let l:avail = a:width - 8 - strdisplaywidth(s:lstf_identity)
+            \\  if strdisplaywidth(l:path) > l:avail
+            \\    let l:path = l:avail > 1 ? '…' . strcharpart(l:path, strchars(l:path) - l:avail + 1) : ''
+            \\  endif
+            \\  let l:fill = max([0, l:avail - strdisplaywidth(l:path)])
+            \\  return ['╭─ ', l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
+            \\endfunction
+            \\
+            \\function! s:lstf_draw_frame() abort
+            \\  if !exists('s:lstf_header_win') || win_id2win(s:lstf_header_win) == 0 | return | endif
+            \\  let l:cur = win_getid()
+            \\  noautocmd call win_gotoid(s:lstf_header_win)
+            \\  let s:lstf_frame_width = winwidth(0)
+            \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
+            \\  setlocal modifiable
+            \\  call setline(1, join(l:parts, ''))
+            \\  setlocal nomodifiable nomodified
+            \\  " A linha inteira e moldura; caminho e versao vem por cima, com
+            \\  " prioridade maior. Sem sintaxe: o texto e nosso e as colunas de
+            \\  " byte ja sao conhecidas aqui.
+            \\  call clearmatches()
+            \\  call matchaddpos('LstfFrame', [[1]], -5)
+            \\  let l:spots = []
+            \\  let l:at = len(l:parts[0]) + 1
+            \\  if len(l:parts[1]) > 0 | call add(l:spots, [1, l:at, len(l:parts[1])]) | endif
+            \\  let l:at += len(l:parts[1]) + len(l:parts[2])
+            \\  if len(l:parts[3]) > 0 | call add(l:spots, [1, l:at, len(l:parts[3])]) | endif
+            \\  if !empty(l:spots) | call matchaddpos('LstfPath', l:spots, 10) | endif
+            \\  noautocmd call win_gotoid(l:cur)
+            \\endfunction
+            \\
+            \\" Janela de uma linha no topo: o conteudo dela e a moldura, a
+            \\" statusline dela sao os titulos das colunas. Sao as duas linhas de
+            \\" tela do topo do xpl-f. Precisa ser janela -- a `tabline` do Vim e
+            \\" uma linha so, e `winbar` nao existe fora do Neovim.
+            \\function! s:lstf_open_header() abort
+            \\  if !s:lstf_frame || exists('s:lstf_header_win') | return | endif
+            \\  " Terminal baixo demais nao tem onde por a janela: o split falharia
+            \\  " com E36 e o erro tomaria a tela. Sem cabecalho, caminho e versao
+            \\  " voltam para a barra de baixo.
+            \\  if &lines < 5
+            \\    let s:lstf_frame = 0
+            \\    return
+            \\  endif
+            \\  let s:lstf_list_win = win_getid()
+            \\  noautocmd topleft 1split __lstf_header__
+            \\  let s:lstf_header_win = win_getid()
+            \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
+            \\  setlocal nonumber norelativenumber nocursorline winfixheight
+            \\  setlocal statusline=%!LstfTitlesBar()
+            \\  augroup lstf_header
+            \\    autocmd! * <buffer>
+            \\    autocmd WinEnter <buffer> call s:lstf_leave_header()
+            \\  augroup END
+            \\  noautocmd call win_gotoid(s:lstf_list_win)
+            \\  call s:lstf_draw_frame()
+            \\endfunction
+            \\
+            \\" O cursor nunca para no cabecalho: quem entrar volta para a lista.
+            \\function! s:lstf_leave_header() abort
+            \\  if winnr('$') > 1 | wincmd j | endif
+            \\endfunction
+            \\
+            \\function! s:lstf_focus_list() abort
+            \\  if exists('s:lstf_list_win') && win_id2win(s:lstf_list_win) > 0
+            \\    call win_gotoid(s:lstf_list_win)
+            \\  else
+            \\    wincmd p
+            \\  endif
             \\endfunction
             \\
             \\function! LstfStatusline() abort
@@ -532,8 +638,12 @@ pub const State = struct {
             \\  " as duas metades do caminho sob o cursor se leem de uma vez. O
             \\  " `%<` poe a truncagem no caminho: em terminal estreito o modo e o
             \\  " contador ficam, e o comeco do caminho e que some.
+            \\  " Com a moldura no topo o caminho e a versao ja estao na tela: aqui
+            \\  " embaixo sobrariam so tirando espaco do nome sob o cursor.
+            \\  let l:where = s:lstf_frame ? l:name : l:location . (empty(l:name) ? '' : '  ' . l:name)
+            \\  let l:tag = s:lstf_frame ? '' : s:lstf_identity . '  ·  '
             \\  let l:aviso = empty(s:lstf_notice) ? '' : '%#LstfStatusNotice# ' . substitute(s:lstf_notice, '%', '%%', 'g') . ' %#LstfStatusInfo#'
-            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . ' %<' . l:location . (empty(l:name) ? '' : '  ' . l:name) . '%=%#LstfStatusInfo# ' . s:lstf_identity . '  ·  ' . l:editor . ' %#LstfStatusHelp# F1=Help '
+            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -694,17 +804,18 @@ pub const State = struct {
             \\    let l:w = win_id2win(t:lstf_dest_win)
             \\    execute l:w . 'close'
             \\    unlet! t:lstf_dest_win
+            \\    call s:lstf_draw_frame()
             \\    return
             \\  endif
-            \\  if winnr('$') > 1
-            \\    wincmd w
-            \\    if &buftype ==# 'nofile'
-            \\      close
+            \\  " Pelo nome, nao por `buftype`: a janela de cabecalho tambem e
+            \\  " nofile e seria fechada no lugar do painel.
+            \\  for l:w in range(1, winnr('$'))
+            \\    if bufname(winbufnr(l:w)) ==# '__lstf_dest_panel__'
+            \\      execute l:w . 'close'
+            \\      call s:lstf_draw_frame()
             \\      return
-            \\    else
-            \\      wincmd p
             \\    endif
-            \\  endif
+            \\  endfor
             \\  botright vsplit __lstf_dest_panel__
             \\  let t:lstf_dest_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
@@ -718,41 +829,57 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
             \\  " `q` deve encerrar o lst-f independentemente do painel em foco.
             \\  " Esc e Ctrl+S continuam sendo as formas de fechar so este painel.
-            \\  nnoremap <buffer> <silent> q :wincmd p<Bar>call LstfQuit()<CR>
-            \\  nnoremap <buffer> <silent> <Esc> :close<CR>
-            \\  nnoremap <buffer> <silent> <Tab> :wincmd w<CR>
+            \\  nnoremap <buffer> <silent> q :call <SID>lstf_focus_list()<Bar>call LstfQuit()<CR>
+            \\  nnoremap <buffer> <silent> <Esc> :close<Bar>call <SID>lstf_draw_frame()<CR>
+            \\  nnoremap <buffer> <silent> <Tab> :call <SID>lstf_focus_list()<CR>
             \\  nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
             \\  nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
             \\  call s:lstf_render_dest(getcwd())
             \\  " O split estreitou a janela da lista sem passar por ela, entao a
             \\  " barra de topo ficaria descrevendo a largura antiga.
             \\  let l:dest = win_getid()
-            \\  wincmd p
+            \\  call s:lstf_focus_list()
             \\  call s:lstf_follow_scroll()
+            \\  call s:lstf_draw_frame()
             \\  call win_gotoid(l:dest)
             \\endfunction
             \\
             \\function! s:lstf_tab_jump() abort
-            \\  if winnr('$') > 1
-            \\    wincmd w
+            \\  if exists('t:lstf_dest_win') && win_id2win(t:lstf_dest_win) > 0
+            \\    call win_gotoid(t:lstf_dest_win)
             \\  else
             \\    call LstfToggleSplit()
             \\  endif
             \\endfunction
             \\
+            \\" Sem isto o Vim so enxerga o lado cterm e as cores em hex ficam
+            \\" decorativas. O servidor, que nao anuncia truecolor, segue no cterm.
+            \\if has('termguicolors') && !has('gui_running') && ($COLORTERM ==# 'truecolor' || $COLORTERM ==# '24bit')
+            \\  set termguicolors
+            \\endif
             \\highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
             \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\" O sublinhado faz o papel da regua `──┼───` que ficava embaixo dos
             \\" titulos no buffer; a de cima virou a propria borda da tela.
             \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
-            \\highlight LstfTitles cterm=bold,underline ctermfg=12 ctermbg=236 gui=bold,underline guifg=#89b4fa guibg=#313244
-            \\highlight! link TabLineFill LstfTitles
+            \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. O sublinhado
+            \\" tem que estar nos tres grupos, senao a regua abaixo de cada linha se
+            \\" quebra no divisor de coluna.
+            \\highlight LstfTitles cterm=bold,underline ctermfg=253 ctermbg=235 gui=bold,underline guifg=#b4bedc guibg=#232332
+            \\highlight LstfFrame cterm=underline ctermfg=245 gui=underline guifg=#6c7086 guibg=NONE
+            \\highlight LstfPath cterm=bold,underline ctermfg=11 gui=bold,underline guifg=#f9e2af guibg=NONE
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\" Cores por natureza da entrada, as mesmas do xpl-f. O par cterm
+            \\" nao e enfeite: servidor sem truecolor so enxerga esse lado.
+            \\highlight LstfDir cterm=bold ctermfg=12 gui=bold guifg=#61afef
+            \\highlight LstfExec cterm=bold ctermfg=10 gui=bold guifg=#a6d189
+            \\highlight LstfLink ctermfg=14 gui=italic guifg=#56b6c2
+            \\highlight LstfFile ctermfg=252 guifg=#c0caf5
+            \\highlight LstfMeta ctermfg=245 guifg=#6c7086
             \\set laststatus=2
             \\setlocal statusline=%!LstfStatusline()
-            \\set noshowmode showtabline=2
-            \\set tabline=%!LstfTabline()
+            \\set noshowmode showtabline=0
             \\set shortmess+=F
             \\if exists('+fillchars')
             \\  execute "setlocal fillchars+=eob:\\ "
@@ -763,6 +890,18 @@ pub const State = struct {
             \\" O sequencial e metadado interno: oculta-lo tambem na linha do
             \\" cursor evita deslocar as colunas, inclusive ao voltar do :find.
             \\setlocal conceallevel=2 concealcursor=nvic
+            \\" A linha inteira e um item por natureza, com o ID e as colunas
+            \\" tecnicas contidos nele: um item que comecasse no nome perderia
+            \\" para o LstfInternalId, que casa antes (coluna 1). Ancorar nos
+            \\" cinco divisores, e nao em contagem de caracteres, e o que deixa
+            \\" o nome com `│` dentro ainda cair no grupo certo. LstfExec vem
+            \\" depois de LstfFile de proposito: entre itens que comecam na
+            \\" mesma coluna, o Vim da prioridade ao definido por ultimo.
+            \\syntax match LstfMeta /[dl?-]\%( │ [^│]*\)\{4} │/ contained
+            \\syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfMeta
+            \\syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId,LstfMeta
+            \\syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfMeta
+            \\syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfMeta
             \\augroup lstf_buffer
             \\  autocmd! * <buffer>
             \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
@@ -786,6 +925,8 @@ pub const State = struct {
             \\  if exists('##WinScrolled')
             \\    autocmd WinScrolled * if exists('b:lstf_id_width') | call s:lstf_follow_scroll() | endif
             \\  endif
+            \\  " A moldura e texto de buffer: nao se reajusta sozinha na largura nova.
+            \\  autocmd VimResized * call s:lstf_draw_frame()
             \\augroup END
             \\if filereadable($LST_F_STATE . '/header')
             \\  let b:lstf_header = readfile($LST_F_STATE . '/header')
@@ -827,6 +968,9 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
             \\cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
+            \\" Por ultimo: abrir o split antes daqui faria os `setlocal` e os
+            \\" mapeamentos `<buffer>` acima cairem no buffer errado.
+            \\call s:lstf_open_header()
             \\redrawstatus | echo ''
             \\
         );
