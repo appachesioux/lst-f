@@ -165,6 +165,18 @@ pub const State = struct {
         try s.dir.writeFile(io, .{ .sub_path = "header", .data = joined });
     }
 
+    /// O helper do Vim grava este sinal depois de o usuario aprovar uma
+    /// alteracao no proprio editor. Ler tambem o remove, para que uma
+    /// aprovacao nunca vaze para a proxima tela.
+    pub fn takeApproval(s: State, io: Io) bool {
+        s.dir.deleteFile(io, "approved") catch return false;
+        return true;
+    }
+
+    pub fn clearApproval(s: State, io: Io) void {
+        s.dir.deleteFile(io, "approved") catch {};
+    }
+
     /// Arvore visual da listagem local. E consumida somente pelo helper Vim;
     /// nao participa do plano de operacoes nem e um plugin persistente.
     pub fn treeFile(s: State, io: Io) !Io.File {
@@ -407,12 +419,27 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_prepare_save() abort
+            \\  call delete($LST_F_STATE . '/approved')
+            \\  let l:entries = s:lstf_entry_lines()
+            \\  if exists('b:lstf_entry_lines') && l:entries !=# b:lstf_entry_lines
+            \\    let l:answer = input('Apply filesystem changes? [y/N] ')
+            \\    if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
+            \\      throw 'lst-f: operation cancelled'
+            \\    endif
+            \\    call writefile(['approved'], $LST_F_STATE . '/approved')
+            \\  endif
             \\  if search('^:', 'nw') == 0
             \\    call append('$', ':refresh')
             \\  endif
             \\  let l:start = s:lstf_content_start()
             \\  let l:relative_line = l:start > 0 ? max([0, line('.') - l:start]) : 0
             \\  call writefile([string(l:relative_line)], $LST_F_STATE . '/cursor')
+            \\endfunction
+            \\
+            \\function! s:lstf_entry_lines() abort
+            \\  let l:start = s:lstf_content_start()
+            \\  if l:start <= 0 | let l:start = len(get(b:, 'lstf_header', [])) + 1 | endif
+            \\  return filter(getline(l:start, '$'), 'v:val !~# "^:" && v:val !~# "^#"')
             \\endfunction
             \\
             \\function! s:lstf_content_start() abort
@@ -942,6 +969,7 @@ pub const State = struct {
             \\  setlocal nomodified
             \\endif
             \\call s:lstf_capture_prefixes()
+            \\let b:lstf_entry_lines = s:lstf_entry_lines()
             \\call s:lstf_follow_scroll()
             \\if filereadable($LST_F_STATE . '/cursor')
             \\  let s:lstf_start = s:lstf_content_start()
