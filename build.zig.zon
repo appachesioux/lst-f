@@ -1,6 +1,6 @@
 .{
     .name = .lst_f,
-    .version = "26.8.23",
+    .version = "26.8.24",
     .fingerprint = 0x29602759780bf056,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

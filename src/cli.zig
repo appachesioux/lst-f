@@ -316,7 +316,10 @@ fn runSession(
 
 fn loop(s: *Session) !void {
     while (true) {
-        if (!s.keep_buffer) try writeBuffer(s);
+        if (!s.keep_buffer) {
+            s.state.clearApproval(s.io);
+            try writeBuffer(s);
+        }
         s.keep_buffer = false;
 
         const editor = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
@@ -379,7 +382,8 @@ fn loop(s: *Session) !void {
 
         const changed = !built.ok.isEmpty();
         if (changed) {
-            if (!try confirmAndApply(s, built.ok)) {
+            const approved_in_editor = s.state.takeApproval(s.io);
+            if (!try confirmAndApply(s, built.ok, approved_in_editor)) {
                 // Depois de recusar a confirmacao, o buffer ainda contem as
                 // linhas apagadas. Reabri-lo assim faria a mesma remocao ser
                 // proposta indefinidamente, inclusive ao tentar sair.
@@ -827,7 +831,7 @@ fn vacatedByMove(p: plan.Plan, path: []const u8) bool {
 }
 
 /// `false` quando o usuario recusou tudo ou a aplicacao falhou.
-fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
+fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
 
@@ -837,13 +841,13 @@ fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
     var effective = p;
     effective.mkdirs = missing;
 
-    if (p.moves.len > 0 or p.creates.len > 0 or missing.len > 0) {
+    if (!approved_in_editor and (p.moves.len > 0 or p.creates.len > 0 or missing.len > 0)) {
         const question = if (p.moves.len == 0)
-            "Aplicar as criacoes?"
+            "Apply creations?"
         else if (p.creates.len == 0)
-            "Aplicar renomeacoes e movimentos?"
+            "Apply renames and moves?"
         else
-            "Aplicar criacoes, renomeacoes e movimentos?";
+            "Apply creations, renames, and moves?";
         if (!try confirm(s, question)) {
             effective.moves = &.{};
             effective.renames = &.{};
@@ -854,7 +858,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan) !bool {
 
     var area_ptr: ?*fsops.Area = null;
     if (p.removes.len > 0) {
-        if (try confirm(s, "Confirmar as remocoes?")) {
+        if (approved_in_editor or try confirm(s, "Confirm removals?")) {
             area_ptr = ensureArea(s) catch |err| blk: {
                 if (err == error.AreaUnavailable) {
                     try s.out.writeAll(
@@ -948,25 +952,25 @@ fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
         if (!c.implicit) asked += 1;
     }
     if (asked > 0) {
-        try w.print("Criar ({d}):\n", .{asked});
+        try w.print("Create ({d}):\n", .{asked});
         for (p.creates) |c| {
             try w.print("  {s}{s}{s}\n", .{
                 c.path,
                 if (c.kind == .dir) "/" else "",
-                if (c.implicit) "  (diretorio-pai)" else "",
+                if (c.implicit) "  (parent directory)" else "",
             });
         }
         try w.writeAll("\n");
     }
 
     if (missing.len > 0) {
-        try w.print("Criar diretorio-pai ({d}):\n", .{missing.len});
+        try w.print("Create parent directory ({d}):\n", .{missing.len});
         for (missing) |d| try w.print("  {s}/\n", .{d});
         try w.writeAll("\n");
     }
 
     if (p.moves.len > 0) {
-        try w.print("Renomear ou mover ({d}):\n", .{p.moves.len});
+        try w.print("Rename or move ({d}):\n", .{p.moves.len});
         var width: usize = 0;
         for (p.moves) |m| width = @max(width, m.from.len);
         width = @min(width, 48);
@@ -980,14 +984,14 @@ fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
 
     if (p.removes.len > 0) {
         try w.print(
-            "Remover ({d})  ->  area da sessao .lst-f-{d}/, apagada ao sair: depois disso\n" ++
-                "              a remocao e definitiva; isto nao e uma lixeira.\n",
+            "Remove ({d})  ->  session area .lst-f-{d}/, deleted on exit: after that\n" ++
+                "              removal is permanent; this is not a trash bin.\n",
             .{ p.removes.len, s.pid },
         );
         for (p.removes) |rm| {
             if (rm.kind == .dir) {
                 const count = fsops.subtreeCount(s.io, base_dir, rm.path);
-                try w.print("  {s}/  ({d} item(ns) na subarvore)\n", .{ rm.path, count });
+                try w.print("  {s}/  ({d} item(s) in subtree)\n", .{ rm.path, count });
             } else {
                 try w.print("  {s}\n", .{rm.path});
             }
@@ -1118,26 +1122,27 @@ fn cleanupAreas(s: *Session) void {
 
 const Tty = struct {
     file: Io.File,
-    reader: *Io.File.Reader,
 
     fn open(arena: Allocator, io: Io) ?Tty {
         const file = Io.Dir.cwd().openFile(io, "/dev/tty", .{ .mode = .read_only }) catch return null;
-        const buffer = arena.alloc(u8, 1024) catch return null;
-        const reader = arena.create(Io.File.Reader) catch return null;
-        reader.* = .initStreaming(file, io, buffer);
-        return .{ .file = file, .reader = reader };
+        _ = arena;
+        return .{ .file = file };
     }
 
-    fn line(t: Tty) ?[]const u8 {
-        return t.reader.interface.takeDelimiterExclusive('\n') catch null;
+    /// Cada volta do Vim restaura o terminal; recriar o leitor evita carregar
+    /// estado/buffer da confirmacao anterior para a proxima operacao.
+    fn line(t: Tty, arena: Allocator, io: Io) ?[]const u8 {
+        const buffer = arena.alloc(u8, 1024) catch return null;
+        var reader: Io.File.Reader = .initStreaming(t.file, io, buffer);
+        return reader.interface.takeDelimiterExclusive('\n') catch null;
     }
 };
 
 fn confirm(s: *Session, question: []const u8) !bool {
     const tty = s.tty orelse return false;
-    try s.out.print("{s} [s/N] ", .{question});
+    try s.out.print("{s} [y/N] ", .{question});
     try s.out.flush();
-    const answer = tty.line() orelse return false;
+    const answer = tty.line(s.arena, s.io) orelse return false;
     const trimmed = std.mem.trim(u8, answer, " \t\r");
     return trimmed.len > 0 and (trimmed[0] == 's' or trimmed[0] == 'S' or
         trimmed[0] == 'y' or trimmed[0] == 'Y');
@@ -1145,9 +1150,9 @@ fn confirm(s: *Session, question: []const u8) !bool {
 
 fn pause(s: *Session) !void {
     const tty = s.tty orelse return;
-    try s.out.writeAll("\n[Enter para voltar ao buffer] ");
+    try s.out.writeAll("\n[Press Enter to return to the list] ");
     try s.out.flush();
-    _ = tty.line();
+    _ = tty.line(s.arena, s.io);
 }
 
 fn report(s: *Session, message: []const u8) !void {
