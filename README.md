@@ -5,20 +5,21 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME              ← barra de topo
+╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.8.21 ─╮   ← moldura
+T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos
 d │ rwxr-xr-x │          │         - │ 2026-08-21 19:58 │  src/
 - │ rw-r--r-- │          │      1.1K │ 2026-08-21 21:14 │  README.md
 - │ rw-r--r-- │ root     │       220 │ 2026-08-20 08:03 │  instalado-pelo-sistema.conf
- NORMAL  2/3  ~/Devel/lst-f  README.md        lst-f v26.8.21  ·  Vim  F1=Help
+ NORMAL  2/3  README.md                                                  Vim  F1=Help
 ```
 
 A coluna `OWNER` fica em branco no que é seu — repetir o seu nome em toda linha
 não informa nada. Dono alheio aparece pelo nome; se o `uid` não estiver em
 `/etc/passwd` (usuário só de LDAP ou SSSD, por exemplo), aparece o número.
 
-Os títulos das colunas ficam na barra de topo e as entradas ocupam o buffer inteiro. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
+As duas linhas do topo — a moldura com o caminho e a versão, e os títulos das colunas — são barra de tela; as entradas ocupam o buffer inteiro. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
 
-A barra de baixo mostra permanentemente o modo, a posição na lista, o diretório atual, o nome sob o cursor e se a sessão está usando **Vim** ou **Neovim**.
+A barra de baixo mostra permanentemente o modo, a posição na lista, o nome sob o cursor e se a sessão está usando **Vim** ou **Neovim**. O diretório atual fica na moldura, no topo.
 
 O ID à esquerda casa a linha com a entrada, então reordenar, rodar `:sort` ou
 recolar linhas é inofensivo. Nada é gravado sem diff e confirmação, e as
@@ -128,10 +129,11 @@ continuar vazio — o que você escreveu depois fica.
 
 ## Só o nome é editável
 
-Os títulos das colunas ficam numa **barra de topo**, irmã da barra de status de
-baixo: é linha de tela, não de buffer. Não rola junto com a lista, não dá para
-apagar, redesenha-se sozinha quando o terminal muda de tamanho e acompanha a
-rolagem horizontal para as colunas nunca saírem do lugar.
+O caminho e os títulos das colunas ficam nas **duas barras de topo**, irmãs da
+barra de status de baixo: são linha de tela, não de buffer. Não rolam junto com
+a lista, não dá para apagar, redesenham-se sozinhas quando o terminal muda de
+tamanho e a dos títulos acompanha a rolagem horizontal, para as colunas nunca
+saírem do lugar.
 
 As colunas técnicas de cada linha são leitura: o cursor não entra nelas e, se um
 `:sort`, um `dd` ou uma colagem passar por cima, o `lst-f` recompõe a linha na
