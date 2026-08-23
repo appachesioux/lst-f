@@ -569,7 +569,9 @@ pub const State = struct {
             \\  let s:lstf_frame_width = winwidth(0)
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
             \\  setlocal modifiable
-            \\  call setline(1, join(l:parts, ''))
+            \\  " A linha 2 fica vazia: e o respiro entre a moldura e a faixa de
+            \\  " titulos, que e a statusline desta mesma janela.
+            \\  call setline(1, [join(l:parts, ''), ''])
             \\  setlocal nomodifiable nomodified
             \\  " A linha inteira e moldura; caminho e versao vem por cima, com
             \\  " prioridade maior. Sem sintaxe: o texto e nosso e as colunas de
@@ -585,21 +587,21 @@ pub const State = struct {
             \\  noautocmd call win_gotoid(l:cur)
             \\endfunction
             \\
-            \\" Janela de uma linha no topo: o conteudo dela e a moldura, a
-            \\" statusline dela sao os titulos das colunas. Sao as duas linhas de
-            \\" tela do topo do xpl-f. Precisa ser janela -- a `tabline` do Vim e
-            \\" uma linha so, e `winbar` nao existe fora do Neovim.
+            \\" Janela de duas linhas no topo: a primeira e a moldura, a segunda e um
+            \\" respiro, e a statusline dela sao os titulos das colunas. Precisa ser
+            \\" janela -- a `tabline` do Vim e uma linha so, e `winbar` nao existe
+            \\" fora do Neovim.
             \\function! s:lstf_open_header() abort
             \\  if !s:lstf_frame || exists('s:lstf_header_win') | return | endif
             \\  " Terminal baixo demais nao tem onde por a janela: o split falharia
             \\  " com E36 e o erro tomaria a tela. Sem cabecalho, caminho e versao
             \\  " voltam para a barra de baixo.
-            \\  if &lines < 5
+            \\  if &lines < 6
             \\    let s:lstf_frame = 0
             \\    return
             \\  endif
             \\  let s:lstf_list_win = win_getid()
-            \\  noautocmd topleft 1split __lstf_header__
+            \\  noautocmd topleft 2split __lstf_header__
             \\  let s:lstf_header_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
@@ -876,7 +878,6 @@ pub const State = struct {
             \\highlight LstfExec cterm=bold ctermfg=10 gui=bold guifg=#a6d189
             \\highlight LstfLink ctermfg=14 gui=italic guifg=#56b6c2
             \\highlight LstfFile ctermfg=252 guifg=#c0caf5
-            \\highlight LstfMeta ctermfg=245 guifg=#6c7086
             \\set laststatus=2
             \\setlocal statusline=%!LstfStatusline()
             \\set noshowmode showtabline=0
@@ -890,18 +891,18 @@ pub const State = struct {
             \\" O sequencial e metadado interno: oculta-lo tambem na linha do
             \\" cursor evita deslocar as colunas, inclusive ao voltar do :find.
             \\setlocal conceallevel=2 concealcursor=nvic
-            \\" A linha inteira e um item por natureza, com o ID e as colunas
-            \\" tecnicas contidos nele: um item que comecasse no nome perderia
-            \\" para o LstfInternalId, que casa antes (coluna 1). Ancorar nos
+            \\" A linha inteira e um item por natureza, com o ID contido nele: um
+            \\" item que comecasse no nome perderia para o LstfInternalId, que casa
+            \\" antes (coluna 1). As colunas tecnicas nao tem grupo proprio -- vao
+            \\" na cor da natureza, junto com o nome, como no xpl-f. Ancorar nos
             \\" cinco divisores, e nao em contagem de caracteres, e o que deixa
             \\" o nome com `│` dentro ainda cair no grupo certo. LstfExec vem
             \\" depois de LstfFile de proposito: entre itens que comecam na
             \\" mesma coluna, o Vim da prioridade ao definido por ultimo.
-            \\syntax match LstfMeta /[dl?-]\%( │ [^│]*\)\{4} │/ contained
-            \\syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfMeta
-            \\syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId,LstfMeta
-            \\syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfMeta
-            \\syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfMeta
+            \\syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId
+            \\syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId
+            \\syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId
+            \\syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId
             \\augroup lstf_buffer
             \\  autocmd! * <buffer>
             \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
