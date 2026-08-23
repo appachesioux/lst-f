@@ -108,6 +108,13 @@ pub fn run(
         // e avaliado antes de o buffer ser lido, entao a linha de comando fica
         // reservada apenas para mensagens que o usuario realmente provocar.
         try argv.appendSlice(arena, &.{ "--cmd", "set shortmess+=F" });
+        // Servidor com locale C (SSH sem AcceptEnv LANG) deixa o Vim em
+        // `encoding=latin1`: os tres bytes do divisor `│` da grade vao para a
+        // tela soltos e viram `◆~T~B`. Tambem precisa ser `--cmd`: trocar
+        // `encoding` depois que o buffer foi lido nao reconverte o que ja
+        // entrou. Vale so para a tela do lst-f, que e sempre UTF-8; arquivo
+        // aberto pela diretiva `:open` segue com a deteccao normal do usuario.
+        try argv.appendSlice(arena, &.{ "--cmd", "set encoding=utf-8" });
         if (std.mem.indexOf(u8, e.name(), "nvim") != null) {
             try argv.append(arena, "--clean");
         } else {
