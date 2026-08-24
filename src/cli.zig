@@ -380,10 +380,19 @@ fn loop(s: *Session) !void {
             continue;
         }
 
-        const changed = !built.ok.isEmpty();
+        var plan_ok = built.ok;
+        const copy_resolved = try resolveCopySuffixesOnDisk(s, plan_ok);
+        plan_ok = copy_resolved.plan;
+        if (copy_resolved.problems.len > 0) {
+            try reportProblems(s, copy_resolved.problems);
+            s.keep_buffer = true;
+            continue;
+        }
+
+        const changed = !plan_ok.isEmpty();
         if (changed) {
             const approved_in_editor = s.state.takeApproval(s.io);
-            if (!try confirmAndApply(s, built.ok, approved_in_editor)) {
+            if (!try confirmAndApply(s, plan_ok, approved_in_editor)) {
                 // Depois de recusar a confirmacao, o buffer ainda contem as
                 // linhas apagadas. Reabri-lo assim faria a mesma remocao ser
                 // proposta indefinidamente, inclusive ao tentar sair.
@@ -834,6 +843,73 @@ fn vacatedByMove(p: plan.Plan, path: []const u8) bool {
     return false;
 }
 
+const CopyResolve = struct { plan: plan.Plan, problems: []const plan.Problem };
+
+/// Resolve o destino das copias contra o plano e o disco: colisao recebe
+/// sufixo `-NN` (01..99), em qualquer diretorio. O disco cobre o que a
+/// listagem nao enxerga (subdiretorio do painel de destino, dotfile oculto).
+fn resolveCopySuffixesOnDisk(s: *Session, p: plan.Plan) !CopyResolve {
+    if (p.copies.len == 0) return .{ .plan = p, .problems = &.{} };
+
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
+
+    // Caminhos que o plano reserva ou libera.
+    var occupied: std.StringHashMapUnmanaged(void) = .empty;
+    var freed: std.StringHashMapUnmanaged(void) = .empty;
+    for (p.moves) |m| {
+        try occupied.put(s.arena, m.to, {});
+        try freed.put(s.arena, m.from, {});
+    }
+    for (p.removes) |rm| try freed.put(s.arena, rm.path, {});
+    for (p.creates) |c| try occupied.put(s.arena, c.path, {});
+
+    var problems: std.ArrayList(plan.Problem) = .empty;
+    var copies = try s.arena.alloc(plan.Copy, p.copies.len);
+    for (p.copies, 0..) |c, i| {
+        copies[i] = c;
+        var to = c.to;
+        if (busyCopyDest(s, base_dir, to, &occupied, &freed)) {
+            var n: u32 = 1;
+            var resolved: ?[]const u8 = null;
+            while (n < 100) : (n += 1) {
+                const candidate = try plan.suffixed(s.arena, to, n, c.kind == .dir);
+                if (!busyCopyDest(s, base_dir, candidate, &occupied, &freed)) {
+                    try occupied.put(s.arena, candidate, {});
+                    resolved = candidate;
+                    break;
+                }
+            }
+            if (resolved) |r| {
+                to = r;
+            } else {
+                try problems.append(s.arena, .{ .copy_no_free_name = .{ .id = c.id, .path = to } });
+                continue;
+            }
+        } else {
+            try occupied.put(s.arena, to, {});
+        }
+        copies[i].to = to;
+    }
+
+    var result = p;
+    result.copies = copies;
+    return .{ .plan = result, .problems = try problems.toOwnedSlice(s.arena) };
+}
+
+fn busyCopyDest(
+    s: *Session,
+    base_dir: Io.Dir,
+    path: []const u8,
+    occupied: *const std.StringHashMapUnmanaged(void),
+    freed: *const std.StringHashMapUnmanaged(void),
+) bool {
+    if (occupied.contains(path)) return true;
+    if (freed.contains(path)) return false;
+    _ = base_dir.statFile(s.io, path, .{ .follow_symlinks = false }) catch return false;
+    return true;
+}
+
 /// `false` quando o usuario recusou tudo ou a aplicacao falhou.
 fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     var base_dir = try openBase(s);
@@ -845,18 +921,23 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     var effective = p;
     effective.mkdirs = missing;
 
-    if (!approved_in_editor and (p.moves.len > 0 or p.creates.len > 0 or missing.len > 0)) {
-        const question = if (p.moves.len == 0)
+    if (!approved_in_editor and (p.moves.len > 0 or p.creates.len > 0 or p.copies.len > 0 or missing.len > 0)) {
+        const question = if (p.moves.len == 0 and p.copies.len == 0)
             "Apply creations?"
-        else if (p.creates.len == 0)
+        else if (p.creates.len == 0 and p.copies.len == 0)
             "Apply renames and moves?"
+        else if (p.moves.len == 0 and p.creates.len == 0)
+            "Apply copies?"
+        else if (p.creates.len == 0)
+            "Apply renames, moves, and copies?"
         else
-            "Apply creations, renames, and moves?";
+            "Apply creations, renames, moves, and copies?";
         if (!try confirm(s, question)) {
             effective.moves = &.{};
             effective.renames = &.{};
             effective.mkdirs = &.{};
             effective.creates = &.{};
+            effective.copies = &.{};
         }
     }
 
@@ -876,7 +957,10 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
                 break :blk null;
             };
         }
-        if (area_ptr == null) effective.removes = &.{};
+        if (area_ptr == null) {
+            effective.removes = &.{};
+            effective.removes_before = 0;
+        }
     }
 
     if (effective.isEmpty()) {
@@ -917,6 +1001,9 @@ fn appliedNotice(s: *Session, applied: fsops.Applied) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
     if (created > 0) {
         try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} criado(s)", .{created}));
+    }
+    if (applied.copied.len > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} copiado(s)", .{applied.copied.len}));
     }
     if (applied.renames.len > 0) {
         try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} renomeado(s)", .{applied.renames.len}));
@@ -963,6 +1050,19 @@ fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
                 if (c.kind == .dir) "/" else "",
                 if (c.implicit) "  (parent directory)" else "",
             });
+        }
+        try w.writeAll("\n");
+    }
+
+    if (p.copies.len > 0) {
+        try w.print("Copy ({d}):\n", .{p.copies.len});
+        var width: usize = 0;
+        for (p.copies) |c| width = @max(width, c.from.len);
+        width = @min(width, 48);
+        for (p.copies) |c| {
+            try w.print("  {s}", .{c.from});
+            try w.splatByteAll(' ', width -| c.from.len);
+            try w.print("  ->  {s}{s}\n", .{ c.to, if (c.kind == .dir) "/" else "" });
         }
         try w.writeAll("\n");
     }
@@ -1020,6 +1120,7 @@ fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
                 try w.print("  {s}{s} criado\n", .{ c.path, if (c.kind == .dir) "/" else "" });
             }
             for (outcome.applied.renames) |r| try w.print("  {s} -> {s}\n", .{ r.from, r.to });
+            for (outcome.applied.copied) |c| try w.print("  {s} -> {s} copiado\n", .{ c.from, c.to });
             for (outcome.applied.removed) |rm| {
                 try w.print("  {s} esta em {s}/{s}\n", .{ rm.path, outcome.applied.area orelse "?", rm.stored });
             }
@@ -1028,9 +1129,10 @@ fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
     }
 
     try w.print(
-        "\nAplicado: {d} criacao(oes), {d} renomeacao(oes), {d} diretorio(s)-pai, {d} remocao(oes).\n",
+        "\nAplicado: {d} criacao(oes), {d} copia(s), {d} renomeacao(oes), {d} diretorio(s)-pai, {d} remocao(oes).\n",
         .{
             outcome.applied.created.len,
+            outcome.applied.copied.len,
             outcome.applied.renames.len,
             outcome.applied.created_dirs.len,
             outcome.applied.removed.len,

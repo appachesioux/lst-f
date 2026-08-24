@@ -74,9 +74,9 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 1. `lst-f [diretório]` monta o buffer daquele diretório e abre o editor do usuário, com o diretório-base como *cwd* — assim `:e`, `gf` e completação funcionam sobre os caminhos listados.
 2. O usuário edita: muda caminhos, apaga linhas, ou escreve **uma** diretiva (`:cd <dir>`, `:find [termo]`, `:back`, `:forward`, `:undo`, `:quit`). Salva e sai.
 3. Sair com código diferente de zero (`:cq`) aborta tudo. Salvar sem nenhuma mudança e sem diretiva encerra a sessão: não há o que fazer.
-4. `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear ou remover.
+4. `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear, copiar ou remover.
 5. Antes de gravar, exibe o diff do plano e exige confirmação. Remoções aparecem em bloco próprio e exigem confirmação separada. Em falha de validação, não executa alteração alguma e o buffer volta como o usuário o deixou, para corrigir.
-6. A aplicação resolve colisões e ciclos com nomes temporários no mesmo filesystem, e executa as remoções por último, movendo para a área de sessão.
+6. A aplicação resolve colisões e ciclos com nomes temporários no mesmo filesystem, e executa as remoções movendo para a área de sessão — por último, exceto quando uma remoção libera o nome que um rename vai ocupar: nesse caso ela é antecipada para antes do rename.
 7. Depois de aplicar, ou de executar a diretiva, o buffer é regerado e o editor reabre. A sessão vive enquanto o laço vive — é o que sustenta a área de remoção e o `:undo`.
 
 ## Formato do buffer de edição
@@ -97,7 +97,8 @@ d │ rwxr-xr-x │ root     │         - │ 2026-08-22 13:19 │  docs/
 - O parser casa origem e destino **pelo ID**. A posição da linha é irrelevante.
 - Reordenar linhas, rodar `:sort`, deletar e recolar são operações inofensivas.
 - **Linha apagada, ID some do buffer: a entrada é removida.** É a mesma gramática do `vidir` e a razão de o formato nascer com ID.
-- Abortam sem escrever nada: ID desconhecido, ID duplicado, linha com ID e sem caminho, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva. Linha sem ID não é erro: é pedido de criação de arquivo ou diretório.
+- **ID repetido, uma linha no caminho original e outra num nome novo: a entrada é copiada.** A origem fica; o destino materializa uma cópia (arquivo por bytes, diretório recursivo). `yy` + `p` duplica a linha com o ID oculto — é o gesto de copiar. Se o destino colidir com um nome existente (em qualquer diretório), a aplicação propõe sufixo `-NN` (dois dígitos, zero à esquerda) antes da extensão: `relatorio-01.pdf`. ID repetido com as duas linhas editadas é ambíguo e aborta.
+- Abortam sem escrever nada: ID desconhecido, ID repetido com as duas linhas editadas, linha com ID e sem caminho, diretiva desconhecida, diretiva sem argumento obrigatório, mais de uma diretiva. Linha sem ID não é erro: é pedido de criação de arquivo ou diretório.
 - O cabeçalho não é texto do buffer: caminho corrente e versão na moldura do topo, títulos de colunas na barra logo abaixo dela, resultado da última operação na barra de baixo. Linha de tela não rola com a lista, não pode ser apagada e acompanha o tamanho do terminal. Ocupam linhas do buffer, acima das entradas, apenas o escopo do `:find`, os avisos de área órfã e os nomes fora da edição — coisas que precisam sobreviver a uma leitura atenta, não a um piscar de barra. Somente o nome à direita da grade é editável e o parser ignora os metadados.
 
 **Atalho de abertura.** `Enter` em um diretório grava `:cd <diretório>` e volta ao laço; em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
@@ -135,7 +136,7 @@ Remoção faz parte do escopo inicial. Nenhum arquivo é apagado durante a aplic
 - **Sem permissão de escrita no diretório-base**: não há como criar a área, logo não há como garantir rollback. A remoção é recusada com explicação. Renomeações continuam disponíveis.
 - **Diretórios**: um diretório vai inteiro para a área num único `rename()`, com conteúdo, sem recursão. O diff informa quantos itens a subárvore contém, porque marcar um diretório sem perceber é fácil e o número é a informação que evita isso.
 - **Confirmação separada**: o diff mostra renomeações e remoções em blocos distintos, e a remoção tem prompt próprio. Confirmar renomeações não confirma remoções.
-- **Remoções por último**: criação de pais, depois renomeações e movimentos, e então as remoções. Uma fase por vez, rollback simples.
+- **Remoções por último, com uma exceção**: criação de pais, depois renomeações e movimentos, e então as remoções. Uma fase por vez, rollback simples. A exceção é a remoção cujo caminho é o destino de um rename: ela é antecipada para antes das renomeações, porque o destino precisa estar livre na hora do rename — o oil.nvim faz o mesmo (`DELETE /a` antes de `MOVE /b -> /a`).
 - **Symlink**: move o link para a área, nunca o alvo.
 - **Pai e filho na mesma seleção**: na busca recursiva, pai e filho caem no mesmo buffer com facilidade. Remover o pai e renomear um filho é contradição e o `plan` recusa; remover pai e filho é redundância e o `plan` absorve, movendo só o pai.
 - **A área é invisível para a listagem**: `.lst-f-<pid>/` nunca aparece como entrada, nem local nem na busca recursiva.
@@ -178,9 +179,9 @@ Não introduzir interfaces, configuração ou camadas extras antes de uma necess
 - **Sobrescrita e TOCTOU**: entre a validação de "destino não existe" e o `rename()` o destino pode passar a existir, e `rename()` sobrescreve em silêncio. Usar `Io.Dir.renamePreserve`, que é `renameat2` com `RENAME_NOREPLACE` no Linux (kernel 3.15+, cobre qualquer alvo com folga). Onde o sistema não oferece rename atômico não-substitutivo, a chamada devolve `OperationUnsupported` e a janela de corrida fica documentada como limitação conhecida.
 - **Rename só de caixa** (`arquivo.txt` para `ARQUIVO.TXT`): rotear **sempre** por nome temporário, sem tentar detectar se o filesystem é case-insensitive. É barato e correto em FAT32, exFAT, NTFS e APFS.
 - **Symlinks**: renomear ou mover para a área o link, nunca o alvo. Não seguir link ao validar escape do diretório-base — a validação é lexical antes de qualquer resolução. A criação de diretórios pai não pode atravessar symlink para fora do base.
-- Remoção está no escopo inicial e passa pela área de sessão, com as garantias da seção própria: bloco separado no diff, confirmação própria, execução por último, e recusa explícita quando não for possível criar a área.
+- Remoção está no escopo inicial e passa pela área de sessão, com as garantias da seção própria: bloco separado no diff, confirmação própria, execução por último (salvo a exceção do destino de rename), e recusa explícita quando não for possível criar a área.
 - Arquivos binários nunca são exibidos como texto bruto no preview; o fallback mostra metadados.
-- Testes ficam junto ao código e devem cobrir: nomes com espaços e caracteres especiais, nomes não-UTF-8, TAB no nome, colisões, troca cíclica, criação de diretórios pai, buffer reordenado, ID adulterado, remoção simples, remoção de diretório não-vazio, dois arquivos de mesmo basename removidos de subdiretórios diferentes, diretório-base sem permissão de escrita, área órfã de PID morto, undo na sessão, pai removido com filho renomeado, pai e filho ambos removidos, e falha durante a aplicação em cada fase.
+- Testes ficam junto ao código e devem cobrir: nomes com espaços e caracteres especiais, nomes não-UTF-8, TAB no nome, colisões, troca cíclica, criação de diretórios pai, buffer reordenado, ID adulterado, remoção simples, remoção de diretório não-vazio, dois arquivos de mesmo basename removidos de subdiretórios diferentes, diretório-base sem permissão de escrita, área órfã de PID morto, undo na sessão, pai removido com filho renomeado, pai e filho ambos removidos, cópia de arquivo e de diretório (recursiva) com sufixo na colisão, undo de cópia, e falha durante a aplicação em cada fase.
 
 ## Pontos de atenção e desafios técnicos
 
