@@ -96,6 +96,25 @@ pub fn run(
     cwd: []const u8,
     helper_script: ?[]const u8,
 ) !RunResult {
+    var child = try spawn(arena, io, e, environ, path, cwd, helper_script);
+    const term = try child.wait(io);
+    return switch (term) {
+        .exited => |code| if (code == 0) .saved else .aborted,
+        else => .aborted,
+    };
+}
+
+/// Variante de `run()` sem esperar: quem colhe o processo e o chamador,
+/// servindo requisicoes de navegacao enquanto a sessao vive.
+pub fn spawn(
+    arena: Allocator,
+    io: Io,
+    e: Editor,
+    environ: *const std.process.Environ.Map,
+    path: []const u8,
+    cwd: []const u8,
+    helper_script: ?[]const u8,
+) !std.process.Child {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, e.argv);
     // O buffer do lst-f e uma tela controlada pela aplicacao. Iniciar Vim/Neovim
@@ -129,7 +148,7 @@ pub fn run(
     }
     try argv.append(arena, path);
 
-    var child = try std.process.spawn(io, .{
+    return std.process.spawn(io, .{
         .argv = argv.items,
         .environ_map = environ,
         .cwd = .{ .path = cwd },
@@ -137,11 +156,6 @@ pub fn run(
         .stdout = .inherit,
         .stderr = .inherit,
     });
-    const term = try child.wait(io);
-    return switch (term) {
-        .exited => |code| if (code == 0) .saved else .aborted,
-        else => .aborted,
-    };
 }
 
 pub fn selfPath(arena: Allocator, io: Io, environ: *const std.process.Environ.Map) ![]const u8 {

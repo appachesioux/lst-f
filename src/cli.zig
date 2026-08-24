@@ -18,9 +18,17 @@ const editor_mod = @import("editor.zig");
 const preview = @import("preview.zig");
 const session = @import("session.zig");
 
+const linux = std.os.linux;
+
+/// Caminho a entrar no pedido `enter` de uma sessao viva. Vai por ambiente e
+/// nao por argv: caminho de arquivo e dado hostil para interpolar em shell.
+pub const live_env_arg = "LST_F_LIVE_ARG";
+
 pub const Command = union(enum) {
     browse: Browse,
     preview_index: u32,
+    /// Pedido de navegacao de uma sessao viva (`lst-f --client up`).
+    client: []const u8,
     help,
     version,
 };
@@ -49,6 +57,11 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             i += 1;
             if (i >= args.len) return error.MissingValue;
             return .{ .preview_index = std.fmt.parseInt(u32, args[i], 10) catch return error.BadValue };
+        }
+        if (std.mem.eql(u8, arg, "--client")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            return .{ .client = args[i] };
         }
         if (std.mem.eql(u8, arg, "--hidden") or std.mem.eql(u8, arg, "-a") or std.mem.eql(u8, arg, "--all")) {
             browse.options.show_hidden = true;
@@ -169,6 +182,7 @@ pub fn run(init: std.process.Init) !u8 {
             break :blk 0;
         },
         .preview_index => |index| runPreview(arena, io, out, environ, index),
+        .client => |name| runClient(out, environ, name),
         .browse => |b| runSession(arena, io, out, environ, b),
     };
 }
@@ -190,6 +204,67 @@ fn runPreview(
     var base = Io.Dir.cwd().openDir(io, base_path, .{}) catch return 1;
     defer base.close(io);
     try preview.render(arena, io, out, base, list[index]);
+    return 0;
+}
+
+/// Pedido de navegacao de uma sessao viva. Conecta ao socket do processo pai,
+/// envia `cmd\0arg` e espera o veredito. O argumento opcional (caminho a
+/// entrar) chega pela variavel `LST_F_LIVE_ARG`, nunca por argv: caminho de
+/// arquivo e dado hostil para interpolar em linha de comando.
+fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8) !u8 {
+    const state_path = environ.get(session.env_state) orelse {
+        try out.writeAll("lst-f: sem sessao viva\n");
+        return 1;
+    };
+    const arg = environ.get(live_env_arg) orelse "";
+
+    var addr: linux.sockaddr.un = .{ .path = undefined };
+    @memset(&addr.path, 0);
+    const sock_path = std.fmt.bufPrint(&addr.path, "{s}/live.sock", .{state_path}) catch return 1;
+    _ = sock_path;
+
+    const fd = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
+    if (linux.errno(fd) != .SUCCESS) return 1;
+    const sock: i32 = @intCast(fd);
+    defer _ = linux.close(sock);
+
+    if (linux.errno(linux.connect(
+        sock,
+        @ptrCast(&addr),
+        @sizeOf(linux.sockaddr.un),
+    )) != .SUCCESS) {
+        try out.writeAll("lst-f: sessao nao responde\n");
+        return 1;
+    }
+
+    var payload: [4096]u8 = undefined;
+    if (cmd.len + 1 + arg.len > payload.len - 1) return 1;
+    @memcpy(payload[0..cmd.len], cmd);
+    payload[cmd.len] = 0;
+    @memcpy(payload[cmd.len + 1 ..][0..arg.len], arg);
+    const total = cmd.len + 1 + arg.len;
+    var sent: usize = 0;
+    while (sent < total) {
+        const w = linux.write(sock, payload[sent..].ptr, total - sent);
+        if (linux.errno(w) != .SUCCESS) return 1;
+        sent += w;
+    }
+    // Metade de escrita fechada: o servidor le ate EOF.
+    _ = linux.shutdown(sock, linux.SHUT.WR);
+
+    var reply: [1024]u8 = undefined;
+    var got: usize = 0;
+    while (got < reply.len) {
+        const r = linux.read(sock, reply[got..].ptr, reply.len - got);
+        if (linux.errno(r) == .INTR) continue;
+        if (r == 0) break; // EOF
+        if (linux.errno(r) != .SUCCESS) return 1;
+        got += r;
+    }
+    if (got == 0 or reply[0] != 'K') {
+        try out.print("lst-f: {s}\n", .{reply[1..got]});
+        return 1;
+    }
     return 0;
 }
 
@@ -326,7 +401,7 @@ fn loop(s: *Session) !void {
             try explainEditor(s.out, err);
             return;
         };
-        const result = editor_mod.run(
+        const spawned = editor_mod.spawn(
             s.arena,
             s.io,
             editor,
@@ -337,6 +412,23 @@ fn loop(s: *Session) !void {
         ) catch |err| {
             try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
             return;
+        };
+        var child = spawned;
+        // Sessao viva: navegacao sem fechar o editor (sem flick). Se a
+        // infraestrutura de socket nao estiver disponivel, cai para o fluxo
+        // antigo: cada diretiva fecha e reabre o editor.
+        const served = try serveEditorRound(s, &child);
+        const result: editor_mod.RunResult = if (served) |code|
+            if (code == 0) .saved else .aborted
+        else blk: {
+            const term = child.wait(s.io) catch |err| {
+                try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
+                return;
+            };
+            break :blk switch (term) {
+                .exited => |code| if (code == 0) .saved else .aborted,
+                else => .aborted,
+            };
         };
         // Sair com erro (:cq) e o sinal de "nao aplica nada", como no git commit.
         if (result == .aborted) {
@@ -432,6 +524,142 @@ fn loop(s: *Session) !void {
 }
 
 // ---------------------------------------------------------------------------
+// Sessao viva: navegacao sem reabrir o editor
+// ---------------------------------------------------------------------------
+
+/// Serve os pedidos de navegacao (`--client`) enquanto esta rodada do editor
+/// vive. Devolve o codigo de saida do editor; `null` quando a infraestrutura
+/// de socket nao esta disponivel e o chamador deve apenas esperar o editor
+/// sair (fluxo antigo, com reabertura por diretiva).
+fn serveEditorRound(s: *Session, child: *std.process.Child) !?u8 {
+    var path_buf: [108]u8 = undefined;
+    const sock_path = std.fmt.bufPrint(&path_buf, "{s}/live.sock", .{s.state.path}) catch return null;
+    var z_buf: [109]u8 = undefined;
+    const sock_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch unreachable;
+
+    _ = linux.unlink(sock_z);
+    const fd = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
+    if (linux.errno(fd) != .SUCCESS) return null;
+    const listener: i32 = @intCast(fd);
+    defer {
+        _ = linux.close(listener);
+        _ = linux.unlink(sock_z);
+    }
+
+    var addr: linux.sockaddr.un = .{ .path = undefined };
+    @memset(&addr.path, 0);
+    @memcpy(addr.path[0..sock_path.len], sock_path);
+    if (linux.errno(linux.bind(
+        listener,
+        @ptrCast(&addr),
+        @sizeOf(linux.sockaddr.un),
+    )) != .SUCCESS) return null;
+    if (linux.errno(linux.listen(listener, 4)) != .SUCCESS) return null;
+    // O socket fica sob $TMPDIR, que pode ser compartilhado: sem isso,
+    // outro usuario local conectaria e navegaria na sessao alheia.
+    _ = linux.fchmodat(linux.AT.FDCWD, sock_z, 0o600);
+
+    while (true) {
+        var fds = [_]linux.pollfd{.{ .fd = listener, .events = linux.POLL.IN, .revents = 0 }};
+        const prc = linux.poll(&fds, fds.len, 120);
+        switch (linux.errno(prc)) {
+            .SUCCESS => {},
+            .INTR => continue,
+            else => return null,
+        }
+        if (prc > 0 and fds[0].revents & linux.POLL.IN != 0) {
+            const conn_rc = linux.accept4(listener, null, null, linux.SOCK.CLOEXEC);
+            if (linux.errno(conn_rc) == .SUCCESS) {
+                handleLiveConn(s, @intCast(conn_rc)) catch {};
+                _ = linux.close(@intCast(conn_rc));
+            }
+        }
+
+        var status: u32 = 0;
+        const wrc = linux.wait4(child.id.?, &status, linux.W.NOHANG, null);
+        switch (linux.errno(wrc)) {
+            .SUCCESS => if (wrc != 0) {
+                // Processo colhido: decodifica o desfecho.
+                if (linux.W.IFEXITED(status)) return linux.W.EXITSTATUS(status);
+                return 1;
+            },
+            .CHILD => return 1,
+            .INTR => continue,
+            else => return null,
+        }
+    }
+}
+
+/// Um pedido: `cmd` seguido de NUL e argumento opcional; o cliente fecha a
+/// metade de escrita e o servidor responde `K` ou `E<mensagem>`.
+fn handleLiveConn(s: *Session, conn: i32) !void {
+    var req: [8192]u8 = undefined;
+    var got: usize = 0;
+    while (got < req.len) {
+        const r = linux.read(conn, req[got..].ptr, req.len - got);
+        switch (linux.errno(r)) {
+            .SUCCESS => {},
+            .INTR => continue,
+            else => return,
+        }
+        if (r == 0) break;
+        got += r;
+    }
+    const payload = req[0..got];
+    const sep = std.mem.indexOfScalar(u8, payload, 0) orelse payload.len;
+    const cmd = payload[0..sep];
+    const arg = if (sep < payload.len) payload[sep + 1 ..] else "";
+
+    var ok = false;
+    if (std.mem.eql(u8, cmd, "up")) {
+        writeCursorNameHint(s);
+        ok = enterDirQuiet(s, "..");
+    } else if (std.mem.eql(u8, cmd, "back")) {
+        const before = s.base;
+        try goBack(s);
+        ok = !std.mem.eql(u8, before, s.base) or s.notice == null;
+    } else if (std.mem.eql(u8, cmd, "forward")) {
+        const before = s.base;
+        try goForward(s);
+        ok = !std.mem.eql(u8, before, s.base) or s.notice == null;
+    } else if (std.mem.eql(u8, cmd, "hidden")) {
+        s.options.show_hidden = !s.options.show_hidden;
+        loadListing(s) catch {
+            s.notice = "nao consegui listar o diretorio";
+        };
+        ok = true;
+    } else if (std.mem.eql(u8, cmd, "enter")) {
+        // Entrar pousa na primeira entrada: sem dica de cursor.
+        s.state.dir.deleteFile(s.io, "cursor_name") catch {};
+        ok = enterDirQuiet(s, arg);
+    }
+
+    const failure = s.notice;
+    // Tela nova quando navegou; mesma tela com chip de aviso quando falhou.
+    try writeBuffer(s);
+
+    if (ok) {
+        _ = linux.write(conn, "K", 1);
+    } else {
+        var reply_buf: [512]u8 = undefined;
+        const msg = failure orelse "nao foi possivel";
+        const n = @min(msg.len, reply_buf.len - 2);
+        reply_buf[0] = 'E';
+        @memcpy(reply_buf[1 .. 1 + n], msg[0..n]);
+        _ = linux.write(conn, reply_buf[0 .. 1 + n].ptr, 1 + n);
+    }
+}
+
+/// Para subir (`up`): a entrada com o basename do diretorio atual e onde o
+/// cursor deve pousar na tela seguinte. O Vim consome e apaga o arquivo.
+fn writeCursorNameHint(s: *Session) void {
+    s.state.dir.writeFile(s.io, .{
+        .sub_path = "cursor_name",
+        .data = std.fs.path.basename(s.base),
+    }) catch {};
+}
+
+// ---------------------------------------------------------------------------
 // Conteudo do buffer
 // ---------------------------------------------------------------------------
 
@@ -497,6 +725,10 @@ fn writeBuffer(s: *Session) !void {
         abbreviateHome(s.arena, s.environ, s.base),
         if (s.options.show_hidden) "  [all]" else "",
     });
+    // A sessao viva recarrega o buffer sem reabrir o editor: o lado do Vim
+    // le daqui o diretorio corrente para sincronizar cwd e moldura.
+    try s.state.writeBase(s.io, s.base);
+    try s.state.dir.writeFile(s.io, .{ .sub_path = "location", .data = location });
     try s.environ.put(session.env_location, location);
     const header: plan.BufferHeader = .{
         .scope = s.scope,
@@ -565,26 +797,40 @@ fn writeTree(s: *Session) !void {
 }
 
 fn changeDir(s: *Session, target: []const u8) !void {
+    if (!enterDirQuiet(s, target)) {
+        if (s.notice) |n| try report(s, n);
+    }
+}
+
+/// Entra em `target`, relativo a base quando o caminho nao e absoluto.
+/// Silencioso: falha vai para `s.notice` (chip da proxima tela), nunca para
+/// o terminal -- durante a sessao viva a tela e do editor. `true` quando
+/// entrou.
+fn enterDirQuiet(s: *Session, target: []const u8) bool {
     const joined = if (std.fs.path.isAbsolute(target))
         target
     else
-        try std.fs.path.join(s.arena, &.{ s.base, target });
+        std.fs.path.join(s.arena, &.{ s.base, target }) catch return false;
 
     const resolved = Io.Dir.cwd().realPathFileAlloc(s.io, joined, s.arena) catch {
-        try report(s, try std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}));
-        return;
+        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}) catch null;
+        return false;
     };
     const st = Io.Dir.cwd().statFile(s.io, resolved, .{}) catch {
-        try report(s, try std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}));
-        return;
+        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}) catch null;
+        return false;
     };
     if (st.kind != .directory) {
-        try report(s, try std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{target}));
-        return;
+        s.notice = std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{target}) catch null;
+        return false;
     }
     s.base = resolved;
-    try s.history.push(s.arena, resolved);
-    try loadListing(s);
+    s.history.push(s.arena, resolved) catch {};
+    loadListing(s) catch {
+        s.notice = "nao consegui listar o diretorio";
+        return false;
+    };
+    return true;
 }
 
 fn goBack(s: *Session) !void {
@@ -774,7 +1020,6 @@ const gutter = 4;
 
 fn terminalWidth() usize {
     if (@import("builtin").os.tag != .linux) return 80;
-    const linux = std.os.linux;
     var ws: std.posix.winsize = undefined;
     for ([_]std.posix.fd_t{ std.posix.STDERR_FILENO, std.posix.STDOUT_FILENO }) |fd| {
         const rc = linux.ioctl(fd, linux.T.IOCGWINSZ, @intFromPtr(&ws));

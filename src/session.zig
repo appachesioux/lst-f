@@ -370,21 +370,14 @@ pub const State = struct {
             \\    return
             \\  endif
             \\  if isdirectory(l:path)
-            \\    call s:lstf_navigate(l:path)
+            \\    let $LST_F_LIVE_ARG = l:path
+            \\    call s:lstf_nav('enter', ':cd ' . l:path)
+            \\    unlet $LST_F_LIVE_ARG
             \\  elseif s:lstf_is_binary(l:path) && s:lstf_open_external(l:path)
             \\    return
             \\  else
             \\    call s:lstf_write_directive(':open ' . l:path)
             \\  endif
-            \\endfunction
-            \\
-            \\function! s:lstf_navigate(path) abort
-            \\  " Subir um nivel (-) pousa o cursor no diretorio de onde se veio.
-            \\  " O arquivo e de uso unico: quem ler, apaga.
-            \\  if a:path ==# '..'
-            \\    call writefile([fnamemodify(getcwd(), ':t')], $LST_F_STATE . '/cursor_name')
-            \\  endif
-            \\  call s:lstf_write_directive(':cd ' . a:path)
             \\endfunction
             \\
             \\function! s:lstf_write_directive(directive) abort
@@ -399,16 +392,37 @@ pub const State = struct {
             \\  write
             \\endfunction
             \\
+            \\" Navegacao viva: o pai relista, regrava o buffer e responde; aqui
+            \\" basta recarregar o mesmo arquivo, sem fechar o editor nem limpar a
+            \\" tela. Com edicao pendente, o caminho e a diretiva antiga -- ela
+            \\" passa pela confirmacao antes de qualquer coisa. O argumento do
+            \\" `enter` vai por $LST_F_LIVE_ARG, nunca por argv.
+            \\function! s:lstf_nav(cmd, directive) abort
+            \\  if &modified
+            \\    call s:lstf_write_directive(a:directive)
+            \\    return
+            \\  endif
+            \\  let l:out = system($LST_F_SELF . ' --client ' . a:cmd)
+            \\  if v:shell_error
+            \\    echohl ErrorMsg
+            \\    echomsg substitute(l:out, "\n\\+$", '', '')
+            \\    echohl None
+            \\    return
+            \\  endif
+            \\  silent! edit!
+            \\  call s:lstf_after_reload()
+            \\endfunction
+            \\
             \\function! LstfUp() abort
-            \\  call s:lstf_navigate('..')
+            \\  call s:lstf_nav('up', ':cd ..')
             \\endfunction
             \\
             \\function! LstfBack() abort
-            \\  call s:lstf_write_directive(':back')
+            \\  call s:lstf_nav('back', ':back')
             \\endfunction
             \\
             \\function! LstfForward() abort
-            \\  call s:lstf_write_directive(':forward')
+            \\  call s:lstf_nav('forward', ':forward')
             \\endfunction
             \\
             \\function! LstfQuit() abort
@@ -420,7 +434,7 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! LstfToggleHidden() abort
-            \\  call s:lstf_write_directive(':hidden')
+            \\  call s:lstf_nav('hidden', ':hidden')
             \\endfunction
             \\
             \\function! s:lstf_prepare_save() abort
@@ -973,45 +987,66 @@ pub const State = struct {
             \\  " A moldura e texto de buffer: nao se reajusta sozinha na largura nova.
             \\  autocmd VimResized * call s:lstf_draw_frame()
             \\augroup END
-            \\if filereadable($LST_F_STATE . '/header')
-            \\  let b:lstf_header = readfile($LST_F_STATE . '/header')
-            \\  call s:lstf_restore_header()
-            \\  " Cabecalho ocupando o buffer todo: sem uma linha abaixo dele nao
-            \\  " havia onde pousar o cursor para digitar o primeiro nome.
-            \\  if line('$') <= len(b:lstf_header) | call append('$', '') | endif
-            \\  setlocal nomodified
-            \\endif
-            \\call s:lstf_capture_prefixes()
-            \\let b:lstf_entry_lines = s:lstf_entry_lines()
-            \\call s:lstf_follow_scroll()
-            \\let s:lstf_start = s:lstf_content_start()
-            \\let s:lstf_landed = 0
-            \\if filereadable($LST_F_STATE . '/cursor_name')
-            \\  " Volta de subida: a entrada com o nome do diretorio de onde se
-            \\  " veio. Nome, nao offset: sobrevive a :sort e a reordenacao.
-            \\  let s:lstf_want = get(readfile($LST_F_STATE . '/cursor_name'), 0, '')
-            \\  call delete($LST_F_STATE . '/cursor_name')
-            \\  if !empty(s:lstf_want) && s:lstf_start > 0
-            \\    for s:lstf_lnum in range(s:lstf_start, line('$'))
-            \\      let s:lstf_p = s:lstf_entry_path(getline(s:lstf_lnum))
-            \\      if substitute(s:lstf_p, '/$', '', '') ==# s:lstf_want
-            \\        call cursor(s:lstf_lnum, 1)
-            \\        let s:lstf_landed = 1
-            \\        break
-            \\      endif
-            \\    endfor
-            \\  endif
-            \\endif
-            \\if !s:lstf_landed
-            \\  if filereadable($LST_F_STATE . '/cursor')
-            \\    let s:lstf_offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
-            \\    if s:lstf_start > 0
-            \\      execute 'call cursor(' . (s:lstf_start + s:lstf_offset) . ', 1)'
+            \\" Recarga da sessao viva: o pai regravou buffer e estado; aqui so
+            \\" falta sincronizar a tela com o que mudou -- sem reabrir nada.
+            \\function! s:lstf_restore_cursor() abort
+            \\  let l:start = s:lstf_content_start()
+            \\  let l:landed = 0
+            \\  if filereadable($LST_F_STATE . '/cursor_name')
+            \\    " Volta de subida: pousa na entrada com o nome do diretorio de
+            \\    " onde se veio. Nome, nao offset: sobrevive a :sort. One-shot.
+            \\    let l:name = get(readfile($LST_F_STATE . '/cursor_name'), 0, '')
+            \\    call delete($LST_F_STATE . '/cursor_name')
+            \\    if !empty(l:name) && l:start > 0
+            \\      for l:lnum in range(l:start, line('$'))
+            \\        let l:p = s:lstf_entry_path(getline(l:lnum))
+            \\        if substitute(l:p, '/$', '', '') ==# l:name
+            \\          call cursor(l:lnum, 1)
+            \\          let l:landed = 1
+            \\          break
+            \\        endif
+            \\      endfor
             \\    endif
-            \\  elseif s:lstf_start > 0
-            \\    call cursor(s:lstf_start, 1)
             \\  endif
-            \\endif
+            \\  if !l:landed
+            \\    if filereadable($LST_F_STATE . '/cursor')
+            \\      let l:offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
+            \\      if l:start > 0
+            \\        execute 'call cursor(' . (l:start + l:offset) . ', 1)'
+            \\      endif
+            \\    elseif l:start > 0
+            \\      call cursor(l:start, 1)
+            \\    endif
+            \\  endif
+            \\endfunction
+            \\
+            \\function! s:lstf_after_reload() abort
+            \\  if filereadable($LST_F_STATE . '/base')
+            \\    let l:newbase = get(readfile($LST_F_STATE . '/base'), 0, '')
+            \\    if !empty(l:newbase)
+            \\      silent! execute 'cd ' . fnameescape(l:newbase)
+            \\    endif
+            \\  endif
+            \\  if filereadable($LST_F_STATE . '/location')
+            \\    let $LST_F_LOCATION = get(readfile($LST_F_STATE . '/location'), 0, '')
+            \\  endif
+            \\  if filereadable($LST_F_STATE . '/header')
+            \\    let b:lstf_header = readfile($LST_F_STATE . '/header')
+            \\    call s:lstf_restore_header()
+            \\    " Cabecalho ocupando o buffer todo: sem uma linha abaixo dele nao
+            \\    " havia onde pousar o cursor para digitar o primeiro nome.
+            \\    if line('$') <= len(b:lstf_header) | call append('$', '') | endif
+            \\    setlocal nomodified
+            \\  endif
+            \\  let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
+            \\    \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
+            \\  call s:lstf_capture_prefixes()
+            \\  let b:lstf_entry_lines = s:lstf_entry_lines()
+            \\  call s:lstf_follow_scroll()
+            \\  call s:lstf_restore_cursor()
+            \\endfunction
+            \\
+            \\call s:lstf_after_reload()
             \\" A ajuda pode manter o foco em um popup ou painel auxiliar. Como esta
             \\" instancia do Vim e exclusiva do lst-f, F1 e global para nunca deixar
             \\" o Vim abrir :help em um split e alterar a tela controlada.
