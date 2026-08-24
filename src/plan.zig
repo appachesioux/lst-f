@@ -38,6 +38,15 @@ pub const Create = struct {
     implicit: bool = false,
 };
 
+/// Copia de uma entrada: o ID aparece duas vezes no buffer, uma na origem
+/// (inalterada) e outra no destino. A origem continua existindo.
+pub const Copy = struct {
+    id: u32,
+    from: []const u8,
+    to: []const u8,
+    kind: Kind,
+};
+
 pub const Problem = union(enum) {
     create_empty_path: struct { line: u32 },
     create_absolute: struct { line: u32, path: []const u8 },
@@ -48,6 +57,8 @@ pub const Problem = union(enum) {
     create_over_removed: struct { line: u32, path: []const u8, id: u32 },
     create_under_touched: struct { line: u32, path: []const u8, id: u32 },
     create_exists: struct { line: u32, path: []const u8 },
+    copy_no_free_name: struct { id: u32, path: []const u8 },
+    copy_under_touched: struct { id: u32, path: []const u8 },
     id_without_path: struct { line: u32 },
     unknown_id: struct { line: u32, id: u32 },
     duplicate_id: struct { line: u32, id: u32 },
@@ -57,7 +68,6 @@ pub const Problem = union(enum) {
     reserved_name: struct { id: u32, path: []const u8 },
     duplicate_dest: struct { a: u32, b: u32, path: []const u8 },
     dest_occupied: struct { id: u32, path: []const u8 },
-    dest_occupied_by_removed: struct { id: u32, other: u32, path: []const u8 },
     dest_under_dest: struct { outer: u32, inner: u32 },
     parent_removed_child_moved: struct { parent: u32, child: u32 },
     parent_moved_child_touched: struct { parent: u32, child: u32 },
@@ -82,6 +92,14 @@ pub const Problem = union(enum) {
                 .{ v.line, v.path, v.id },
             ),
             .create_exists => |v| try w.print("linha {d}: {s} ja existe no disco", .{ v.line, v.path }),
+            .copy_no_free_name => |v| try w.print(
+                "ID {d}: {s} colide e nao sobrou nome livre com sufixo (-01 a -99)",
+                .{ v.id, v.path },
+            ),
+            .copy_under_touched => |v| try w.print(
+                "ID {d}: {s} fica dentro de um diretorio que esta sendo movido ou removido",
+                .{ v.id, v.path },
+            ),
             .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
             .unknown_id => |v| try w.print("linha {d}: ID {d} nao pertence a selecao", .{ v.line, v.id }),
             .duplicate_id => |v| try w.print("linha {d}: ID {d} aparece mais de uma vez", .{ v.line, v.id }),
@@ -91,10 +109,6 @@ pub const Problem = union(enum) {
             .reserved_name => |v| try w.print("ID {d}: nome reservado pelo lst-f ({s})", .{ v.id, v.path }),
             .duplicate_dest => |v| try w.print("IDs {d} e {d} apontam para o mesmo destino ({s})", .{ v.a, v.b, v.path }),
             .dest_occupied => |v| try w.print("ID {d}: destino ja ocupado por outra entrada da selecao ({s})", .{ v.id, v.path }),
-            .dest_occupied_by_removed => |v| try w.print(
-                "ID {d}: destino {s} pertence ao ID {d}, que esta sendo removido; remocoes acontecem por ultimo",
-                .{ v.id, v.path, v.other },
-            ),
             .dest_under_dest => |v| try w.print("ID {d} vira diretorio de ID {d}: destinos incompativeis", .{ v.outer, v.inner }),
             .parent_removed_child_moved => |v| try w.print(
                 "ID {d} remove um diretorio que contem o ID {d}, que esta sendo renomeado",
@@ -142,14 +156,21 @@ pub const Plan = struct {
     /// Criacoes pedidas por linha sem ID. Acontecem depois das renomeacoes,
     /// para que um nome liberado no mesmo passo possa ser reocupado.
     creates: []const Create = &.{},
-    /// Sempre por ultimo.
+    /// Copias (ID duplicado no buffer). A origem fica; o destino e materializado
+    /// depois das renomeacoes e criacoes.
+    copies: []const Copy = &.{},
+    /// Sempre por ultimo, exceto as antecipadas (`removes_before`) que liberam
+    /// o nome de um destino de rename.
     removes: []const Remove,
+    /// Quantas remocoes (prefixo de `removes`) acontecem antes das renomeacoes.
+    removes_before: usize = 0,
     /// Visao logica, para o diff.
     moves: []const Move,
     unchanged: u32,
 
     pub fn isEmpty(p: Plan) bool {
-        return p.renames.len == 0 and p.removes.len == 0 and p.mkdirs.len == 0 and p.creates.len == 0;
+        return p.renames.len == 0 and p.removes.len == 0 and p.mkdirs.len == 0 and
+            p.creates.len == 0 and p.copies.len == 0;
     }
 };
 
@@ -184,22 +205,51 @@ pub fn build(
     const dests = try arena.alloc(?[]const u8, originals.len);
     @memset(dests, null);
     const dest_line = try arena.alloc(u32, originals.len);
+    // Segundo caminho para o mesmo ID: a marca de uma copia. A origem fica,
+    // o outro nome vira o destino da copia.
+    const copy_dests = try arena.alloc(?[]const u8, originals.len);
+    @memset(copy_dests, null);
+    const copy_line = try arena.alloc(u32, originals.len);
 
     for (edits) |e| {
         const idx = by_id.get(e.id) orelse {
             try problems.append(arena, .{ .unknown_id = .{ .line = e.line, .id = e.id } });
             continue;
         };
-        if (dests[idx] != null) {
-            try problems.append(arena, .{ .duplicate_id = .{ .line = e.line, .id = e.id } });
-            continue;
-        }
         if (e.path.len == 0) {
             try problems.append(arena, .{ .id_without_path = .{ .line = e.line } });
             continue;
         }
-        dests[idx] = e.path;
-        dest_line[idx] = e.line;
+        if (dests[idx] == null) {
+            dests[idx] = e.path;
+            dest_line[idx] = e.line;
+        } else if (copy_dests[idx] == null) {
+            copy_dests[idx] = e.path;
+            copy_line[idx] = e.line;
+        } else {
+            try problems.append(arena, .{ .duplicate_id = .{ .line = e.line, .id = e.id } });
+        }
+    }
+    if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
+
+    // --- 1b. Classificacao das copias ----------------------------------------
+    // ID duplicado: uma das linhas precisa casar com o caminho original (a
+    // origem); a outra e o destino. As duas editadas e ambiguo.
+    var copies: std.ArrayList(Copy) = .empty;
+    for (originals, 0..) |o, i| {
+        const cd = copy_dests[i] orelse continue;
+        const first = dests[i].?; // sempre presente quando copy_dests != null
+        const first_orig = std.mem.eql(u8, first, o.path);
+        const second_orig = std.mem.eql(u8, cd, o.path);
+        if (first_orig) {
+            try copies.append(arena, .{ .id = o.id, .from = o.path, .to = cd, .kind = o.kind });
+            dests[i] = o.path;
+        } else if (second_orig) {
+            try copies.append(arena, .{ .id = o.id, .from = o.path, .to = first, .kind = o.kind });
+            dests[i] = o.path;
+        } else {
+            try problems.append(arena, .{ .duplicate_id = .{ .line = copy_line[i], .id = o.id } });
+        }
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
@@ -255,6 +305,32 @@ pub fn build(
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
+    // Mesmas regras lexicais para os destinos de copia.
+    for (copies.items) |*c| {
+        const raw = c.to;
+        if (raw[0] == '/') {
+            try problems.append(arena, .{ .absolute_path = .{ .id = c.id, .path = raw } });
+            continue;
+        }
+        const norm = normalize(arena, raw) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.Escapes => {
+                try problems.append(arena, .{ .escapes_base = .{ .id = c.id, .path = raw } });
+                continue;
+            },
+            error.Empty => {
+                try problems.append(arena, .{ .empty_path = .{ .id = c.id } });
+                continue;
+            },
+        };
+        if (isReserved(norm)) {
+            try problems.append(arena, .{ .reserved_name = .{ .id = c.id, .path = raw } });
+            continue;
+        }
+        c.to = norm;
+    }
+    if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
+
     // --- 3. Colisoes entre destinos ------------------------------------------
     var seen: std.StringHashMapUnmanaged(u32) = .empty;
     for (originals, 0..) |o, i| {
@@ -279,7 +355,7 @@ pub fn build(
         }
     }
 
-    // Destino ocupado por entrada da selecao que nao sai do lugar.
+    // Destino ocupado por entrada da selecao que fica onde esta.
     for (originals, 0..) |o, i| {
         const d = dests[i] orelse continue;
         if (std.mem.eql(u8, d, o.path)) continue;
@@ -290,11 +366,9 @@ pub fn build(
                 if (std.mem.eql(u8, od, other.path)) {
                     try problems.append(arena, .{ .dest_occupied = .{ .id = o.id, .path = d } });
                 }
-            } else {
-                try problems.append(arena, .{
-                    .dest_occupied_by_removed = .{ .id = o.id, .other = other.id, .path = d },
-                });
             }
+            // Entrada removida (sem destino) libera o nome; a ordenacao em 8
+            // garante que a remocao aconteca antes do rename que a ocupa.
         }
     }
 
@@ -390,6 +464,21 @@ pub fn build(
         }
     }
 
+    // Copiar para dentro de um diretorio que sai do lugar levaria o arquivo
+    // junto (removido) ou o deixaria para tras (movido). Mesmo argumento da
+    // criacao.
+    for (copies.items) |c| {
+        for (originals, 0..) |o, j| {
+            if (!isUnder(o.path, c.to)) continue;
+            const d = dests[j];
+            const stays = d != null and std.mem.eql(u8, d.?, o.path);
+            if (!stays) {
+                try problems.append(arena, .{ .copy_under_touched = .{ .id = c.id, .path = c.to } });
+            }
+        }
+    }
+    if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
+
     // --- 6. Diretorios pai exigidos pelos destinos ---------------------------
     var mkdirs: std.ArrayList([]const u8) = .empty;
     var mkdir_seen: std.StringHashMapUnmanaged(void) = .empty;
@@ -398,6 +487,15 @@ pub fn build(
         while (std.mem.indexOfScalarPos(u8, m.to, end, '/')) |slash| {
             end = slash + 1;
             const ancestor = m.to[0..slash];
+            if ((try mkdir_seen.getOrPut(arena, ancestor)).found_existing) continue;
+            try mkdirs.append(arena, ancestor);
+        }
+    }
+    for (copies.items) |c| {
+        var end: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, c.to, end, '/')) |slash| {
+            end = slash + 1;
+            const ancestor = c.to[0..slash];
             if ((try mkdir_seen.getOrPut(arena, ancestor)).found_existing) continue;
             try mkdirs.append(arena, ancestor);
         }
@@ -428,14 +526,37 @@ pub fn build(
         try new_entries.append(arena, .{ .line = c.line, .path = path, .kind = c.kind });
     }
 
-    // --- 8. Ordem de execucao: ciclos e troca so de caixa --------------------
+    // --- 8. Ordem de execucao: ciclos, troca so de caixa e remocao antecipada -
     const renames = try order(arena, moves.items, options);
+
+    // Remocao cujo caminho e o destino de um rename tem que sair antes dele:
+    // o destino precisa estar livre na hora do rename. E o que o oil.nvim faz
+    // (o DELETE de um caminho roda antes do MOVE que o ocupa). As demais
+    // continuam por ultimo, como sempre.
+    var removes_early: std.ArrayList(Remove) = .empty;
+    var removes_late: std.ArrayList(Remove) = .empty;
+    for (removes.items) |rm| {
+        var targeted = false;
+        for (moves.items) |m| {
+            if (std.mem.eql(u8, m.to, rm.path)) {
+                targeted = true;
+                break;
+            }
+        }
+        if (targeted) try removes_early.append(arena, rm) else try removes_late.append(arena, rm);
+    }
+    const removes_before = removes_early.items.len;
+    const removes_ordered = try arena.alloc(Remove, removes.items.len);
+    @memcpy(removes_ordered[0..removes_before], removes_early.items);
+    @memcpy(removes_ordered[removes_before..], removes_late.items);
 
     return .{ .ok = .{
         .mkdirs = try mkdirs.toOwnedSlice(arena),
         .renames = renames,
         .creates = try new_entries.toOwnedSlice(arena),
-        .removes = try removes.toOwnedSlice(arena),
+        .copies = try copies.toOwnedSlice(arena),
+        .removes = removes_ordered,
+        .removes_before = removes_before,
         .moves = try moves.toOwnedSlice(arena),
         .unchanged = unchanged,
     } };
@@ -532,6 +653,26 @@ fn isReserved(path: []const u8) bool {
         if (std.mem.startsWith(u8, comp, area_prefix)) return true;
     }
     return false;
+}
+
+/// Nome para a n-esima tentativa de evitar colisao: insere `-NN` (dois digitos,
+/// zero a esquerda) antes da extensao. Diretorios nao partem a extensao.
+/// `report.pdf` -> `report-01.pdf`; `dir` -> `dir-01`.
+pub fn suffixed(arena: Allocator, dest: []const u8, n: u32, is_dir: bool) Allocator.Error![]const u8 {
+    const base = std.fs.path.basename(dest);
+    var stem = base;
+    var ext: []const u8 = "";
+    if (!is_dir) {
+        if (std.mem.lastIndexOfScalar(u8, base, '.')) |dot| {
+            if (dot > 0) {
+                stem = base[0..dot];
+                ext = base[dot..];
+            }
+        }
+    }
+    const name = try std.fmt.allocPrint(arena, "{s}-{d:0>2}{s}", .{ stem, n, ext });
+    const dir = std.fs.path.dirname(dest);
+    return if (dir) |d| std.fmt.allocPrint(arena, "{s}/{s}", .{ d, name }) else name;
 }
 
 pub const NormalizeError = error{ Escapes, Empty, OutOfMemory };
@@ -919,8 +1060,14 @@ test "destino ocupado por entrada inalterada" {
     try expectProblem(try build(f.a(), &originals, &edits, &.{}, .{}), .duplicate_dest);
 
     const edits_b = [_]Edit{edit(1, "b")};
-    // ID 2 fora do buffer: seria remocao, e o destino de 1 colide com ele.
-    try expectProblem(try build(f.a(), &originals, &edits_b, &.{}, .{}), .dest_occupied_by_removed);
+    // ID 2 fora do buffer e uma remocao; renomear 1 para "b" (o nome do
+    // removido) e valido: a remocao e antecipada para liberar o nome.
+    const p = (try build(f.a(), &originals, &edits_b, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.removes.len);
+    try testing.expectEqual(@as(u32, 2), p.removes[0].id);
+    try testing.expectEqual(@as(usize, 1), p.removes_before);
+    try testing.expectEqual(@as(usize, 1), p.renames.len);
+    try testing.expectEqualStrings("b", p.renames[0].to);
 }
 
 test "troca ciclica passa por temporario" {
@@ -1033,6 +1180,61 @@ test "remocao simples" {
     try testing.expectEqual(@as(usize, 1), p.removes.len);
     try testing.expectEqual(@as(u32, 2), p.removes[0].id);
     try testing.expectEqual(@as(u32, 1), p.unchanged);
+}
+
+test "ID duplicado vira copia" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    // Duas linhas com o mesmo ID: a da origem e a do destino.
+    const edits = [_]Edit{ edit(1, "a.txt"), edit(1, "b.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+    try testing.expectEqualStrings("a.txt", p.copies[0].from);
+    try testing.expectEqualStrings("b.txt", p.copies[0].to);
+    try testing.expectEqual(@as(usize, 0), p.removes.len);
+    try testing.expectEqual(@as(usize, 0), p.renames.len);
+    try testing.expectEqual(@as(u32, 1), p.unchanged);
+}
+
+test "ID duplicado no proprio nome pede copia (sufixo fica para o disco)" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    const edits = [_]Edit{ edit(1, "a.txt"), edit(1, "a.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+    try testing.expectEqualStrings("a.txt", p.copies[0].to);
+}
+
+test "ID duplicado com as duas linhas editadas e ambiguo" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "x.txt"), edit(1, "y.txt") }, &.{}, .{}),
+        .duplicate_id,
+    );
+}
+
+test "copia dentro de diretorio removido e contradicao" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{ orig(1, "dir", .dir), orig(2, "a.txt", .file) };
+    // dir (id 1) removido; a.txt (id 2) copiado para dentro dele.
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(2, "a.txt"), edit(2, "dir/a.txt") }, &.{}, .{}),
+        .copy_under_touched,
+    );
+}
+
+test "sufixo de copia usa dois digitos e zero a esquerda" {
+    var f = Fixture.init();
+    defer f.deinit();
+    try testing.expectEqualStrings("report-01.pdf", try suffixed(f.a(), "report.pdf", 1, false));
+    try testing.expectEqualStrings("docs/report-12.pdf", try suffixed(f.a(), "docs/report.pdf", 12, false));
+    try testing.expectEqualStrings("dir-01", try suffixed(f.a(), "dir", 1, true));
+    try testing.expectEqualStrings(".bashrc-01", try suffixed(f.a(), ".bashrc", 1, false));
 }
 
 test "pai e filho ambos removidos: absorve o filho" {

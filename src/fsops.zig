@@ -27,12 +27,17 @@ pub const Applied = struct {
     /// renomeacoes: podem estar ocupando um nome que precisa voltar.
     created: []const plan.Create = &.{},
     renames: []const plan.Rename = &.{},
+    /// Copias materializadas; o undo as remove.
+    copied: []const plan.Copy = &.{},
     removed: []const Removed = &.{},
+    /// Quantas remocoes (prefixo de `removed`) aconteceram antes das
+    /// renomeacoes; o rollback as restaura depois de desfazer os renames.
+    removed_before: usize = 0,
     area: ?[]const u8 = null,
 
     pub fn isEmpty(a: Applied) bool {
         return a.created_dirs.len == 0 and a.created.len == 0 and
-            a.renames.len == 0 and a.removed.len == 0;
+            a.renames.len == 0 and a.copied.len == 0 and a.removed.len == 0;
     }
 };
 
@@ -113,6 +118,7 @@ pub fn apply(
     var new_entries: std.ArrayList(plan.Create) = .empty;
     var renamed: std.ArrayList(plan.Rename) = .empty;
     var removed: std.ArrayList(Removed) = .empty;
+    var copied: std.ArrayList(plan.Copy) = .empty;
 
     var failure: ?Outcome.Failure = null;
 
@@ -145,7 +151,20 @@ pub fn apply(
         try created.append(arena, dir_path);
     }
 
-    // Fase 2: renomeacoes e movimentos.
+    // Fase 2: remocoes antecipadas, antes das renomeacoes -- o destino delas
+    // precisa estar livre na hora do rename.
+    if (failure == null and p.removes_before > 0) {
+        const a = area.?;
+        for (p.removes[0..p.removes_before]) |rm| {
+            if (try removeIntoArea(arena, io, base, a, rm, &removed)) |f| {
+                failure = f;
+                break;
+            }
+        }
+    }
+    const removed_before = removed.items.len;
+
+    // Fase 3: renomeacoes e movimentos.
     if (failure == null) {
         for (p.renames) |r| {
             base.renamePreserve(r.from, base, r.to, io) catch |err| {
@@ -160,7 +179,7 @@ pub fn apply(
         }
     }
 
-    // Fase 3: criacoes. Depois das renomeacoes, para que um nome liberado no
+    // Fase 4: criacoes. Depois das renomeacoes, para que um nome liberado no
     // mesmo passo possa ser reocupado. `exclusive` garante que nenhuma criacao
     // sobrescreva o que ja estiver la.
     if (failure == null) {
@@ -184,19 +203,31 @@ pub fn apply(
         }
     }
 
-    // Fase 4: remocoes, sempre por ultimo.
-    if (failure == null and p.removes.len > 0) {
-        const a = area.?;
-        for (p.removes) |rm| {
-            const stored = try std.fmt.allocPrint(arena, "{d:0>4}", .{rm.id});
-            base.renamePreserve(rm.path, a.dir, stored, io) catch |err| {
-                failure = .{ .phase = "remover", .detail = rm.path, .err = err };
+    // Fase 5: copias. Depois das criacoes; a origem continua existindo (nao
+    // participa das fases de rename/remocao). Arquivo e copia de bytes;
+    // diretorio e recursivo.
+    if (failure == null) {
+        for (p.copies) |c| {
+            copyEntry(arena, io, base, c) catch |err| {
+                failure = .{
+                    .phase = "copiar",
+                    .detail = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ c.from, c.to }),
+                    .err = err,
+                };
                 break;
             };
-            const w = &a.manifest_writer.interface;
-            w.print("{s}\x00{s}\x00", .{ stored, rm.path }) catch {};
-            w.flush() catch {};
-            try removed.append(arena, .{ .id = rm.id, .path = rm.path, .stored = stored });
+            try copied.append(arena, c);
+        }
+    }
+
+    // Fase 6: remocoes restantes, sempre por ultimo.
+    if (failure == null and p.removes.len > p.removes_before) {
+        const a = area.?;
+        for (p.removes[p.removes_before..]) |rm| {
+            if (try removeIntoArea(arena, io, base, a, rm, &removed)) |f| {
+                failure = f;
+                break;
+            }
         }
     }
 
@@ -204,7 +235,9 @@ pub fn apply(
         .created_dirs = try created.toOwnedSlice(arena),
         .created = try new_entries.toOwnedSlice(arena),
         .renames = try renamed.toOwnedSlice(arena),
+        .copied = try copied.toOwnedSlice(arena),
         .removed = try removed.toOwnedSlice(arena),
+        .removed_before = removed_before,
         .area = if (area) |a| a.name else null,
     };
 
@@ -213,6 +246,66 @@ pub fn apply(
     const errors = try revert(arena, io, base, applied, if (area) |a| a.dir else null);
     if (errors.len == 0) applied = .{};
     return .{ .failure = failure, .applied = applied, .rollback_errors = errors };
+}
+
+/// Move uma entrada para a area de sessao e registra no manifesto. `null`
+/// quando tudo passou.
+fn removeIntoArea(
+    arena: Allocator,
+    io: Io,
+    base: Io.Dir,
+    area: *Area,
+    rm: plan.Remove,
+    removed: *std.ArrayList(Removed),
+) Allocator.Error!?Outcome.Failure {
+    const stored = try std.fmt.allocPrint(arena, "{d:0>4}", .{rm.id});
+    base.renamePreserve(rm.path, area.dir, stored, io) catch |err| {
+        return .{ .phase = "remover", .detail = rm.path, .err = err };
+    };
+    const w = &area.manifest_writer.interface;
+    w.print("{s}\x00{s}\x00", .{ stored, rm.path }) catch {};
+    w.flush() catch {};
+    try removed.append(arena, .{ .id = rm.id, .path = rm.path, .stored = stored });
+    return null;
+}
+
+/// Copia `c.from` para `c.to` dentro do diretorio-base. Arquivo e copia de
+/// bytes (`replace=false` recusa sobrescrever); diretorio e recursivo.
+fn copyEntry(arena: Allocator, io: Io, base: Io.Dir, c: plan.Copy) !void {
+    switch (c.kind) {
+        .dir => {
+            try base.createDir(io, c.to, .default_dir);
+            try copyDirRecursive(arena, io, base, c.from, c.to);
+        },
+        else => {
+            try base.copyFile(c.from, base, c.to, io, .{ .replace = false });
+        },
+    }
+}
+
+fn copyDirRecursive(arena: Allocator, io: Io, base: Io.Dir, from: []const u8, to: []const u8) !void {
+    var src = try base.openDir(io, from, .{ .iterate = true });
+    defer src.close(io);
+
+    var it = src.iterate();
+    while (it.next(io) catch null) |e| {
+        const child_from = try std.fmt.allocPrint(arena, "{s}/{s}", .{ from, e.name });
+        const child_to = try std.fmt.allocPrint(arena, "{s}/{s}", .{ to, e.name });
+        switch (e.kind) {
+            .directory => {
+                try base.createDir(io, child_to, .default_dir);
+                try copyDirRecursive(arena, io, base, child_from, child_to);
+            },
+            .sym_link => {
+                var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                const n = try base.readLink(io, child_from, &buf);
+                try base.symLink(io, buf[0..n], child_to, .{});
+            },
+            else => {
+                try base.copyFile(child_from, base, child_to, io, .{ .replace = false });
+            },
+        }
+    }
 }
 
 /// Desfaz `applied` em ordem reversa. Serve ao rollback de falha e ao undo da
@@ -226,19 +319,11 @@ pub fn revert(
 ) Allocator.Error![]const []const u8 {
     var errors: std.ArrayList([]const u8) = .empty;
 
+    // Remocoes que vieram por ultimo saem primeiro. As antecipadas so podem
+    // voltar depois de desfazer as renomeacoes: um rename pode estar ocupando
+    // o caminho original delas.
     if (area_dir) |a| {
-        var i = applied.removed.len;
-        while (i > 0) {
-            i -= 1;
-            const rm = applied.removed[i];
-            a.renamePreserve(rm.stored, base, rm.path, io) catch |err| {
-                try errors.append(arena, try std.fmt.allocPrint(
-                    arena,
-                    "restaurar {s} de {s}: {s}",
-                    .{ rm.path, rm.stored, @errorName(err) },
-                ));
-            };
-        }
+        try restoreRemovals(arena, io, base, a, applied.removed, applied.removed_before, applied.removed.len, &errors);
     }
 
     var c = applied.created.len;
@@ -288,6 +373,31 @@ pub fn revert(
         };
     }
 
+    // Copias sao materializacoes nossas; o undo as remove por inteiro, arquivo
+    // ou arvore. Nao ha o guard de "vazio" da criacao: uma copia nasce com o
+    // conteudo da origem.
+    var k = applied.copied.len;
+    while (k > 0) {
+        k -= 1;
+        const cp = applied.copied[k];
+        if (cp.kind == .dir) {
+            base.deleteTree(io, cp.to) catch |err| try errors.append(arena, try std.fmt.allocPrint(
+                arena,
+                "remover {s}/ copiado: {s}",
+                .{ cp.to, @errorName(err) },
+            ));
+        } else {
+            base.deleteFile(io, cp.to) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "remover {s} copiado: {s}",
+                    .{ cp.to, @errorName(err) },
+                )),
+            };
+        }
+    }
+
     var i = applied.renames.len;
     while (i > 0) {
         i -= 1;
@@ -314,7 +424,37 @@ pub fn revert(
         };
     }
 
+    if (area_dir) |a| {
+        try restoreRemovals(arena, io, base, a, applied.removed, 0, applied.removed_before, &errors);
+    }
+
     return errors.toOwnedSlice(arena);
+}
+
+/// Restaura o intervalo `[from, to)` de `removed`, em ordem reversa, movendo
+/// cada entrada da area de volta para o caminho original.
+fn restoreRemovals(
+    arena: Allocator,
+    io: Io,
+    base: Io.Dir,
+    area: Io.Dir,
+    removed: []const Removed,
+    from: usize,
+    to: usize,
+    errors: *std.ArrayList([]const u8),
+) Allocator.Error!void {
+    var i = to;
+    while (i > from) {
+        i -= 1;
+        const rm = removed[i];
+        area.renamePreserve(rm.stored, base, rm.path, io) catch |err| {
+            try errors.append(arena, try std.fmt.allocPrint(
+                arena,
+                "restaurar {s} de {s}: {s}",
+                .{ rm.path, rm.stored, @errorName(err) },
+            ));
+        };
+    }
 }
 
 const DirStatus = enum { dir, symlink, other, missing };
@@ -526,6 +666,170 @@ test "remocao vai para a area e volta no undo" {
     const errors = try revert(h.a(), io, h.dir(), outcome.applied, area.dir);
     try testing.expectEqual(@as(usize, 0), errors.len);
     try testing.expectEqualStrings("adeus", try h.read("some.txt"));
+}
+
+test "remover e renomear para o nome liberado na mesma rodada" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("a.txt", "antigo");
+    try h.touch("b.txt", "novo");
+
+    // ID 1 removido (fora do buffer); ID 2 renomeado para "a.txt".
+    const originals = [_]plan.Original{
+        .{ .id = 1, .path = "a.txt", .kind = .file },
+        .{ .id = 2, .path = "b.txt", .kind = .file },
+    };
+    const edits = [_]plan.Edit{.{ .id = 2, .path = "a.txt", .line = 2 }};
+    const p = try planFor(h.a(), &originals, &edits);
+    try testing.expectEqual(@as(usize, 1), p.removes_before);
+    try testing.expectEqual(@as(usize, 1), p.removes.len);
+    try testing.expectEqual(@as(usize, 1), p.renames.len);
+
+    const name = try areaName(h.a(), 4247);
+    var area = try openArea(h.a(), io, h.dir(), name);
+    defer area.close(io);
+
+    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    try testing.expect(outcome.failure == null);
+    try testing.expectEqualStrings("novo", try h.read("a.txt"));
+    try testing.expect(!h.exists("b.txt"));
+    try testing.expect(h.exists(".lst-f-4247/0001"));
+
+    // O undo restaura a remocao depois de desfazer o rename.
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, area.dir);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expectEqualStrings("antigo", try h.read("a.txt"));
+    try testing.expectEqualStrings("novo", try h.read("b.txt"));
+}
+
+test "rollback restaura a remocao antecipada depois do rename" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("a", "A");
+    try h.touch("b", "B");
+    try h.touch("c", "C");
+
+    const name = try areaName(h.a(), 4248);
+    var area = try openArea(h.a(), io, h.dir(), name);
+    defer area.close(io);
+    // Colisao plantada na area: a remocao de "c", que vem por ultimo, falha.
+    try h.touch(".lst-f-4248/0003", "impostor");
+
+    const originals = [_]plan.Original{
+        .{ .id = 1, .path = "a", .kind = .file },
+        .{ .id = 2, .path = "b", .kind = .file },
+        .{ .id = 3, .path = "c", .kind = .file },
+    };
+    // Remove "a" e "c"; renomeia "b" -> "a". A remocao de "a" e antecipada.
+    const edits = [_]plan.Edit{.{ .id = 2, .path = "a", .line = 2 }};
+    const p = try planFor(h.a(), &originals, &edits);
+    try testing.expectEqual(@as(usize, 1), p.removes_before);
+    try testing.expectEqual(@as(usize, 2), p.removes.len);
+
+    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    try testing.expect(outcome.failure != null);
+    try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
+    try testing.expectEqualStrings("A", try h.read("a"));
+    try testing.expectEqualStrings("B", try h.read("b"));
+    try testing.expectEqualStrings("C", try h.read("c"));
+}
+
+test "copia arquivo e desfaz no undo" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("a.txt", "conteudo A");
+    const originals = [_]plan.Original{.{ .id = 1, .path = "a.txt", .kind = .file }};
+    const edits = [_]plan.Edit{
+        .{ .id = 1, .path = "a.txt", .line = 1 },
+        .{ .id = 1, .path = "b.txt", .line = 2 },
+    };
+    const p = try planFor(h.a(), &originals, &edits);
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure == null);
+    try testing.expectEqualStrings("conteudo A", try h.read("a.txt"));
+    try testing.expectEqualStrings("conteudo A", try h.read("b.txt"));
+
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, null);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expect(h.exists("a.txt"));
+    try testing.expect(!h.exists("b.txt"));
+}
+
+test "copia diretorio recursivo e desfaz" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.dir().createDirPath(io, "src/sub");
+    try h.touch("src/a.txt", "1");
+    try h.touch("src/sub/b.txt", "2");
+
+    const originals = [_]plan.Original{.{ .id = 1, .path = "src", .kind = .dir }};
+    const edits = [_]plan.Edit{
+        .{ .id = 1, .path = "src", .line = 1 },
+        .{ .id = 1, .path = "dst", .line = 2 },
+    };
+    const p = try planFor(h.a(), &originals, &edits);
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure == null);
+    try testing.expectEqualStrings("1", try h.read("dst/a.txt"));
+    try testing.expectEqualStrings("2", try h.read("dst/sub/b.txt"));
+
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, null);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expect(h.exists("src"));
+    try testing.expect(!h.exists("dst"));
+}
+
+test "falha na remocao desfaz a copia ja feita" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("a.txt", "A");
+    try h.touch("um", "1");
+
+    const name = try areaName(h.a(), 4249);
+    var area = try openArea(h.a(), io, h.dir(), name);
+    defer area.close(io);
+    // Colisao plantada na area: a remocao, que vem depois da copia, falha.
+    try h.touch(".lst-f-4249/0002", "impostor");
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .creates = &.{},
+        .copies = &.{.{ .id = 1, .from = "a.txt", .to = "copia.txt", .kind = .file }},
+        .removes = &.{.{ .id = 2, .path = "um", .kind = .file }},
+        .moves = &.{},
+        .unchanged = 0,
+    };
+    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    try testing.expect(outcome.failure != null);
+    try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
+    try testing.expect(!h.exists("copia.txt"));
+    try testing.expect(h.exists("a.txt"));
+    try testing.expect(h.exists("um"));
 }
 
 test "mesmo basename de subdiretorios diferentes nao colide na area" {
