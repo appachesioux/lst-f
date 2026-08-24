@@ -544,7 +544,10 @@ pub const State = struct {
             \\  let s:lstf_leftcol = l:left
             \\  " Os titulos sao a statusline da janela de cabecalho, que so se
             \\  " redesenha sob pedido: `!` alcanca a janela que nao esta em foco.
-            \\  if s:lstf_frame | redrawstatus! | endif
+            \\  if s:lstf_frame
+            \\    call s:lstf_draw_frame()
+            \\    redrawstatus!
+            \\  endif
             \\endfunction
             \\
             \\" Os titulos com um fundo por coluna e o divisor sobre o fundo da tela,
@@ -574,6 +577,17 @@ pub const State = struct {
             \\  return l:out . '%#LstfTitles#' . l:rest . repeat(' ', l:pad)
             \\endfunction
             \\
+            \\" Regua superior da faixa de titulos: encaixa `┬` exatamente sobre cada divisor
+            \\" vertical `│` dos titulos, alinhando com a rolagem horizontal da lista.
+            \\function! s:lstf_ruler(width) abort
+            \\  if empty(s:lstf_titles) | return repeat('─', a:width) | endif
+            \\  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
+            \\  let l:ruler = substitute(substitute(s:lstf_titles, '[^│]', '─', 'g'), '│', '┬', 'g')
+            \\  let l:rest = strcharpart(l:ruler, max([0, l:left]))
+            \\  let l:pad = max([0, a:width - strdisplaywidth(l:rest)])
+            \\  return l:rest . repeat('─', l:pad)
+            \\endfunction
+            \\
             \\" Linha de moldura: caminho a esquerda, versao a direita, regua ligando
             \\" os dois -- a barra de titulo que o xpl-f desenha no topo da tela.
             \\" Volta em pedacos porque quem pinta e `matchaddpos`, por coluna de
@@ -595,12 +609,11 @@ pub const State = struct {
             \\  noautocmd call win_gotoid(s:lstf_header_win)
             \\  let s:lstf_frame_width = winwidth(0)
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
+            \\  let l:ruler = s:lstf_ruler(s:lstf_frame_width)
             \\  setlocal modifiable
             \\  " Linha 2 vazia e linha 3 a regua que fecha o topo da faixa de
-            \\  " titulos -- que e a statusline desta mesma janela. A regua tem
-            \\  " linha propria, e nao o sublinhado da moldura, senao encosta no
-            \\  " caminho: e assim que o xpl-f desenha.
-            \\  call setline(1, [join(l:parts, ''), '', repeat('─', s:lstf_frame_width)])
+            \\  " titulos com os encaixes `┬` -- que e a statusline desta mesma janela.
+            \\  call setline(1, [join(l:parts, ''), '', l:ruler])
             \\  setlocal nomodifiable nomodified
             \\  " A linha inteira e moldura; caminho e versao vem por cima, com
             \\  " prioridade maior. Sem sintaxe: o texto e nosso e as colunas de
@@ -891,17 +904,13 @@ pub const State = struct {
             \\highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
             \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
-            \\" O sublinhado faz o papel da regua `──┼───` que ficava embaixo dos
-            \\" titulos no buffer; a de cima virou a propria borda da tela.
             \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
-            \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. O sublinhado
-            \\" A regua sob a faixa e o sublinhado dela.
-            \\highlight LstfTitles cterm=bold,underline ctermfg=253 ctermbg=235 gui=bold,underline guifg=#b4bedc guibg=#232332
+            \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. A regua de baixo e o sublinhado na cor da moldura.
+            \\highlight LstfTitles cterm=bold,underline ctermfg=15 ctermbg=236 gui=bold,underline guifg=#cdd6f4 guibg=#2a2b3c guisp=#6c7086
             \\highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
             \\highlight LstfPath cterm=bold ctermfg=11 gui=bold guifg=#f9e2af guibg=NONE
-            \\" O divisor fica na faixa, entao carrega o sublinhado dela: sem isso a
-            \\" regua de baixo da faixa se quebra em cada coluna.
-            \\highlight LstfTitlesSep cterm=underline ctermfg=245 gui=underline guifg=#6c7086
+            \\highlight LstfTitlesSep cterm=underline ctermfg=245 ctermbg=236 gui=underline guifg=#6c7086 guibg=#2a2b3c guisp=#6c7086
+            \\highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\" Cores por natureza da entrada, as mesmas do xpl-f. O par cterm
             \\" nao e enfeite: servidor sem truecolor so enxerga esse lado.
@@ -919,21 +928,20 @@ pub const State = struct {
             \\set noruler noshowcmd
             \\setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
             \\syntax match LstfInternalId /^\/\d\+\s\+/ conceal
+            \\syntax match LstfSep /│/ contained
             \\" O sequencial e metadado interno: oculta-lo tambem na linha do
             \\" cursor evita deslocar as colunas, inclusive ao voltar do :find.
             \\setlocal conceallevel=2 concealcursor=nvic
-            \\" A linha inteira e um item por natureza, com o ID contido nele: um
-            \\" item que comecasse no nome perderia para o LstfInternalId, que casa
-            \\" antes (coluna 1). As colunas tecnicas nao tem grupo proprio -- vao
-            \\" na cor da natureza, junto com o nome, como no xpl-f. Ancorar nos
-            \\" cinco divisores, e nao em contagem de caracteres, e o que deixa
-            \\" o nome com `│` dentro ainda cair no grupo certo. LstfExec vem
-            \\" depois de LstfFile de proposito: entre itens que comecam na
-            \\" mesma coluna, o Vim da prioridade ao definido por ultimo.
-            \\syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId
-            \\syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId
-            \\syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId
-            \\syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId
+            \\" A linha inteira e um item por natureza, com o ID e os divisores
+            \\" contidos nele. Ancorar nos cinco divisores, e nao em contagem de
+            \\" caracteres, e o que deixa o nome com `│` dentro ainda cair no
+            \\" grupo certo. LstfExec vem depois de LstfFile de proposito: entre
+            \\" itens que comecam na mesma coluna, o Vim da prioridade ao definido
+            \\" por ultimo.
+            \\syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId,LstfSep
+            \\syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
             \\augroup lstf_buffer
             \\  autocmd! * <buffer>
             \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
