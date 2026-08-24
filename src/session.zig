@@ -313,8 +313,8 @@ pub const State = struct {
             \\  return popup_filter_menu(a:winid, a:key)
             \\endfunction
             \\
-            \\function! s:lstf_entry_path() abort
-            \\  let l:line = getline('.')
+            \\function! s:lstf_entry_path(...) abort
+            \\  let l:line = a:0 > 0 ? a:1 : getline('.')
             \\  if l:line !~# '^/\d\+\s\+'
             \\    return ''
             \\  endif
@@ -379,6 +379,11 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_navigate(path) abort
+            \\  " Subir um nivel (-) pousa o cursor no diretorio de onde se veio.
+            \\  " O arquivo e de uso unico: quem ler, apaga.
+            \\  if a:path ==# '..'
+            \\    call writefile([fnamemodify(getcwd(), ':t')], $LST_F_STATE . '/cursor_name')
+            \\  endif
             \\  call s:lstf_write_directive(':cd ' . a:path)
             \\endfunction
             \\
@@ -979,15 +984,31 @@ pub const State = struct {
             \\call s:lstf_capture_prefixes()
             \\let b:lstf_entry_lines = s:lstf_entry_lines()
             \\call s:lstf_follow_scroll()
-            \\if filereadable($LST_F_STATE . '/cursor')
-            \\  let s:lstf_start = s:lstf_content_start()
-            \\  let s:lstf_offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
-            \\  if s:lstf_start > 0
-            \\    execute 'call cursor(' . (s:lstf_start + s:lstf_offset) . ', 1)'
+            \\let s:lstf_start = s:lstf_content_start()
+            \\let s:lstf_landed = 0
+            \\if filereadable($LST_F_STATE . '/cursor_name')
+            \\  " Volta de subida: a entrada com o nome do diretorio de onde se
+            \\  " veio. Nome, nao offset: sobrevive a :sort e a reordenacao.
+            \\  let s:lstf_want = get(readfile($LST_F_STATE . '/cursor_name'), 0, '')
+            \\  call delete($LST_F_STATE . '/cursor_name')
+            \\  if !empty(s:lstf_want) && s:lstf_start > 0
+            \\    for s:lstf_lnum in range(s:lstf_start, line('$'))
+            \\      let s:lstf_p = s:lstf_entry_path(getline(s:lstf_lnum))
+            \\      if substitute(s:lstf_p, '/$', '', '') ==# s:lstf_want
+            \\        call cursor(s:lstf_lnum, 1)
+            \\        let s:lstf_landed = 1
+            \\        break
+            \\      endif
+            \\    endfor
             \\  endif
-            \\else
-            \\  let s:lstf_start = s:lstf_content_start()
-            \\  if s:lstf_start > 0
+            \\endif
+            \\if !s:lstf_landed
+            \\  if filereadable($LST_F_STATE . '/cursor')
+            \\    let s:lstf_offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
+            \\    if s:lstf_start > 0
+            \\      execute 'call cursor(' . (s:lstf_start + s:lstf_offset) . ', 1)'
+            \\    endif
+            \\  elseif s:lstf_start > 0
             \\    call cursor(s:lstf_start, 1)
             \\  endif
             \\endif
