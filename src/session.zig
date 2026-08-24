@@ -569,42 +569,49 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
-            \\" Os titulos com um fundo por coluna e o divisor sobre o fundo da tela,
-            \\" como na grade do xpl-f. Sao a statusline da janela de cabecalho: e
-            \\" o `%!` que permite um grupo de destaque por coluna.
-            \\function! LstfTitlesBar() abort
+            \\" Os titulos sao conteudo da linha 3 da janela de cabecalho (ver
+            \\" `s:lstf_draw_frame`); a statusline desta janela virou a regra que
+            \\" fecha a faixa por baixo -- linha propria, descolada do texto, e o
+            \\" divisor `│` atravessa a regra para continuar nas entradas.
+            \\function! LstfRuleBar() abort
             \\  if empty(s:lstf_titles) | return '' | endif
             \\  " Acompanha a rolagem horizontal da lista, senao as colunas sairiam
             \\  " do lugar assim que um nome longo empurrar a tela. O `leftcol`
             \\  " conta tambem os caracteres do ID, que estao no buffer mas
             \\  " ocultos por conceal e nao existem na barra.
             \\  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
-            \\  let l:rest = strcharpart(s:lstf_titles, max([0, l:left]))
+            \\  let l:ruler = substitute(substitute(s:lstf_titles, '[^│]', '─', 'g'), '│', '┼', 'g')
+            \\  let l:rest = strcharpart(l:ruler, max([0, l:left]))
             \\  " A faixa vai ate a borda da janela por conta propria: o
             \\  " preenchimento de `%=` sairia no grupo StatusLineNC, que e da
             \\  " barra de baixo tambem.
             \\  let l:win = exists('g:statusline_winid') ? win_id2win(g:statusline_winid) : 0
             \\  let l:pad = max([0, winwidth(l:win) - strdisplaywidth(l:rest)])
-            \\  let l:out = ''
-            \\  while 1
-            \\    let l:sep = matchstr(l:rest, ' \=│ \=')
-            \\    if empty(l:sep) | break | endif
-            \\    let l:i = match(l:rest, ' \=│ \=')
-            \\    let l:out .= '%#LstfTitles#' . strpart(l:rest, 0, l:i) . '%#LstfTitlesSep#' . l:sep
-            \\    let l:rest = strpart(l:rest, l:i + len(l:sep))
-            \\  endwhile
-            \\  return l:out . '%#LstfTitles#' . l:rest . repeat(' ', l:pad)
+            \\  return '%#LstfFrame#' . l:rest . repeat('─', l:pad)
             \\endfunction
             \\
-            \\" Regua superior da faixa de titulos: encaixa `┬` exatamente sobre cada divisor
-            \\" vertical `│` dos titulos, alinhando com a rolagem horizontal da lista.
-            \\function! s:lstf_ruler(width) abort
-            \\  if empty(s:lstf_titles) | return repeat('─', a:width) | endif
+            \\" Linha de titulos como texto: devolve [linha, spans], onde spans sao
+            \\" as posicoes em bytes de cada divisor `│` para o matchaddpos.
+            \\function! s:lstf_titles_row(width) abort
+            \\  if empty(s:lstf_titles) | return ['', []] | endif
             \\  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
-            \\  let l:ruler = substitute(substitute(s:lstf_titles, '[^│]', '─', 'g'), '│', '┬', 'g')
-            \\  let l:rest = strcharpart(l:ruler, max([0, l:left]))
-            \\  let l:pad = max([0, a:width - strdisplaywidth(l:rest)])
-            \\  return l:rest . repeat('─', l:pad)
+            \\  let l:rest = strcharpart(s:lstf_titles, max([0, l:left]))
+            \\  let l:out = ''
+            \\  let l:bytes = 0
+            \\  let l:spans = []
+            \\  while 1
+            \\    let l:i = match(l:rest, ' \=│ \=')
+            \\    if l:i < 0 | break | endif
+            \\    let l:seg = strpart(l:rest, 0, l:i)
+            \\    let l:sep = matchstr(l:rest, ' \=│ \=')
+            \\    call add(l:spans, [l:bytes + len(l:seg) + 1, len(l:sep)])
+            \\    let l:out .= l:seg . l:sep
+            \\    let l:bytes += len(l:seg) + len(l:sep)
+            \\    let l:rest = strpart(l:rest, l:i + len(l:sep))
+            \\  endwhile
+            \\  let l:out .= l:rest
+            \\  let l:pad = max([0, a:width - strdisplaywidth(l:out)])
+            \\  return [l:out . repeat(' ', l:pad), l:spans]
             \\endfunction
             \\
             \\" Linha de moldura: caminho a esquerda, versao a direita, regua ligando
@@ -628,17 +635,25 @@ pub const State = struct {
             \\  noautocmd call win_gotoid(s:lstf_header_win)
             \\  let s:lstf_frame_width = winwidth(0)
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
-            \\  let l:ruler = s:lstf_ruler(s:lstf_frame_width)
+            \\  let l:trow = s:lstf_titles_row(s:lstf_frame_width)
             \\  setlocal modifiable
-            \\  " Linha 2 vazia e linha 3 a regua que fecha o topo da faixa de
-            \\  " titulos com os encaixes `┬` -- que e a statusline desta mesma janela.
-            \\  call setline(1, [join(l:parts, ''), '', l:ruler])
+            \\  " Linha 2 vazia e o respiro; linha 3 sao os titulos, que a regra na
+            \\  " statusline desta janela fecha por baixo com `┼` sob cada divisor,
+            \\  " ligando o `│` dos titulos ao `│` das entradas da lista.
+            \\  call setline(1, [join(l:parts, ''), '', l:trow[0]])
             \\  setlocal nomodifiable nomodified
-            \\  " A linha inteira e moldura; caminho e versao vem por cima, com
-            \\  " prioridade maior. Sem sintaxe: o texto e nosso e as colunas de
-            \\  " byte ja sao conhecidas aqui.
+            \\  " A linha da moldura inteira e LstfFrame; caminho e versao vem por
+            \\  " cima, com prioridade maior. A faixa de titulos leva fundo na
+            \\  " linha toda e divisores por cima. Sem sintaxe: o texto e nosso e
+            \\  " as colunas de byte ja sao conhecidas aqui.
             \\  call clearmatches()
-            \\  call matchaddpos('LstfFrame', [[1], [3]], -5)
+            \\  call matchaddpos('LstfFrame', [[1]], -5)
+            \\  if !empty(l:trow[0])
+            \\    call matchaddpos('LstfTitles', [[3]], -5)
+            \\    for l:sp in l:trow[1]
+            \\      call matchaddpos('LstfTitlesSep', [[3, l:sp[0], l:sp[1]]], -4)
+            \\    endfor
+            \\  endif
             \\  let l:spots = []
             \\  let l:at = len(l:parts[0]) + 1
             \\  if len(l:parts[1]) > 0 | call add(l:spots, [1, l:at, len(l:parts[1])]) | endif
@@ -648,8 +663,8 @@ pub const State = struct {
             \\  noautocmd call win_gotoid(l:cur)
             \\endfunction
             \\
-            \\" Janela de tres linhas no topo: moldura, respiro e a regua que fecha o
-            \\" topo da faixa de titulos, que e a statusline dela. Precisa ser
+            \\" Janela de tres linhas no topo: moldura, respiro e os titulos, que a
+            \\" statusline dela fecha por baixo com a regra. Precisa ser
             \\" janela -- a `tabline` do Vim e uma linha so, e `winbar` nao existe
             \\" fora do Neovim.
             \\function! s:lstf_open_header() abort
@@ -666,7 +681,7 @@ pub const State = struct {
             \\  let s:lstf_header_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
-            \\  setlocal statusline=%!LstfTitlesBar()
+            \\  setlocal statusline=%!LstfRuleBar()
             \\  augroup lstf_header
             \\    autocmd! * <buffer>
             \\    autocmd WinEnter <buffer> call s:lstf_leave_header()
@@ -924,11 +939,12 @@ pub const State = struct {
             \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
             \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
-            \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. A regua de baixo e o sublinhado na cor da moldura.
-            \\highlight LstfTitles cterm=bold,underline ctermfg=15 ctermbg=236 gui=bold,underline guifg=#cdd6f4 guibg=#2a2b3c guisp=#6c7086
+            \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. A regra de
+            \\" baixo e a statusline da janela de cabecalho, na cor da moldura.
+            \\highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
             \\highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
             \\highlight LstfPath cterm=bold ctermfg=11 gui=bold guifg=#f9e2af guibg=NONE
-            \\highlight LstfTitlesSep cterm=underline ctermfg=245 ctermbg=236 gui=underline guifg=#6c7086 guibg=#2a2b3c guisp=#6c7086
+            \\highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
             \\highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\" Cores por natureza da entrada, as mesmas do xpl-f. O par cterm
