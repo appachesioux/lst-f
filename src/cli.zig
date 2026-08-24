@@ -787,11 +787,15 @@ fn writeEllipsized(w: *Io.Writer, text: []const u8, width: usize) !void {
 
 /// `$HOME` vira `~`, como na barra de localizacao de qualquer gerenciador de
 /// arquivos. So encurta a exibicao; o caminho real nunca passa por aqui.
-fn abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
-    const home = environ.get("HOME") orelse return path;
-    if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
-    if (path.len != home.len and path[home.len] != '/') return path;
-    return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
+/// abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
+// const home = environ.get("HOME") orelse return path;
+// if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
+// if (path.len != home.len and path[home.len] != '/') return path;
+// return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
+// }
+
+fn abbreviateHome(_: Allocator, _: *const std.process.Environ.Map, path: []const u8) []const u8 {
+    return path;
 }
 
 // ---------------------------------------------------------------------------
