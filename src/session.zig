@@ -575,16 +575,41 @@ pub const State = struct {
             \\  endfor
             \\endfunction
             \\
+            \\function! s:lstf_suffixed(path, n) abort
+            \\  let l:is_dir = a:path =~# '/$'
+            \\  let l:clean = substitute(a:path, '/$', '', '')
+            \\  let l:dir = fnamemodify(l:clean, ':h')
+            \\  let l:base = fnamemodify(l:clean, ':t')
+            \\  let l:dot = l:is_dir ? -1 : match(l:base, '\.[^.]*$')
+            \\  let l:stem = l:dot > 0 ? strpart(l:base, 0, l:dot) : l:base
+            \\  let l:ext = l:dot > 0 ? strpart(l:base, l:dot) : ''
+            \\  let l:name = l:stem . '-' . printf('%02d', a:n) . l:ext . (l:is_dir ? '/' : '')
+            \\  return l:dir ==# '.' ? l:name : l:dir . '/' . l:name
+            \\endfunction
+            \\
+            \\function! s:lstf_free_suggestion(path, occupied) abort
+            \\  for l:n in range(1, 99)
+            \\    let l:candidate = s:lstf_suffixed(a:path, l:n)
+            \\    if !has_key(a:occupied, l:candidate) && getftype(l:candidate) ==# ''
+            \\      let a:occupied[l:candidate] = 1
+            \\      return l:candidate
+            \\    endif
+            \\  endfor
+            \\  return ''
+            \\endfunction
+            \\
             \\" Feedback anterior ao :w para conflitos que o conteudo atual
-            \\" prova sozinho. O servidor ainda faz a validacao definitiva,
-            \\" inclusive contra mudancas externas no filesystem.
+            \\" prova sozinho. Quando ha um sufixo livre, ele entra diretamente
+            \\" na linha editada; a validacao definitiva continua no servidor.
             \\function! s:lstf_update_collisions() abort
             \\  for l:match in get(w:, 'lstf_collision_matches', [])
             \\    silent! call matchdelete(l:match)
             \\  endfor
             \\  let w:lstf_collision_matches = []
             \\  let b:lstf_collision_count = 0
+            \\  let l:previous_suggestion = get(b:, 'lstf_suggestion', '')
             \\  let l:paths = {}
+            \\  let l:occupied = {}
             \\  let l:start = s:lstf_content_start()
             \\  if l:start <= 0 | redrawstatus | return | endif
             \\  for l:lnum in range(l:start, line('$'))
@@ -599,22 +624,38 @@ pub const State = struct {
             \\      let l:col = match(l:line, '\S') + 1
             \\    endif
             \\    if empty(l:path) || l:col <= 0 | continue | endif
+            \\    let l:occupied[l:path] = 1
             \\    if !has_key(l:paths, l:path) | let l:paths[l:path] = [] | endif
             \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path), 'id': l:id})
             \\  endfor
+            \\  let b:lstf_suggestion = has_key(l:occupied, l:previous_suggestion) ? l:previous_suggestion : ''
             \\  for l:path in keys(l:paths)
             \\    let l:uses = l:paths[l:path]
             \\    if len(l:uses) < 2 | continue | endif
-            \\    " Duas linhas iguais do mesmo ID sao o gesto de copiar, mas so
-            \\    " quando uma delas ainda e a origem inalterada.
-            \\    let l:copy = len(l:uses) == 2 && !empty(l:uses[0].id)
-            \\      \ && l:uses[0].id ==# l:uses[1].id
-            \\      \ && get(get(b:, 'lstf_original_path', {}), l:uses[0].id, '') ==# l:path
-            \\    if l:copy | continue | endif
-            \\    let b:lstf_collision_count += 1
-            \\    for l:use in l:uses
-            \\      call add(w:lstf_collision_matches,
-            \\        \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
+            \\    " Preserva de preferencia a entrada que ainda ocupa seu caminho
+            \\    " original; a linha editada, criada ou colada recebe o sufixo.
+            \\    let l:anchor = 0
+            \\    for l:i in range(0, len(l:uses) - 1)
+            \\      if !empty(l:uses[l:i].id)
+            \\        \ && get(get(b:, 'lstf_original_path', {}), l:uses[l:i].id, '') ==# l:path
+            \\        let l:anchor = l:i
+            \\        break
+            \\      endif
+            \\    endfor
+            \\    for l:i in range(0, len(l:uses) - 1)
+            \\      if l:i == l:anchor | continue | endif
+            \\      let l:use = l:uses[l:i]
+            \\      let l:candidate = s:lstf_free_suggestion(l:path, l:occupied)
+            \\      if empty(l:candidate)
+            \\        let b:lstf_collision_count += 1
+            \\        call add(w:lstf_collision_matches,
+            \\          \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
+            \\        continue
+            \\      endif
+            \\      silent! undojoin
+            \\      noautocmd call setline(l:use.line,
+            \\        \ strpart(getline(l:use.line), 0, l:use.col - 1) . l:candidate)
+            \\      let b:lstf_suggestion = l:candidate
             \\    endfor
             \\  endfor
             \\  redrawstatus
@@ -799,7 +840,9 @@ pub const State = struct {
             \\  let l:aviso = empty(s:lstf_notice) ? '' : '%#LstfStatusNotice# ' . substitute(s:lstf_notice, '%', '%%', 'g') . ' %#LstfStatusInfo#'
             \\  let l:collisions = get(b:, 'lstf_collision_count', 0)
             \\  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisao: ' . l:collisions . ' %#LstfStatusInfo#' : ''
-            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
+            \\  let l:suggested = get(b:, 'lstf_suggestion', '')
+            \\  let l:suggestion = empty(l:suggested) ? '' : '%#LstfStatusSuggestion# sugerido: ' . substitute(l:suggested, '%', '%%', 'g') . ' %#LstfStatusInfo#'
+            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . l:suggestion . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -1018,6 +1061,7 @@ pub const State = struct {
             \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
             \\highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#c94f6d
+            \\highlight LstfStatusSuggestion cterm=bold ctermfg=0 ctermbg=10 gui=bold guifg=#1e1e2e guibg=#a6e3a1
             \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. A regra de
             \\" baixo e a statusline da janela de cabecalho, na cor da moldura.
             \\highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
@@ -1147,6 +1191,7 @@ pub const State = struct {
             \\  let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
             \\    \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
             \\  call s:lstf_capture_prefixes()
+            \\  let b:lstf_suggestion = ''
             \\  call s:lstf_update_collisions()
             \\  let b:lstf_entry_lines = s:lstf_entry_lines()
             \\  call s:lstf_follow_scroll()
