@@ -72,7 +72,9 @@ funcionam direto sobre os caminhos listados.
 ## `:find` — o fzf entra aqui
 
 `:find relatorio` abre o `fzf` sobre a árvore inteira a partir do diretório
-atual. Você filtra, marca com `Tab` o que interessa — espalhado por quantos
+atual. A busca usa *smart case*: uma consulta só em minúsculas ignora caixa;
+uma maiúscula torna a consulta sensível. A busca `/` do Vim segue a mesma
+regra. Você filtra, marca com `Tab` o que interessa — espalhado por quantos
 subdiretórios for — e o que foi marcado **vira o conteúdo do buffer**. Renomear
 doze arquivos de seis diretórios diferentes é um `:find`, doze `Tab` e uma
 edição.

@@ -176,6 +176,7 @@ pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
         "--delimiter=\t",
         "--with-nth=2..",
         "--tiebreak=index",
+        "--smart-case",
     });
     try argv.append(arena, try std.fmt.allocPrint(arena, "--prompt={s}", .{options.prompt}));
     try argv.append(arena, try std.fmt.allocPrint(arena, "--header={s}", .{options.header}));

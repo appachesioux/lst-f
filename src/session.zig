@@ -203,6 +203,9 @@ pub const State = struct {
 
         try w.writeAll(
             \\set nocompatible
+            \\" A busca do Vim segue a mesma regra do fzf: minusculas ignoram
+            \\" caixa; uma maiuscula torna a consulta sensivel a caixa.
+            \\set ignorecase smartcase
             \\let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
             \\  \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
             \\let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
@@ -595,7 +598,7 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
-            \\" Os titulos sao conteudo da linha 3 da janela de cabecalho (ver
+            \\" Os titulos sao conteudo da linha 2 da janela de cabecalho (ver
             \\" `s:lstf_draw_frame`); a statusline desta janela virou a regra que
             \\" fecha a faixa por baixo -- linha propria, descolada do texto, e o
             \\" divisor `│` atravessa a regra para continuar nas entradas.
@@ -663,10 +666,10 @@ pub const State = struct {
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
             \\  let l:trow = s:lstf_titles_row(s:lstf_frame_width)
             \\  setlocal modifiable
-            \\  " Linha 2 vazia e o respiro; linha 3 sao os titulos, que a regra na
+            \\  " Linha 1 e a moldura; linha 2 sao os titulos, que a regra na
             \\  " statusline desta janela fecha por baixo com `┼` sob cada divisor,
             \\  " ligando o `│` dos titulos ao `│` das entradas da lista.
-            \\  call setline(1, [join(l:parts, ''), '', l:trow[0]])
+            \\  call setline(1, [join(l:parts, ''), l:trow[0]])
             \\  setlocal nomodifiable nomodified
             \\  " A linha da moldura inteira e LstfFrame; caminho e versao vem por
             \\  " cima, com prioridade maior. A faixa de titulos leva fundo na
@@ -675,9 +678,9 @@ pub const State = struct {
             \\  call clearmatches()
             \\  call matchaddpos('LstfFrame', [[1]], -5)
             \\  if !empty(l:trow[0])
-            \\    call matchaddpos('LstfTitles', [[3]], -5)
+            \\    call matchaddpos('LstfTitles', [[2]], -5)
             \\    for l:sp in l:trow[1]
-            \\      call matchaddpos('LstfTitlesSep', [[3, l:sp[0], l:sp[1]]], -4)
+            \\      call matchaddpos('LstfTitlesSep', [[2, l:sp[0], l:sp[1]]], -4)
             \\    endfor
             \\  endif
             \\  let l:spots = []
@@ -689,7 +692,7 @@ pub const State = struct {
             \\  noautocmd call win_gotoid(l:cur)
             \\endfunction
             \\
-            \\" Janela de tres linhas no topo: moldura, respiro e os titulos, que a
+            \\" Janela de duas linhas no topo: moldura e titulos, que a
             \\" statusline dela fecha por baixo com a regra. Precisa ser
             \\" janela -- a `tabline` do Vim e uma linha so, e `winbar` nao existe
             \\" fora do Neovim.
@@ -703,7 +706,7 @@ pub const State = struct {
             \\    return
             \\  endif
             \\  let s:lstf_list_win = win_getid()
-            \\  noautocmd topleft 3split __lstf_header__
+            \\  noautocmd topleft 2split __lstf_header__
             \\  let s:lstf_header_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
