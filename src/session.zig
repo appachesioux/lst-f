@@ -561,6 +561,7 @@ pub const State = struct {
             \\
             \\function! s:lstf_capture_prefixes() abort
             \\  let b:lstf_prefix = {}
+            \\  let b:lstf_original_path = {}
             \\  let b:lstf_id_width = 0
             \\  for l:line in getline(1, '$')
             \\    let l:id = matchstr(l:line, '^/\d\+')
@@ -570,7 +571,53 @@ pub const State = struct {
             \\    endif
             \\    let l:start = s:lstf_name_start(l:line)
             \\    if l:start > 0 | let b:lstf_prefix[l:id] = strpart(l:line, 0, l:start) | endif
+            \\    let b:lstf_original_path[l:id] = s:lstf_entry_path(l:line)
             \\  endfor
+            \\endfunction
+            \\
+            \\" Feedback anterior ao :w para conflitos que o conteudo atual
+            \\" prova sozinho. O servidor ainda faz a validacao definitiva,
+            \\" inclusive contra mudancas externas no filesystem.
+            \\function! s:lstf_update_collisions() abort
+            \\  for l:match in get(w:, 'lstf_collision_matches', [])
+            \\    silent! call matchdelete(l:match)
+            \\  endfor
+            \\  let w:lstf_collision_matches = []
+            \\  let b:lstf_collision_count = 0
+            \\  let l:paths = {}
+            \\  let l:start = s:lstf_content_start()
+            \\  if l:start <= 0 | redrawstatus | return | endif
+            \\  for l:lnum in range(l:start, line('$'))
+            \\    let l:line = getline(l:lnum)
+            \\    let l:id = matchstr(l:line, '^/\d\+')
+            \\    if !empty(l:id)
+            \\      let l:path = s:lstf_entry_path(l:line)
+            \\      let l:col = s:lstf_name_start(l:line) + 1
+            \\    else
+            \\      if l:line =~# '^\s*$' || l:line =~# '^[:#]' | continue | endif
+            \\      let l:path = substitute(l:line, '^\s*', '', '')
+            \\      let l:col = match(l:line, '\S') + 1
+            \\    endif
+            \\    if empty(l:path) || l:col <= 0 | continue | endif
+            \\    if !has_key(l:paths, l:path) | let l:paths[l:path] = [] | endif
+            \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path), 'id': l:id})
+            \\  endfor
+            \\  for l:path in keys(l:paths)
+            \\    let l:uses = l:paths[l:path]
+            \\    if len(l:uses) < 2 | continue | endif
+            \\    " Duas linhas iguais do mesmo ID sao o gesto de copiar, mas so
+            \\    " quando uma delas ainda e a origem inalterada.
+            \\    let l:copy = len(l:uses) == 2 && !empty(l:uses[0].id)
+            \\      \ && l:uses[0].id ==# l:uses[1].id
+            \\      \ && get(get(b:, 'lstf_original_path', {}), l:uses[0].id, '') ==# l:path
+            \\    if l:copy | continue | endif
+            \\    let b:lstf_collision_count += 1
+            \\    for l:use in l:uses
+            \\      call add(w:lstf_collision_matches,
+            \\        \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
+            \\    endfor
+            \\  endfor
+            \\  redrawstatus
             \\endfunction
             \\
             \\" Barra de topo: os titulos das colunas sao linha de tela, nao de
@@ -750,7 +797,9 @@ pub const State = struct {
             \\  let l:where = s:lstf_frame ? l:name : l:location . (empty(l:name) ? '' : '  ' . l:name)
             \\  let l:tag = s:lstf_frame ? '' : s:lstf_identity . '  ·  '
             \\  let l:aviso = empty(s:lstf_notice) ? '' : '%#LstfStatusNotice# ' . substitute(s:lstf_notice, '%', '%%', 'g') . ' %#LstfStatusInfo#'
-            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
+            \\  let l:collisions = get(b:, 'lstf_collision_count', 0)
+            \\  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisao: ' . l:collisions . ' %#LstfStatusInfo#' : ''
+            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -968,6 +1017,7 @@ pub const State = struct {
             \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
             \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
+            \\highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#c94f6d
             \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. A regra de
             \\" baixo e a statusline da janela de cabecalho, na cor da moldura.
             \\highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
@@ -982,30 +1032,39 @@ pub const State = struct {
             \\highlight LstfExec cterm=bold ctermfg=10 gui=bold guifg=#a6d189
             \\highlight LstfLink ctermfg=14 gui=italic guifg=#56b6c2
             \\highlight LstfFile ctermfg=252 guifg=#c0caf5
+            \\highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
             \\set laststatus=2
-            \\setlocal statusline=%!LstfStatusline()
             \\set noshowmode showtabline=0
             \\set shortmess+=F
-            \\if exists('+fillchars')
-            \\  execute "setlocal fillchars+=eob:\\ "
-            \\endif
             \\set noruler noshowcmd
-            \\setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
-            \\syntax match LstfInternalId /^\/\d\+\s\+/ conceal
-            \\syntax match LstfSep /│/ contained
-            \\" O sequencial e metadado interno: oculta-lo tambem na linha do
-            \\" cursor evita deslocar as colunas, inclusive ao voltar do :find.
-            \\setlocal conceallevel=2 concealcursor=nvic
-            \\" A linha inteira e um item por natureza, com o ID e os divisores
-            \\" contidos nele. Ancorar nos cinco divisores, e nao em contagem de
-            \\" caracteres, e o que deixa o nome com `│` dentro ainda cair no
-            \\" grupo certo. LstfExec vem depois de LstfFile de proposito: entre
-            \\" itens que comecam na mesma coluna, o Vim da prioridade ao definido
-            \\" por ultimo.
-            \\syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
-            \\syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId,LstfSep
-            \\syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
-            \\syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\
+            \\" `:edit!` preserva opcoes e mapeamentos locais, mas Vim e Neovim
+            \\" apagam os grupos de sintaxe do buffer relido. Centralizar toda a
+            \\" aparencia local aqui deixa a abertura e cada recarga identicas.
+            \\function! s:lstf_configure_buffer() abort
+            \\  setlocal statusline=%!LstfStatusline()
+            \\  if exists('+fillchars')
+            \\    execute "setlocal fillchars+=eob:\\ "
+            \\  endif
+            \\  setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
+            \\  setlocal conceallevel=2 concealcursor=nvic
+            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink
+            \\  syntax match LstfInternalId /^\/\d\+\s\+/ conceal
+            \\  syntax match LstfSep /│/ contained
+            \\  " O sequencial e metadado interno: oculta-lo tambem na linha do
+            \\  " cursor evita deslocar as colunas, inclusive ao voltar do :find.
+            \\  " A linha inteira e um item por natureza, com o ID e os divisores
+            \\  " contidos nele. Ancorar nos cinco divisores, e nao em contagem de
+            \\  " caracteres, e o que deixa o nome com `│` dentro ainda cair no
+            \\  " grupo certo. LstfExec vem depois de LstfFile de proposito: entre
+            \\  " itens que comecam na mesma coluna, o Vim da prioridade ao definido
+            \\  " por ultimo.
+            \\  syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\endfunction
+            \\call s:lstf_configure_buffer()
             \\augroup lstf_buffer
             \\  autocmd! * <buffer>
             \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
@@ -1016,6 +1075,7 @@ pub const State = struct {
             \\  autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
             \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
             \\  autocmd InsertLeave <buffer> call s:lstf_restore_header()
+            \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_update_collisions()
             \\  " Salvar alteracoes comuns aplica pela sessao viva; diretivas e o
             \\  " fallback fecham todas as janelas da instancia controlada.
             \\  autocmd BufWritePost <buffer> call s:lstf_after_save()
@@ -1066,6 +1126,7 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_after_reload() abort
+            \\  call s:lstf_configure_buffer()
             \\  if filereadable($LST_F_STATE . '/base')
             \\    let l:newbase = get(readfile($LST_F_STATE . '/base'), 0, '')
             \\    if !empty(l:newbase)
@@ -1086,6 +1147,7 @@ pub const State = struct {
             \\  let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
             \\    \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
             \\  call s:lstf_capture_prefixes()
+            \\  call s:lstf_update_collisions()
             \\  let b:lstf_entry_lines = s:lstf_entry_lines()
             \\  call s:lstf_follow_scroll()
             \\  call s:lstf_restore_cursor()
