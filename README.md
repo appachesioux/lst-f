@@ -27,6 +27,12 @@ O ID à esquerda casa a linha com a entrada, então reordenar, rodar `:sort` ou
 recolar linhas é inofensivo. Nada é gravado sem diff e confirmação, e as
 remoções têm confirmação separada.
 
+Colisões que o próprio buffer já consegue provar são avisadas antes do `:w`:
+os nomes envolvidos ficam sublinhados em vermelho e a barra inferior mostra a
+quantidade. Duplicar uma linha com o mesmo ID para copiar continua sendo um
+gesto válido. A validação após o `:w` permanece como garantia definitiva contra
+mudanças externas e conflitos mais complexos.
+
 Sem plugin, sem gerenciador de pacotes: funciona com `vim` puro no servidor em
 que você acabou de entrar por SSH.
 
