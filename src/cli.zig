@@ -647,12 +647,20 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
             ok = true;
             rewrote_buffer = true;
         }
+    } else if (std.mem.eql(u8, cmd, "preview")) {
+        if (try previewProposedBuffer(s)) |message| {
+            response = message;
+        } else {
+            ok = true;
+        }
     }
 
     const failure = s.notice;
     // Navegacao sempre produz uma tela nova. O apply ja a escreveu no sucesso
     // e preserva no disco o buffer editado quando precisa devolver um erro.
-    if (!rewrote_buffer and !std.mem.eql(u8, cmd, "apply")) try writeBuffer(s);
+    if (!rewrote_buffer and
+        !std.mem.eql(u8, cmd, "apply") and
+        !std.mem.eql(u8, cmd, "preview")) try writeBuffer(s);
 
     if (ok) {
         _ = linux.write(conn, "K", 1);
@@ -703,6 +711,45 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
 
     try loadListing(s);
     try writeBuffer(s);
+    return null;
+}
+
+/// Monta o mesmo plano da aplicacao a partir da copia que o helper gravou
+/// antes do `:w`, mas nao altera o filesystem. A lista humana vai para um
+/// arquivo de estado porque a resposta curta do socket carrega so o veredito.
+fn previewProposedBuffer(s: *Session) !?[]const u8 {
+    const text = s.state.dir.readFileAlloc(
+        s.io,
+        "proposal",
+        s.arena,
+        .limited(64 * 1024 * 1024),
+    ) catch return "nao foi possivel ler a proposta do buffer";
+    const parsed = try plan.parseBuffer(s.arena, text, s.header_lines);
+    if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
+    const document = parsed.ok;
+
+    const built = try plan.build(s.arena, s.entries, document.edits, document.creates, .{
+        .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
+    });
+    if (built == .invalid) return try describeProblems(s, built.invalid);
+
+    const collisions = try checkCreatesOnDisk(s, built.ok);
+    if (collisions.len > 0) return try describeProblems(s, collisions);
+    const copy_resolved = try resolveCopySuffixesOnDisk(s, built.ok);
+    if (copy_resolved.problems.len > 0) return try describeProblems(s, copy_resolved.problems);
+
+    const p = copy_resolved.plan;
+    if (p.isEmpty()) {
+        try s.state.dir.writeFile(s.io, .{ .sub_path = "preview", .data = "" });
+        return null;
+    }
+
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
+    const missing = try missingDirs(s, base_dir, p.mkdirs);
+    var preview_out: std.Io.Writer.Allocating = .init(s.arena);
+    try writeDiff(s, &preview_out.writer, base_dir, p, missing);
+    try s.state.dir.writeFile(s.io, .{ .sub_path = "preview", .data = preview_out.written() });
     return null;
 }
 
@@ -1383,7 +1430,10 @@ fn missingDirs(s: *Session, base_dir: Io.Dir, dirs: []const []const u8) ![]const
 }
 
 fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []const u8) !void {
-    const w = s.out;
+    try writeDiff(s, s.out, base_dir, p, missing);
+}
+
+fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing: []const []const u8) !void {
     try w.writeAll("\n");
 
     var asked: usize = 0;
