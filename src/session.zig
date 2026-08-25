@@ -227,6 +227,7 @@ pub const State = struct {
             \\  let l:lines = [
             \\    \ '',
             \\    \ '  • Edite o caminho e use :w: renomeia ou move (cria os pais que faltarem)',
+            \\    \ '  • Antes de aplicar, um popup mostra a lista completa de alteracoes',
             \\    \ '  • :w sem edicao apenas atualiza a lista e mantem a sessao aberta',
             \\    \ '  • Apague a linha  : remove a entrada (area de sessao temporaria)',
             \\    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretorio)',
@@ -440,13 +441,100 @@ pub const State = struct {
             \\  call s:lstf_nav('hidden', ':hidden')
             \\endfunction
             \\
+            \\function! s:lstf_confirm_plan(plan) abort
+            \\  let l:lines = [''] + a:plan + ['',
+            \\    \ '  y ou Enter  aplica    n ou Esc  cancela    j/k  rolam', '']
+            \\  " Vim/Neovim antigos ou terminais minimos conservam uma saida
+            \\  " textual; a aplicacao nunca depende do popup para ser segura.
+            \\  if &columns < 30 || &lines < 9 || (!has('nvim') && !exists('*popup_create'))
+            \\    echo join(l:lines, "\n")
+            \\    let l:answer = input('Apply filesystem changes? [y/N] ')
+            \\    return tolower(l:answer) ==# 'y' || tolower(l:answer) ==# 'yes'
+            \\  endif
+            \\  let l:width = 50
+            \\  for l:line in l:lines
+            \\    let l:width = max([l:width, strdisplaywidth(l:line) + 4])
+            \\  endfor
+            \\  let l:width = min([l:width, &columns - 4])
+            \\  let l:height = min([len(l:lines), &lines - 6])
+            \\  let l:buf = -1
+            \\  if has('nvim')
+            \\    let l:buf = nvim_create_buf(v:false, v:true)
+            \\    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+            \\    let l:win = nvim_open_win(l:buf, v:false, {
+            \\      \ 'relative': 'editor',
+            \\      \ 'row': max([1, (&lines - l:height) / 2 - 1]),
+            \\      \ 'col': max([1, (&columns - l:width) / 2]),
+            \\      \ 'width': l:width,
+            \\      \ 'height': l:height,
+            \\      \ 'style': 'minimal',
+            \\      \ 'border': 'rounded',
+            \\      \ 'title': ' Confirmar alteracoes ',
+            \\      \ 'title_pos': 'center'
+            \\    \ })
+            \\  else
+            \\    let l:win = popup_create(l:lines, {
+            \\      \ 'title': ' Confirmar alteracoes ',
+            \\      \ 'border': [],
+            \\      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+            \\      \ 'padding': [0, 1, 0, 1],
+            \\      \ 'pos': 'center',
+            \\      \ 'minwidth': l:width,
+            \\      \ 'maxwidth': l:width,
+            \\      \ 'minheight': l:height,
+            \\      \ 'maxheight': l:height,
+            \\      \ 'mapping': 0,
+            \\      \ 'close': 'none'
+            \\    \ })
+            \\  endif
+            \\  redraw
+            \\  let l:approved = 0
+            \\  while 1
+            \\    let l:key = exists('*getcharstr') ? getcharstr() : nr2char(getchar())
+            \\    if l:key ==# 'y' || l:key ==# 'Y' || l:key ==# "\<CR>"
+            \\      let l:approved = 1
+            \\      break
+            \\    elseif l:key ==# 'n' || l:key ==# 'N' || l:key ==# 'q' || l:key ==# "\<Esc>"
+            \\      break
+            \\    elseif l:key ==# 'j' || l:key ==# "\<Down>"
+            \\      silent! call win_execute(l:win, 'normal! j')
+            \\    elseif l:key ==# 'k' || l:key ==# "\<Up>"
+            \\      silent! call win_execute(l:win, 'normal! k')
+            \\    endif
+            \\    redraw
+            \\  endwhile
+            \\  if has('nvim')
+            \\    silent! call nvim_win_close(l:win, v:true)
+            \\    if l:buf >= 0 | silent! call nvim_buf_delete(l:buf, {'force': v:true}) | endif
+            \\  else
+            \\    silent! call popup_close(l:win)
+            \\  endif
+            \\  redraw
+            \\  return l:approved
+            \\endfunction
+            \\
             \\function! s:lstf_prepare_save() abort
             \\  call delete($LST_F_STATE . '/approved')
             \\  let l:entries = s:lstf_entry_lines()
             \\  if exists('b:lstf_entry_lines') && l:entries !=# b:lstf_entry_lines
-            \\    let l:answer = input('Apply filesystem changes? [y/N] ')
-            \\    if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
-            \\      throw 'lst-f: operation cancelled'
+            \\    call writefile(getline(1, '$'), $LST_F_STATE . '/proposal', 'b')
+            \\    let l:out = system($LST_F_SELF . ' --client preview')
+            \\    if v:shell_error == 0
+            \\      let l:plan = filereadable($LST_F_STATE . '/preview')
+            \\        \ ? readfile($LST_F_STATE . '/preview') : []
+            \\      if !empty(l:plan) && !s:lstf_confirm_plan(l:plan)
+            \\        throw 'lst-f: operation cancelled'
+            \\      endif
+            \\    elseif v:shell_error == 2
+            \\      let l:answer = input('Apply filesystem changes? [y/N] ')
+            \\      if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
+            \\        throw 'lst-f: operation cancelled'
+            \\      endif
+            \\    else
+            \\      echohl ErrorMsg
+            \\      echomsg substitute(l:out, "\n\\+$", '', '')
+            \\      echohl None
+            \\      throw 'lst-f: invalid operation'
             \\    endif
             \\    call writefile(['approved'], $LST_F_STATE . '/approved')
             \\  endif
