@@ -455,6 +455,32 @@ pub const State = struct {
             \\  call writefile([string(l:relative_line)], $LST_F_STATE . '/cursor')
             \\endfunction
             \\
+            \\function! s:lstf_after_save() abort
+            \\  let l:directives = filter(getline(1, '$'), 'v:val =~# "^:"')
+            \\  " Operacoes comuns e :refresh usam a sessao viva. Diretivas que
+            \\  " abrem outra interface (:find, :open...) continuam pela volta
+            \\  " externa, pois precisam tomar conta do terminal.
+            \\  if len(l:directives) == 1 && l:directives[0] ==# ':refresh'
+            \\    let l:out = system($LST_F_SELF . ' --client apply')
+            \\    if v:shell_error == 0
+            \\      silent! edit!
+            \\      call s:lstf_after_reload()
+            \\      redraw
+            \\      return
+            \\    endif
+            \\    " Codigo 2 significa que o socket nao estava disponivel: o
+            \\    " laco antigo ainda consegue aplicar o arquivo que foi salvo.
+            \\    if v:shell_error != 2
+            \\      setlocal modified
+            \\      echohl ErrorMsg
+            \\      echomsg substitute(l:out, "\n\\+$", '', '')
+            \\      echohl None
+            \\      return
+            \\    endif
+            \\  endif
+            \\  quitall
+            \\endfunction
+            \\
             \\function! s:lstf_entry_lines() abort
             \\  let l:start = s:lstf_content_start()
             \\  if l:start <= 0 | let l:start = len(get(b:, 'lstf_header', [])) + 1 | endif
@@ -987,9 +1013,9 @@ pub const State = struct {
             \\  autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
             \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
             \\  autocmd InsertLeave <buffer> call s:lstf_restore_header()
-            \\  " O painel de destino pode estar aberto: `quit` fecharia so a
-            \\  " janela da lista e deixaria o processo Vim preso no painel.
-            \\  autocmd BufWritePost <buffer> quitall
+            \\  " Salvar alteracoes comuns aplica pela sessao viva; diretivas e o
+            \\  " fallback fecham todas as janelas da instancia controlada.
+            \\  autocmd BufWritePost <buffer> call s:lstf_after_save()
             \\augroup END
             \\augroup lstf_statusline
             \\  autocmd!

@@ -79,7 +79,7 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 4. `lst-f` casa cada linha editada com a origem **pelo ID da linha** e monta um plano explícito: manter, criar diretório necessário, mover, renomear, copiar ou remover.
 5. Antes de gravar, exibe o diff do plano e exige confirmação. Remoções aparecem em bloco próprio e exigem confirmação separada. Em falha de validação, não executa alteração alguma e o buffer volta como o usuário o deixou, para corrigir.
 6. A aplicação resolve colisões e ciclos com nomes temporários no mesmo filesystem, e executa as remoções movendo para a área de sessão — por último, exceto quando uma remoção libera o nome que um rename vai ocupar: nesse caso ela é antecipada para antes do rename.
-7. Depois de aplicar, ou de executar a diretiva, o buffer é regerado e o editor reabre. A sessão vive enquanto o laço vive — é o que sustenta a área de remoção e o `:undo`.
+7. Depois de aplicar cópia, remoção, criação ou renomeio, o buffer é regenerado e recarregado na mesma instância do editor pelo canal vivo, sem sair da tela alternativa. Diretivas que tomam o terminal (`:find`, `:open` etc.) ainda passam pela volta externa. Sem socket disponível, tudo conserva o fallback de fechar e reabrir. A sessão vive enquanto o laço vive — é o que sustenta a área de remoção e o `:undo`.
 
 ## Formato do buffer de edição
 
