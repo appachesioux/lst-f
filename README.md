@@ -62,7 +62,7 @@ que você acabou de entrar por SSH.
 
 Na árvore, use `j`/`k` ou as setas para navegar; `q`, `Esc`, `Enter` ou `\` a fecha. Para manter a abertura rápida em árvores grandes, ela mostra até 2.000 entradas e informa quando foi truncada.
 
-Use `:w` para aplicar a edição no filesystem — mesmo sem alterações ele só atualiza a lista e mantém a sessão aberta. O `lst-f` fecha e reabre sua instância temporária do editor automaticamente após a confirmação; a sessão permanece no explorador, com o resultado na barra de baixo e o cursor na mesma linha aproximada. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
+Use `:w` para aplicar a edição no filesystem — mesmo sem alterações ele só atualiza a lista e mantém a sessão aberta. Cópias, remoções, criações e renomeios recarregam o mesmo buffer na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, o fluxo antigo de fechar e reabrir continua disponível como fallback. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
 
 Em terminais estreitos, o nome editável pode ficar fora da área visível; use `zl` e `zh` para rolar horizontalmente.
 

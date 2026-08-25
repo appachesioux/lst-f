@@ -214,17 +214,17 @@ fn runPreview(
 fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8) !u8 {
     const state_path = environ.get(session.env_state) orelse {
         try out.writeAll("lst-f: sem sessao viva\n");
-        return 1;
+        return 2;
     };
     const arg = environ.get(live_env_arg) orelse "";
 
     var addr: linux.sockaddr.un = .{ .path = undefined };
     @memset(&addr.path, 0);
-    const sock_path = std.fmt.bufPrint(&addr.path, "{s}/live.sock", .{state_path}) catch return 1;
+    const sock_path = std.fmt.bufPrint(&addr.path, "{s}/live.sock", .{state_path}) catch return 2;
     _ = sock_path;
 
     const fd = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
-    if (linux.errno(fd) != .SUCCESS) return 1;
+    if (linux.errno(fd) != .SUCCESS) return 2;
     const sock: i32 = @intCast(fd);
     defer _ = linux.close(sock);
 
@@ -234,11 +234,11 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
         @sizeOf(linux.sockaddr.un),
     )) != .SUCCESS) {
         try out.writeAll("lst-f: sessao nao responde\n");
-        return 1;
+        return 2;
     }
 
     var payload: [4096]u8 = undefined;
-    if (cmd.len + 1 + arg.len > payload.len - 1) return 1;
+    if (cmd.len + 1 + arg.len > payload.len - 1) return 2;
     @memcpy(payload[0..cmd.len], cmd);
     payload[cmd.len] = 0;
     @memcpy(payload[cmd.len + 1 ..][0..arg.len], arg);
@@ -246,7 +246,7 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
     var sent: usize = 0;
     while (sent < total) {
         const w = linux.write(sock, payload[sent..].ptr, total - sent);
-        if (linux.errno(w) != .SUCCESS) return 1;
+        if (linux.errno(w) != .SUCCESS) return 2;
         sent += w;
     }
     // Metade de escrita fechada: o servidor le ate EOF.
@@ -258,10 +258,11 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
         const r = linux.read(sock, reply[got..].ptr, reply.len - got);
         if (linux.errno(r) == .INTR) continue;
         if (r == 0) break; // EOF
-        if (linux.errno(r) != .SUCCESS) return 1;
+        if (linux.errno(r) != .SUCCESS) return 2;
         got += r;
     }
-    if (got == 0 or reply[0] != 'K') {
+    if (got == 0) return 2;
+    if (reply[0] != 'K') {
         try out.print("lst-f: {s}\n", .{reply[1..got]});
         return 1;
     }
@@ -570,8 +571,13 @@ fn serveEditorRound(s: *Session, child: *std.process.Child) !?u8 {
         if (prc > 0 and fds[0].revents & linux.POLL.IN != 0) {
             const conn_rc = linux.accept4(listener, null, null, linux.SOCK.CLOEXEC);
             if (linux.errno(conn_rc) == .SUCCESS) {
-                handleLiveConn(s, @intCast(conn_rc)) catch {};
-                _ = linux.close(@intCast(conn_rc));
+                const conn: i32 = @intCast(conn_rc);
+                handleLiveConn(s, conn) catch |err| {
+                    var reply_buf: [192]u8 = undefined;
+                    const reply = std.fmt.bufPrint(&reply_buf, "Efalha interna na sessao viva ({s})", .{@errorName(err)}) catch "Efalha interna na sessao viva";
+                    _ = linux.write(conn, reply.ptr, reply.len);
+                };
+                _ = linux.close(conn);
             }
         }
 
@@ -611,6 +617,8 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     const arg = if (sep < payload.len) payload[sep + 1 ..] else "";
 
     var ok = false;
+    var rewrote_buffer = false;
+    var response: ?[]const u8 = null;
     if (std.mem.eql(u8, cmd, "up")) {
         writeCursorNameHint(s);
         ok = enterDirQuiet(s, "..");
@@ -632,22 +640,117 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         // Entrar pousa na primeira entrada: sem dica de cursor.
         s.state.dir.deleteFile(s.io, "cursor_name") catch {};
         ok = enterDirQuiet(s, arg);
+    } else if (std.mem.eql(u8, cmd, "apply")) {
+        if (try applySavedBufferLive(s)) |message| {
+            response = message;
+        } else {
+            ok = true;
+            rewrote_buffer = true;
+        }
     }
 
     const failure = s.notice;
-    // Tela nova quando navegou; mesma tela com chip de aviso quando falhou.
-    try writeBuffer(s);
+    // Navegacao sempre produz uma tela nova. O apply ja a escreveu no sucesso
+    // e preserva no disco o buffer editado quando precisa devolver um erro.
+    if (!rewrote_buffer and !std.mem.eql(u8, cmd, "apply")) try writeBuffer(s);
 
     if (ok) {
         _ = linux.write(conn, "K", 1);
     } else {
         var reply_buf: [512]u8 = undefined;
-        const msg = failure orelse "nao foi possivel";
+        const msg = response orelse failure orelse "nao foi possivel";
         const n = @min(msg.len, reply_buf.len - 2);
         reply_buf[0] = 'E';
         @memcpy(reply_buf[1 .. 1 + n], msg[0..n]);
         _ = linux.write(conn, reply_buf[0 .. 1 + n].ptr, 1 + n);
     }
+}
+
+/// Aplica um `:w` sem encerrar a instancia corrente do Vim. O proprio helper
+/// ja pediu confirmacao e gravou o sinal `approved`; aqui fazemos o mesmo
+/// pipeline da volta externa e, no sucesso, deixamos no disco a listagem nova
+/// que o editor recarregara com `:edit!`.
+fn applySavedBufferLive(s: *Session) !?[]const u8 {
+    const text = try Io.Dir.cwd().readFileAlloc(
+        s.io,
+        s.buffer_path,
+        s.arena,
+        .limited(64 * 1024 * 1024),
+    );
+    const parsed = try plan.parseBuffer(s.arena, text, s.header_lines);
+    if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
+    const document = parsed.ok;
+    if (document.directive == null or document.directive.? != .refresh) {
+        return "diretiva requer a volta completa da sessao";
+    }
+
+    const built = try plan.build(s.arena, s.entries, document.edits, document.creates, .{
+        .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
+    });
+    if (built == .invalid) return try describeProblems(s, built.invalid);
+
+    const collisions = try checkCreatesOnDisk(s, built.ok);
+    if (collisions.len > 0) return try describeProblems(s, collisions);
+
+    const copy_resolved = try resolveCopySuffixesOnDisk(s, built.ok);
+    if (copy_resolved.problems.len > 0) return try describeProblems(s, copy_resolved.problems);
+
+    const p = copy_resolved.plan;
+    if (!p.isEmpty()) {
+        if (!s.state.takeApproval(s.io)) return "alteracoes nao foram confirmadas";
+        if (try applyApprovedLive(s, p)) |message| return message;
+    }
+
+    try loadListing(s);
+    try writeBuffer(s);
+    return null;
+}
+
+fn describeProblems(s: *Session, problems: []const plan.Problem) ![]const u8 {
+    var result: std.Io.Writer.Allocating = .init(s.arena);
+    try result.writer.writeAll("buffer tem problemas: ");
+    for (problems, 0..) |p, i| {
+        if (i != 0) try result.writer.writeAll("; ");
+        try p.describe(&result.writer);
+    }
+    return result.written();
+}
+
+fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
+
+    var effective = p;
+    effective.mkdirs = try missingDirs(s, base_dir, p.mkdirs);
+
+    var area_ptr: ?*fsops.Area = null;
+    if (p.removes.len > 0) {
+        area_ptr = ensureArea(s) catch |err| return try std.fmt.allocPrint(
+            s.arena,
+            "nao foi possivel abrir a area de sessao ({s})",
+            .{@errorName(err)},
+        );
+    }
+
+    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr);
+    if (outcome.failure) |failure| {
+        return try std.fmt.allocPrint(s.arena, "falha em {s}: {s} ({s}); rollback {s}", .{
+            failure.phase,
+            failure.detail,
+            @errorName(failure.err),
+            if (outcome.rollback_errors.len == 0) "completo" else "incompleto",
+        });
+    }
+
+    if (!outcome.applied.isEmpty()) {
+        s.undo = .{
+            .base = s.base,
+            .area = if (area_ptr) |a| a.name else null,
+            .applied = outcome.applied,
+        };
+    }
+    s.notice = try appliedNotice(s, outcome.applied);
+    return null;
 }
 
 /// Para subir (`up`): a entrada com o basename do diretorio atual e onde o
