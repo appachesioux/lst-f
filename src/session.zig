@@ -323,11 +323,15 @@ pub const State = struct {
             \\  if l:line !~# '^/\d\+\s\+'
             \\    return ''
             \\  endif
+            \\  let l:start = s:lstf_name_start(l:line)
+            \\  if l:start > 0
+            \\    return strpart(l:line, l:start)
+            \\  endif
             \\  let l:body = substitute(l:line, '^/\d\+\s\+', '', '')
             \\  let l:sep = strridx(l:body, ' │ ')
             \\  if l:sep >= 0
             \\    let l:res = strpart(l:body, l:sep + 5)
-            \\    return substitute(l:res, '^\s*', '', '')
+            \\    return substitute(l:res, '^\s*\S*\s*', '', '')
             \\  endif
             \\  let l:sep2 = stridx(l:body, '  │  ')
             \\  if l:sep2 >= 0
@@ -617,7 +621,7 @@ pub const State = struct {
             \\
             \\" Comeco do nome na linha: depois do ID e da grade de colunas.
             \\function! s:lstf_name_start(line) abort
-            \\  return matchend(a:line, '^/\d\+\s\+\%(.*│  \)\?')
+            \\  return matchend(a:line, '^\/\d\+\s\+\%(.*│\s*\S*\s\+\)\?')
             \\endfunction
             \\
             \\" So o nome e editavel. As colunas tecnicas ja eram ignoradas pelo
@@ -626,7 +630,7 @@ pub const State = struct {
             \\function! s:lstf_keep_cursor_in_name() abort
             \\  let l:line = getline('.')
             \\  " Linha nova (sem ID) e editavel inteira.
-            \\  let l:id = matchstr(l:line, '^/\d\+')
+            \\  let l:id = matchstr(l:line, '^\/\d\+')
             \\  if empty(l:id) || !has_key(get(b:, 'lstf_prefix', {}), l:id) | return | endif
             \\  let l:start = s:lstf_name_start(l:line)
             \\  if l:start <= 0 | return | endif
@@ -636,12 +640,16 @@ pub const State = struct {
             \\function! s:lstf_restore_columns() abort
             \\  if !exists('b:lstf_prefix') | return | endif
             \\  let l:line = getline('.')
-            \\  let l:id = matchstr(l:line, '^/\d\+')
+            \\  let l:id = matchstr(l:line, '^\/\d\+')
             \\  if empty(l:id) || !has_key(b:lstf_prefix, l:id) | return | endif
             \\  let l:want = b:lstf_prefix[l:id]
             \\  if strpart(l:line, 0, len(l:want)) ==# l:want | return | endif
-            \\  let l:name = matchstr(l:line, '.*│\s*\zs.*')
-            \\  if empty(l:name) | let l:name = matchstr(l:line, '^/\d\+\s\+\zs.*') | endif
+            \\  let l:start = s:lstf_name_start(l:line)
+            \\  let l:name = l:start > 0 ? strpart(l:line, l:start) : ''
+            \\  if empty(l:name)
+            \\    let l:name = matchstr(l:line, '.*│\s*\S*\s*\zs.*')
+            \\  endif
+            \\  if empty(l:name) | let l:name = matchstr(l:line, '^\/\d\+\s\+\zs.*') | endif
             \\  let l:view = winsaveview()
             \\  silent! undojoin
             \\  call setline(line('.'), l:want . l:name)
@@ -1203,10 +1211,10 @@ pub const State = struct {
             \\  " grupo certo. LstfExec vem depois de LstfFile de proposito: entre
             \\  " itens que comecam na mesma coluna, o Vim da prioridade ao definido
             \\  " por ultimo.
-            \\  syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4,5} │  .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3,4} │  .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4,5} │  .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4,5} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{2,3} │ .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
             \\endfunction
             \\call s:lstf_configure_buffer()
             \\augroup lstf_buffer

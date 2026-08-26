@@ -364,7 +364,7 @@ pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
 /// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
 /// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
 /// Alinham byte a byte com `writeTableDetails`.
-pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ SAVED            │ IC  │ NAME";
+pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ SAVED            │ NAME";
 
 /// Cabe `root`, `nobody`, `www-data`. Nome mais longo e truncado: alargar a
 /// coluna sai do espaco do nome, que e o que se edita.
@@ -384,7 +384,6 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try writeTime(w, e.mtime_s);
     try w.writeAll(" │ ");
     try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink));
-    try w.writeAll("  │");
 }
 
 /// Cabecalho de colunas, no estilo de lista do Dolphin ou do Nautilus.
