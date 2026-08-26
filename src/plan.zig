@@ -743,9 +743,14 @@ fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
 }
 
 fn extractPath(body: []const u8) []const u8 {
-    // Formato com grade de colunas: `d │ ... │  caminho`. Os deslocamentos sao
-    // em bytes (`│` ocupa tres) e valem para a grade de `writeTableDetails`; o
-    // round-trip com colunas testa exatamente isto.
+    // Formato com grade de colunas e icone: `d │ ... │  │  caminho`
+    if (body.len >= 75 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[71..75], " │")) {
+        const rest = body[75..];
+        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+        return rest;
+    }
+    // Formato com grade de colunas antiga: `d │ ... │  caminho`
     if (body.len >= 67 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[63..67], " │")) {
         const rest = body[67..];
         if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];

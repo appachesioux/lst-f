@@ -1200,10 +1200,10 @@ pub const State = struct {
             \\  " grupo certo. LstfExec vem depois de LstfFile de proposito: entre
             \\  " itens que comecam na mesma coluna, o Vim da prioridade ao definido
             \\  " por ultimo.
-            \\  syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3} │  .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{4,5} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{3,4} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{4,5} │  .*$/ contains=LstfInternalId,LstfSep
+            \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{4,5} │  .*$/ contains=LstfInternalId,LstfSep
             \\endfunction
             \\call s:lstf_configure_buffer()
             \\augroup lstf_buffer
