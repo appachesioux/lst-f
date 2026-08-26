@@ -743,7 +743,23 @@ fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
 }
 
 fn extractPath(body: []const u8) []const u8 {
-    // Formato com grade de colunas e icone (com espaco extra): `d │ ... │   │  caminho`
+    // Formato com grade de colunas (5 colunas) e icone antes do nome: `d │ ... │ 2026-08-25 23:53 │   caminho`
+    if (body.len >= 58 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[55..58], " │ ")) {
+        const after_sep = body[58..];
+        if (after_sep.len > 0 and after_sep[0] >= 0x80) {
+            const cp_len = std.unicode.utf8ByteSequenceLength(after_sep[0]) catch 0;
+            if (cp_len > 0 and after_sep.len >= cp_len) {
+                const rest = after_sep[cp_len..];
+                if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+                if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+                return rest;
+            }
+        }
+        if (std.mem.startsWith(u8, after_sep, "  ")) return after_sep[2..];
+        if (std.mem.startsWith(u8, after_sep, " ")) return after_sep[1..];
+        return after_sep;
+    }
+    // Formato com grade de colunas e icone com divisor extra: `d │ ... │   │  caminho`
     if (body.len >= 76 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[71..76], "  │")) {
         const rest = body[76..];
         if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
@@ -766,9 +782,19 @@ fn extractPath(body: []const u8) []const u8 {
     }
     // Formato com divisor `  │  ` ou ` │ `
     if (std.mem.lastIndexOf(u8, body, " │ ")) |sep| {
-        const rest = body[sep + " │ ".len ..];
-        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
-        return rest;
+        const after_sep = body[sep + " │ ".len ..];
+        if (after_sep.len > 0 and after_sep[0] >= 0x80) {
+            const cp_len = std.unicode.utf8ByteSequenceLength(after_sep[0]) catch 0;
+            if (cp_len > 0 and after_sep.len >= cp_len) {
+                const rest = after_sep[cp_len..];
+                if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+                if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+                return rest;
+            }
+        }
+        if (std.mem.startsWith(u8, after_sep, "  ")) return after_sep[2..];
+        if (std.mem.startsWith(u8, after_sep, " ")) return after_sep[1..];
+        return after_sep;
     }
     if (std.mem.indexOf(u8, body, "  │  ")) |sep| {
         return body[sep + "  │  ".len ..];
@@ -1562,6 +1588,21 @@ test "round-trip do buffer com colunas preserva somente o nome editavel" {
 
     const renamed = (try parseBuffer(f.a(), "/0007  - │ rw-r--r-- │ root     │      1.1K │ 2026-08-21 21:14 │  depois.txt\n", &.{})).ok;
     try testing.expectEqualStrings("depois.txt", renamed.edits[0].path);
+
+    const with_icon = [_]Original{.{
+        .id = 8,
+        .path = "icone.zig",
+        .kind = .file,
+        .display = "- │ rw-r--r-- │ root     │      1.1K │ 2026-08-21 21:14 │ ",
+    }};
+    var icon_buf: [1024]u8 = undefined;
+    var icon_w: std.Io.Writer = .fixed(&icon_buf);
+    try writeBuffer(f.a(), &icon_w, .{}, &with_icon);
+    const icon_doc = (try parseBuffer(f.a(), icon_w.buffered(), &.{})).ok;
+    try testing.expectEqualStrings("icone.zig", icon_doc.edits[0].path);
+
+    const icon_renamed = (try parseBuffer(f.a(), "/0008  - │ rw-r--r-- │ root     │      1.1K │ 2026-08-21 21:14 │   depois.zig\n", &.{})).ok;
+    try testing.expectEqualStrings("depois.zig", icon_renamed.edits[0].path);
 }
 
 test "buffer sem linhas iniciadas por '#' mantem cabecalho separado do conteudo" {
