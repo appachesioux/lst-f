@@ -826,13 +826,13 @@ pub const State = struct {
             \\" byte: e conteudo de buffer, nao expressao de statusline.
             \\function! s:lstf_frame_parts(width) abort
             \\  let l:path = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
-            \\  " 8 colunas sao a moldura fixa: '╭─ ', ' ', ' ' e ' ─╮'.
-            \\  let l:avail = a:width - 8 - strdisplaywidth(s:lstf_identity)
+            \\  " 10 colunas sao a moldura fixa: '╭─  ', ' ', ' ' e ' ─╮'.
+            \\  let l:avail = a:width - 10 - strdisplaywidth(s:lstf_identity)
             \\  if strdisplaywidth(l:path) > l:avail
             \\    let l:path = l:avail > 1 ? '…' . strcharpart(l:path, strchars(l:path) - l:avail + 1) : ''
             \\  endif
             \\  let l:fill = max([0, l:avail - strdisplaywidth(l:path)])
-            \\  return ['╭─ ', l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
+            \\  return ['╭─  ', l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
             \\endfunction
             \\
             \\function! s:lstf_draw_frame() abort
@@ -887,6 +887,7 @@ pub const State = struct {
             \\  let s:lstf_header_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
+            \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal statusline=%!LstfRuleBar()
             \\  augroup lstf_header
             \\    autocmd! * <buffer>
@@ -1115,6 +1116,7 @@ pub const State = struct {
             \\  let t:lstf_dest_win = win_getid()
             \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
             \\  setlocal nonumber norelativenumber cursorline
+            \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  nnoremap <buffer> <silent> <CR> :call <SID>lstf_dest_open()<CR>
             \\  nnoremap <buffer> <silent> - :call <SID>lstf_dest_up()<CR>
             \\  nnoremap <buffer> <silent> . :call <SID>lstf_dest_toggle_hidden()<CR>
@@ -1188,6 +1190,7 @@ pub const State = struct {
             \\    execute "setlocal fillchars+=eob:\\ "
             \\  endif
             \\  setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
+            \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal conceallevel=2 concealcursor=nvic
             \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink
             \\  syntax match LstfInternalId /^\/\d\+\s\+/ conceal
