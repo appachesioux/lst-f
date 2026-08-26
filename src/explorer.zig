@@ -45,24 +45,6 @@ pub const Options = struct {
     show_hidden: bool = false,
 };
 
-/// Larguras das colunas de exibicao. Ficam aqui, junto de quem escreve as
-/// linhas, para que o cabecalho de colunas nunca saia do lugar.
-pub const columns = struct {
-    pub const kind = 1;
-    pub const mode = 9;
-    pub const size = 9;
-    pub const time = 16;
-    pub const gap = "  ";
-};
-
-const ansi = struct {
-    const reset = "\x1b[0m";
-    const dim = "\x1b[2m";
-    const dir = "\x1b[1;34m";
-    const link = "\x1b[36m";
-    const warn = "\x1b[33m";
-};
-
 /// Resolve uid -> nome lendo `/etc/passwd` uma vez. Sem libc: o alvo de
 /// compatibilidade e o binario estatico, entao nada de NSS -- um usuario que so
 /// existe em LDAP ou SSSD aparece pelo numero, como no `xpl-f`.
@@ -102,7 +84,7 @@ pub const Users = struct {
 };
 
 /// `nome:senha:uid:...` por linha. Separado da leitura para ser testavel.
-fn parsePasswd(
+pub fn parsePasswd(
     arena: Allocator,
     content: []const u8,
     out: *std.AutoHashMapUnmanaged(u32, []const u8),
@@ -279,7 +261,7 @@ fn readDir(
     return out;
 }
 
-fn sortEntries(entries: []Entry) void {
+pub fn sortEntries(entries: []Entry) void {
     std.mem.sort(Entry, entries, {}, lessThan);
 }
 
@@ -316,51 +298,6 @@ fn deviceOf(dir_fd: std.posix.fd_t, sub_path: [:0]const u8) ?u64 {
 // Apresentacao
 // ---------------------------------------------------------------------------
 
-/// Linha de exibicao do fzf. Bytes de controle viram `?` -- o campo e so
-/// visual, o caminho real vem do indice.
-pub fn writeDisplay(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!void {
-    try writeDetails(w, e, options);
-    if (options.icons) {
-        try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink));
-        try w.writeAll(" ");
-    }
-    if (!e.utf8_ok) {
-        if (options.color) try w.writeAll(ansi.warn);
-        try w.writeAll("!");
-    }
-    if (options.color and e.utf8_ok) {
-        if (e.symlink) {
-            try w.writeAll(ansi.link);
-        } else if (e.kind == .dir) {
-            try w.writeAll(ansi.dir);
-        }
-    }
-    try writeSafe(w, e.path);
-    if (e.kind == .dir) try w.writeByte('/');
-    if (e.symlink) try w.writeAll(" @");
-    if (options.color) try w.writeAll(ansi.reset);
-}
-
-/// Colunas que precedem o nome. Tambem sao usadas no buffer do editor, onde o
-/// nome fica depois de um separador para continuar sendo o unico campo editavel.
-pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!void {
-    if (e.parent) {
-        if (options.color) try w.writeAll(ansi.dim);
-        try w.writeAll("d  ---------          -  ----------------  ");
-        if (options.color) try w.writeAll(ansi.reset);
-        return;
-    }
-    if (options.color) try w.writeAll(ansi.dim);
-    try w.writeByte(kindChar(e));
-    try w.writeAll("  ");
-    try writeMode(w, e.mode);
-    try w.writeAll("  ");
-    try writeSize(w, e);
-    try w.writeAll("  ");
-    try writeTime(w, e.mtime_s);
-    try w.writeAll("  ");
-}
-
 /// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
 /// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
 /// Alinham byte a byte com `writeTableDetails`.
@@ -386,32 +323,17 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink));
 }
 
-/// Cabecalho de colunas, no estilo de lista do Dolphin ou do Nautilus.
-/// Alinha byte a byte com `writeDisplay`, incluindo o deslocamento dos icones.
-pub fn writeColumnTitles(w: *Io.Writer, options: Options) Io.Writer.Error!void {
-    try writePadded(w, "T", columns.kind);
-    try w.writeAll(columns.gap);
-    try writePadded(w, "PERMS", columns.mode);
-    try w.writeAll(columns.gap);
-    try writeRightPadded(w, "SIZE", columns.size);
-    try w.writeAll(columns.gap);
-    try writePadded(w, "SAVED", columns.time);
-    try w.writeAll(columns.gap);
-    if (options.icons) try w.writeAll("   ");
-    try w.writeAll("NAME");
-}
-
-fn writePadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
+pub fn writePadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
     try w.writeAll(text[0..@min(text.len, width)]);
     try w.splatByteAll(' ', width -| text.len);
 }
 
-fn writeRightPadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
+pub fn writeRightPadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
     try w.splatByteAll(' ', width -| text.len);
     try w.writeAll(text[0..@min(text.len, width)]);
 }
 
-fn kindChar(e: Entry) u8 {
+pub fn kindChar(e: Entry) u8 {
     if (e.symlink) return 'l';
     return switch (e.kind) {
         .dir => 'd',
@@ -420,7 +342,7 @@ fn kindChar(e: Entry) u8 {
     };
 }
 
-fn writeMode(w: *Io.Writer, mode: u16) Io.Writer.Error!void {
+pub fn writeMode(w: *Io.Writer, mode: u16) Io.Writer.Error!void {
     const bits = "rwxrwxrwx";
     var i: u4 = 0;
     while (i < 9) : (i += 1) {
@@ -429,7 +351,7 @@ fn writeMode(w: *Io.Writer, mode: u16) Io.Writer.Error!void {
     }
 }
 
-fn writeSize(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
+pub fn writeSize(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     if (e.kind == .dir) {
         try w.writeAll("        -");
         return;
@@ -451,7 +373,7 @@ fn writeSize(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
 
 pub var tz_offset_seconds: i32 = 0;
 
-fn writeTime(w: *Io.Writer, seconds: i64) Io.Writer.Error!void {
+pub fn writeTime(w: *Io.Writer, seconds: i64) Io.Writer.Error!void {
     if (seconds <= 0) {
         try w.writeAll("       -        ");
         return;
@@ -470,181 +392,12 @@ fn writeTime(w: *Io.Writer, seconds: i64) Io.Writer.Error!void {
     });
 }
 
-fn writeSafe(w: *Io.Writer, s: []const u8) Io.Writer.Error!void {
-    for (s) |c| {
-        try w.writeByte(if (c < 0x20 or c == 0x7f) '?' else c);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Testes
-// ---------------------------------------------------------------------------
-
-const testing = std.testing;
-
-test "ordenacao: diretorios antes, depois caixa-insensivel" {
-    var entries = [_]Entry{
-        .{ .path = "zebra.txt", .kind = .file, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
-        .{ .path = "Beta", .kind = .dir, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
-        .{ .path = "alfa.txt", .kind = .file, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
-        .{ .path = "arq", .kind = .dir, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
-    };
-    sortEntries(&entries);
-    try testing.expectEqualStrings("arq", entries[0].path);
-    try testing.expectEqualStrings("Beta", entries[1].path);
-    try testing.expectEqualStrings("alfa.txt", entries[2].path);
-    try testing.expectEqualStrings("zebra.txt", entries[3].path);
-}
-
 /// Colunas ocupadas no terminal, nao bytes: o icone e um codepoint largo.
-fn displayColumns(text: []const u8) usize {
+pub fn displayColumns(text: []const u8) usize {
     var total: usize = 0;
     var it = (std.unicode.Utf8View.init(text) catch return text.len).iterator();
     while (it.nextCodepoint()) |cp| total += if (cp >= 0x1100) 2 else 1;
     return total;
-}
-
-test "cabecalho de colunas alinha com a linha de dados" {
-    const entry: Entry = .{
-        .path = "arquivo.txt",
-        .kind = .file,
-        .symlink = false,
-        .size = 2048,
-        .mtime_s = 1_700_000_000,
-        .mode = 0o644,
-        .utf8_ok = true,
-    };
-    for ([_]Options{ .{}, .{ .icons = true } }) |options| {
-        var title_buf: [256]u8 = undefined;
-        var title: Io.Writer = .fixed(&title_buf);
-        try writeColumnTitles(&title, options);
-
-        var row_buf: [256]u8 = undefined;
-        var row: Io.Writer = .fixed(&row_buf);
-        try writeDisplay(&row, entry, options);
-
-        const title_text = title.buffered();
-        const row_text = row.buffered();
-        const name_col = displayColumns(title_text[0..std.mem.indexOf(u8, title_text, "NAME").?]);
-        const value_col = displayColumns(row_text[0..std.mem.indexOf(u8, row_text, "arquivo.txt").?]);
-        try testing.expectEqual(name_col, value_col);
-    }
-}
-
-test "display neutraliza bytes de controle e marca nao-UTF-8" {
-    var buf: [256]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    try writeDisplay(&w, .{
-        .path = "com\tTAB",
-        .kind = .file,
-        .symlink = false,
-        .size = 2048,
-        .mtime_s = 0,
-        .mode = 0o644,
-        .utf8_ok = false,
-    }, .{});
-    const out = w.buffered();
-    try testing.expect(std.mem.indexOfScalar(u8, out, '\t') == null);
-    try testing.expect(std.mem.indexOf(u8, out, "com?TAB") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "!com") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "2.0K") != null);
-    try testing.expect(std.mem.indexOf(u8, out, "rw-r--r--") != null);
-}
-
-test "show_hidden filtra ou exibe arquivos ocultos" {
-    var threaded: Io.Threaded = .init(testing.allocator, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
-
-    var tmp = testing.tmpDir(.{ .iterate = true });
-    defer tmp.cleanup();
-
-    try tmp.dir.writeFile(io, .{ .sub_path = "visivel.txt", .data = "" });
-    try tmp.dir.writeFile(io, .{ .sub_path = ".oculto.txt", .data = "" });
-    try tmp.dir.createDir(io, ".oculto_dir", .default_dir);
-    try tmp.dir.createDir(io, "visivel_dir", .default_dir);
-
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    const a = arena_state.allocator();
-    const tmp_path = try tmp.dir.realPathFileAlloc(io, ".", a);
-
-    const Collector = struct {
-        paths: std.ArrayList([]const u8) = .empty,
-        allocator: Allocator,
-
-        fn emit(ctx: *anyopaque, _: u32, e: Entry) anyerror!void {
-            const c: *@This() = @ptrCast(@alignCast(ctx));
-            if (e.parent) return;
-            try c.paths.append(c.allocator, e.path);
-        }
-    };
-
-    // 1. Oculto desligado (padrao)
-    var col_hidden_off: Collector = .{ .allocator = a };
-    try enumerate(a, io, tmp_path, .{ .show_hidden = false }, .{ .ctx = &col_hidden_off, .func = Collector.emit });
-    try testing.expectEqual(@as(usize, 2), col_hidden_off.paths.items.len);
-    try testing.expectEqualStrings("visivel_dir", col_hidden_off.paths.items[0]);
-    try testing.expectEqualStrings("visivel.txt", col_hidden_off.paths.items[1]);
-
-    // 2. Oculto ligado
-    var col_hidden_on: Collector = .{ .allocator = a };
-    try enumerate(a, io, tmp_path, .{ .show_hidden = true }, .{ .ctx = &col_hidden_on, .func = Collector.emit });
-    try testing.expectEqual(@as(usize, 4), col_hidden_on.paths.items.len);
-}
-
-test "titulos da barra de topo alinham com a grade do buffer" {
-    // Os titulos sairam do buffer e vao para a barra de topo do editor, longe
-    // da linha de dados: uma coluna que mude de largura nao seria mais obvia
-    // ao olhar o arquivo.
-    const entry: Entry = .{
-        .path = "arquivo.txt",
-        .kind = .file,
-        .symlink = false,
-        .size = 2048,
-        .mtime_s = 1_700_000_000,
-        .mode = 0o644,
-        .utf8_ok = true,
-    };
-    var row_buf: [256]u8 = undefined;
-    var row: Io.Writer = .fixed(&row_buf);
-    try writeTableDetails(&row, entry);
-
-    // O invariante e a grade: os divisores tem que cair na mesma coluna. O
-    // rotulo NAME fica um passo a esquerda do nome, como sempre esteve.
-    const row_text = row.buffered();
-    const title_bar = std.mem.lastIndexOf(u8, table_titles, "│").?;
-    const row_bar = std.mem.lastIndexOf(u8, row_text, "│").?;
-    try testing.expectEqual(
-        displayColumns(table_titles[0..title_bar]),
-        displayColumns(row_text[0..row_bar]),
-    );
-}
-
-test "passwd resolve uid e cai no numero quando nao acha" {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var map: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
-    const passwd =
-        \\root:x:0:0:root:/root:/bin/bash
-        \\spock:x:1000:1000:Spock:/home/spock:/bin/zsh
-        \\linha invalida sem campos
-        \\daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin
-        \\
-    ;
-    try parsePasswd(arena, passwd, &map);
-    try testing.expectEqualStrings("root", map.get(0).?);
-    try testing.expectEqualStrings("spock", map.get(1000).?);
-    try testing.expectEqualStrings("daemon", map.get(1).?);
-    try testing.expectEqual(@as(?[]const u8, null), map.get(4242));
-
-    var users: Users = .{ .arena = arena, .by_uid = map, .loaded = true, .self_uid = 1000 };
-    // O seu proprio uid nao gera texto: a coluna fica vazia.
-    try testing.expectEqualStrings("", users.nameFor(undefined, 1000));
-    try testing.expectEqualStrings("root", users.nameFor(undefined, 0));
-    try testing.expectEqualStrings("4242", users.nameFor(undefined, 4242));
 }
 
 pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool) []const u8 {
@@ -676,3 +429,4 @@ pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool) []const u8 {
 
     return "\xef\x85\x9b"; //  generic
 }
+

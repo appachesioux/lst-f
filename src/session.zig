@@ -50,60 +50,6 @@ pub const History = struct {
     }
 };
 
-const testing = std.testing;
-
-test "historico anda para tras e para frente" {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var h: History = .{};
-    try h.push(arena, "/a");
-    try h.push(arena, "/b");
-    try h.push(arena, "/c");
-
-    try testing.expectEqualStrings("/b", h.back().?);
-    try testing.expectEqualStrings("/a", h.back().?);
-    try testing.expectEqual(@as(?[]const u8, null), h.back());
-    try testing.expectEqualStrings("/b", h.forward().?);
-    try testing.expectEqualStrings("/c", h.forward().?);
-    try testing.expectEqual(@as(?[]const u8, null), h.forward());
-}
-
-test "entrar em diretorio novo descarta o caminho a frente" {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var h: History = .{};
-    try h.push(arena, "/a");
-    try h.push(arena, "/b");
-    try h.push(arena, "/c");
-    _ = h.back();
-    _ = h.back();
-    try h.push(arena, "/d");
-
-    try testing.expectEqual(@as(usize, 2), h.items.items.len);
-    try testing.expectEqual(@as(?[]const u8, null), h.forward());
-    try testing.expectEqualStrings("/a", h.back().?);
-}
-
-test "ficar no mesmo diretorio nao empilha" {
-    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
-    defer arena_state.deinit();
-    const arena = arena_state.allocator();
-
-    var h: History = .{};
-    try h.push(arena, "/a");
-    try h.push(arena, "/a");
-    try h.push(arena, "/b");
-    _ = h.back();
-    // Um `:refresh` no meio do historico nao pode virar uma ida nova.
-    try h.push(arena, "/a");
-    try testing.expectEqual(@as(usize, 2), h.items.items.len);
-    try testing.expectEqualStrings("/b", h.forward().?);
-}
-
 pub const State = struct {
     path: []const u8,
     dir: Io.Dir,
@@ -834,13 +780,12 @@ pub const State = struct {
             \\" byte: e conteudo de buffer, nao expressao de statusline.
             \\function! s:lstf_frame_parts(width) abort
             \\  let l:path = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
-            \\  " 10 colunas sao a moldura fixa: '╭─  ', ' ', ' ' e ' ─╮'.
             \\  let l:avail = a:width - 10 - strdisplaywidth(s:lstf_identity)
             \\  if strdisplaywidth(l:path) > l:avail
             \\    let l:path = l:avail > 1 ? '…' . strcharpart(l:path, strchars(l:path) - l:avail + 1) : ''
             \\  endif
             \\  let l:fill = max([0, l:avail - strdisplaywidth(l:path)])
-            \\  return ['╭─  ', l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
+            \\  return ['╭─ ', ' ', l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
             \\endfunction
             \\
             \\function! s:lstf_draw_frame() abort
@@ -851,15 +796,8 @@ pub const State = struct {
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
             \\  let l:trow = s:lstf_titles_row(s:lstf_frame_width)
             \\  setlocal modifiable
-            \\  " Linha 1 e a moldura; linha 2 sao os titulos, que a regra na
-            \\  " statusline desta janela fecha por baixo com `┼` sob cada divisor,
-            \\  " ligando o `│` dos titulos ao `│` das entradas da lista.
             \\  call setline(1, [join(l:parts, ''), l:trow[0]])
             \\  setlocal nomodifiable nomodified
-            \\  " A linha da moldura inteira e LstfFrame; caminho e versao vem por
-            \\  " cima, com prioridade maior. A faixa de titulos leva fundo na
-            \\  " linha toda e divisores por cima. Sem sintaxe: o texto e nosso e
-            \\  " as colunas de byte ja sao conhecidas aqui.
             \\  call clearmatches()
             \\  call matchaddpos('LstfFrame', [[1]], -5)
             \\  if !empty(l:trow[0])
@@ -868,11 +806,13 @@ pub const State = struct {
             \\      call matchaddpos('LstfTitlesSep', [[2, l:sp[0], l:sp[1]]], -4)
             \\    endfor
             \\  endif
+            \\  let l:icon_at = len(l:parts[0]) + 1
+            \\  call matchaddpos('LstfDir', [[1, l:icon_at, len(l:parts[1])]], 10)
             \\  let l:spots = []
-            \\  let l:at = len(l:parts[0]) + 1
-            \\  if len(l:parts[1]) > 0 | call add(l:spots, [1, l:at, len(l:parts[1])]) | endif
-            \\  let l:at += len(l:parts[1]) + len(l:parts[2])
-            \\  if len(l:parts[3]) > 0 | call add(l:spots, [1, l:at, len(l:parts[3])]) | endif
+            \\  let l:at = l:icon_at + len(l:parts[1])
+            \\  if len(l:parts[2]) > 0 | call add(l:spots, [1, l:at, len(l:parts[2])]) | endif
+            \\  let l:at += len(l:parts[2]) + len(l:parts[3])
+            \\  if len(l:parts[4]) > 0 | call add(l:spots, [1, l:at, len(l:parts[4])]) | endif
             \\  if !empty(l:spots) | call matchaddpos('LstfPath', l:spots, 10) | endif
             \\  noautocmd call win_gotoid(l:cur)
             \\endfunction

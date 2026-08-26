@@ -106,7 +106,7 @@ pub fn isBinary(data: []const u8) bool {
     return suspicious * 32 > head.len;
 }
 
-fn hexdump(w: *Io.Writer, data: []const u8) Io.Writer.Error!void {
+pub fn hexdump(w: *Io.Writer, data: []const u8) Io.Writer.Error!void {
     var offset: usize = 0;
     while (offset < data.len) : (offset += 16) {
         const row = data[offset..@min(offset + 16, data.len)];
@@ -121,23 +121,3 @@ fn hexdump(w: *Io.Writer, data: []const u8) Io.Writer.Error!void {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Testes
-// ---------------------------------------------------------------------------
-
-const testing = std.testing;
-
-test "deteccao de binario" {
-    try testing.expect(isBinary("texto\x00com nul"));
-    try testing.expect(!isBinary("texto normal\ncom quebras\n"));
-    try testing.expect(!isBinary("acentuado: cachaca, coracao\n"));
-    try testing.expect(isBinary(&[_]u8{ 0x7f, 'E', 'L', 'F', 2, 1, 1, 0, 0, 0, 0, 0 }));
-}
-
-test "hexdump alinhado" {
-    var buf: [512]u8 = undefined;
-    var w: Io.Writer = .fixed(&buf);
-    try hexdump(&w, "abc");
-    try testing.expect(std.mem.startsWith(u8, w.buffered(), "00000000  61 62 63 "));
-    try testing.expect(std.mem.endsWith(u8, w.buffered(), "|abc|\n"));
-}

@@ -10,6 +10,7 @@ const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const session = @import("session.zig");
 const editor_mod = @import("editor.zig");
+const explorer = @import("explorer.zig");
 
 /// Piso absoluto, definido por `--preview`/`--preview-window` (ago/2017).
 pub const min_version: Version = .{ .major = 0, .minor = 17 };
@@ -218,20 +219,88 @@ pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
 }
 
 // ---------------------------------------------------------------------------
-// Testes
+// Apresentacao do fzf
 // ---------------------------------------------------------------------------
 
-const testing = std.testing;
+/// Larguras das colunas de exibicao no fzf.
+pub const columns = struct {
+    pub const kind = 1;
+    pub const mode = 9;
+    pub const size = 9;
+    pub const time = 16;
+    pub const gap = "  ";
+};
 
-test "parse da versao do fzf" {
-    try testing.expectEqual(Version{ .major = 0, .minor = 74 }, parseVersion("0.74.3 (15f64c49)").?);
-    try testing.expectEqual(Version{ .major = 0, .minor = 17 }, parseVersion("0.17.5\n").?);
-    try testing.expectEqual(Version{ .major = 0, .minor = 20 }, parseVersion("0.20.0").?);
-    try testing.expect(parseVersion("sem versao") == null);
+const ansi = struct {
+    const reset = "\x1b[0m";
+    const dim = "\x1b[2m";
+    const dir = "\x1b[1;34m";
+    const link = "\x1b[36m";
+    const warn = "\x1b[33m";
+};
+
+/// Linha de exibicao do fzf. Bytes de controle viram `?` -- o campo e so
+/// visual, o caminho real vem do indice.
+pub fn writeDisplay(w: *Io.Writer, e: explorer.Entry, options: explorer.Options) Io.Writer.Error!void {
+    try writeDetails(w, e, options);
+    if (options.icons) {
+        try w.writeAll(explorer.getIcon(e.path, e.kind == .dir, e.symlink));
+        try w.writeAll(" ");
+    }
+    if (!e.utf8_ok) {
+        if (options.color) try w.writeAll(ansi.warn);
+        try w.writeAll("!");
+    }
+    if (options.color and e.utf8_ok) {
+        if (e.symlink) {
+            try w.writeAll(ansi.link);
+        } else if (e.kind == .dir) {
+            try w.writeAll(ansi.dir);
+        }
+    }
+    try writeSafe(w, e.path);
+    if (e.kind == .dir) try w.writeByte('/');
+    if (e.symlink) try w.writeAll(" @");
+    if (options.color) try w.writeAll(ansi.reset);
 }
 
-test "piso de versao" {
-    try testing.expect((Version{ .major = 0, .minor = 17 }).atLeast(min_version));
-    try testing.expect(!(Version{ .major = 0, .minor = 15 }).atLeast(min_version));
-    try testing.expect((Version{ .major = 1, .minor = 0 }).atLeast(min_version));
+/// Colunas que precedem o nome na exibicao do fzf.
+fn writeDetails(w: *Io.Writer, e: explorer.Entry, options: explorer.Options) Io.Writer.Error!void {
+    if (e.parent) {
+        if (options.color) try w.writeAll(ansi.dim);
+        try w.writeAll("d  ---------          -  ----------------  ");
+        if (options.color) try w.writeAll(ansi.reset);
+        return;
+    }
+    if (options.color) try w.writeAll(ansi.dim);
+    try w.writeByte(explorer.kindChar(e));
+    try w.writeAll("  ");
+    try explorer.writeMode(w, e.mode);
+    try w.writeAll("  ");
+    try explorer.writeSize(w, e);
+    try w.writeAll("  ");
+    try explorer.writeTime(w, e.mtime_s);
+    try w.writeAll("  ");
 }
+
+/// Cabecalho de colunas do fzf, no estilo de lista do Dolphin ou do Nautilus.
+/// Alinha byte a byte com `writeDisplay`, incluindo o deslocamento dos icones.
+pub fn writeColumnTitles(w: *Io.Writer, options: explorer.Options) Io.Writer.Error!void {
+    try explorer.writePadded(w, "T", columns.kind);
+    try w.writeAll(columns.gap);
+    try explorer.writePadded(w, "PERMS", columns.mode);
+    try w.writeAll(columns.gap);
+    try explorer.writeRightPadded(w, "SIZE", columns.size);
+    try w.writeAll(columns.gap);
+    try explorer.writePadded(w, "SAVED", columns.time);
+    try w.writeAll(columns.gap);
+    if (options.icons) try w.writeAll("   ");
+    try w.writeAll("NAME");
+}
+
+fn writeSafe(w: *Io.Writer, s: []const u8) Io.Writer.Error!void {
+    for (s) |c| {
+        try w.writeByte(if (c < 0x20 or c == 0x7f) '?' else c);
+    }
+}
+
