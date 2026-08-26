@@ -743,9 +743,9 @@ fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
 }
 
 fn extractPath(body: []const u8) []const u8 {
-    // Formato com grade de colunas e icone: `d │ ... │  │  caminho`
-    if (body.len >= 75 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[71..75], " │")) {
-        const rest = body[75..];
+    // Formato com grade de colunas e icone (com espaco extra): `d │ ... │   │  caminho`
+    if (body.len >= 76 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[71..76], "  │")) {
+        const rest = body[76..];
         if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
         if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
         return rest;
