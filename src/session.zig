@@ -247,6 +247,7 @@ pub const State = struct {
             \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
             \\    \ '    -              Sobe para o diretorio-pai',
+            \\    \ '    r ou Ctrl+R    Recarrega (refresh) a lista atual',
             \\    \ '    < e >          Voltam e avancam nos diretorios visitados',
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
@@ -956,6 +957,13 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
+            \\function! LstfRefresh() abort
+            \\  silent! edit!
+            \\  silent! write
+            \\  let s:lstf_notice = 'Lista atualizada'
+            \\  redrawstatus
+            \\endfunction
+            \\
             \\function! s:lstf_format_size(bytes) abort
             \\  if a:bytes < 0
             \\    return '-'
@@ -1112,6 +1120,7 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> . :call <SID>lstf_dest_toggle_hidden()<CR>
             \\  nnoremap <buffer> <silent> Y :call <SID>lstf_dest_yank()<CR>
             \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
+            \\  nnoremap <buffer> <silent> r :call <SID>lstf_render_dest(s:lstf_dest_dir)<CR>
             \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
             \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
             \\  " `q` deve encerrar o lst-f independentemente do painel em foco.
@@ -1299,6 +1308,8 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> > :call LstfForward()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
             \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+            \\nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
+            \\nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
             \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
             \\nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
             \\nnoremap <buffer> <silent> q :call LstfQuit()<CR>

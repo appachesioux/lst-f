@@ -270,7 +270,7 @@ fn readDir(
             },
             .symlink = fs_kind == .sym_link,
             .size = if (st) |s| s.size else 0,
-            .mtime_s = if (st) |s| s.mtime.toSeconds() else 0,
+            .mtime_s = if (st) |s| s.ctime.toSeconds() else 0,
             .mode = if (st) |s| @truncate(@intFromEnum(s.permissions)) else 0,
             .utf8_ok = std.unicode.utf8ValidateSlice(raw_entry.name),
             .owner = owner,
@@ -363,7 +363,7 @@ pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
 /// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
 /// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
 /// Alinham byte a byte com `writeTableDetails`.
-pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME";
+pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ SAVED            │ NAME";
 
 /// Cabe `root`, `nobody`, `www-data`. Nome mais longo e truncado: alargar a
 /// coluna sai do espaco do nome, que e o que se edita.
@@ -393,7 +393,7 @@ pub fn writeColumnTitles(w: *Io.Writer, options: Options) Io.Writer.Error!void {
     try w.writeAll(columns.gap);
     try writeRightPadded(w, "SIZE", columns.size);
     try w.writeAll(columns.gap);
-    try writePadded(w, "MODIFIED", columns.time);
+    try writePadded(w, "SAVED", columns.time);
     try w.writeAll(columns.gap);
     if (options.icons) try w.writeAll("   ");
     try w.writeAll("NAME");
@@ -447,12 +447,15 @@ fn writeSize(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try w.writeAll(text);
 }
 
+pub var tz_offset_seconds: i32 = 0;
+
 fn writeTime(w: *Io.Writer, seconds: i64) Io.Writer.Error!void {
     if (seconds <= 0) {
         try w.writeAll("       -        ");
         return;
     }
-    const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(seconds) };
+    const local_seconds = seconds + tz_offset_seconds;
+    const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(local_seconds) };
     const day = es.getEpochDay().calculateYearDay();
     const md = day.calculateMonthDay();
     const ds = es.getDaySeconds();
