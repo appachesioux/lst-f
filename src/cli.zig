@@ -166,6 +166,25 @@ pub fn run(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(arena);
     const color_default = environ.get("NO_COLOR") == null;
 
+    if (environ.get("LSTF_TZ_OFFSET")) |tz_str| {
+        if (std.fmt.parseInt(i32, tz_str, 10)) |val| {
+            explorer.tz_offset_seconds = val * 3600;
+        } else |_| {}
+    } else {
+        if (Io.Dir.openFileAbsolute(io, "/etc/localtime", .{})) |*file| {
+            defer file.close(io);
+            var buf: [16384]u8 = undefined;
+            if (file.readPositionalAll(io, &buf, 0)) |n| {
+                const tzif = @import("tzif.zig");
+                const ns: i96 = std.Io.Clock.now(.real, io).toNanoseconds();
+                const now: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+                if (tzif.parseTzif(buf[0..n], now)) |offset| {
+                    explorer.tz_offset_seconds = offset;
+                } else |_| {}
+            } else |_| {}
+        } else |_| {}
+    }
+
     const cmd = parseArgs(arena, args, color_default) catch |err| {
         try out.print("lst-f: argumentos invalidos ({s})\n\n", .{@errorName(err)});
         try printHelp(out);
