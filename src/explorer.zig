@@ -321,7 +321,8 @@ fn deviceOf(dir_fd: std.posix.fd_t, sub_path: [:0]const u8) ?u64 {
 pub fn writeDisplay(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!void {
     try writeDetails(w, e, options);
     if (options.icons) {
-        try w.writeAll(if (e.kind == .dir) "\u{1F4C1} " else "\u{1F4C4} ");
+        try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink));
+        try w.writeAll(" ");
     }
     if (!e.utf8_ok) {
         if (options.color) try w.writeAll(ansi.warn);
@@ -363,7 +364,7 @@ pub fn writeDetails(w: *Io.Writer, e: Entry, options: Options) Io.Writer.Error!v
 /// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
 /// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
 /// Alinham byte a byte com `writeTableDetails`.
-pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ SAVED            │ NAME";
+pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ SAVED            │ IC │ NAME";
 
 /// Cabe `root`, `nobody`, `www-data`. Nome mais longo e truncado: alargar a
 /// coluna sai do espaco do nome, que e o que se edita.
@@ -381,6 +382,8 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try writeSize(w, e);
     try w.writeAll(" │ ");
     try writeTime(w, e.mtime_s);
+    try w.writeAll(" │ ");
+    try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink));
     try w.writeAll(" │");
 }
 
@@ -643,4 +646,34 @@ test "passwd resolve uid e cai no numero quando nao acha" {
     try testing.expectEqualStrings("", users.nameFor(undefined, 1000));
     try testing.expectEqualStrings("root", users.nameFor(undefined, 0));
     try testing.expectEqualStrings("4242", users.nameFor(undefined, 4242));
+}
+
+pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool) []const u8 {
+    if (is_link) return "\xef\x92\x81"; // 
+    if (is_dir) return "\xef\x84\x95"; // 
+
+    const ext_idx = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "\xef\x85\x9b"; // 
+    const ext = name[ext_idx + 1 ..];
+
+    if (std.mem.eql(u8, ext, "zig")) return "\xee\x9a\xa9"; // 
+    if (std.mem.eql(u8, ext, "c") or std.mem.eql(u8, ext, "h")) return "\xee\x98\x9e"; // 
+    if (std.mem.eql(u8, ext, "cpp") or std.mem.eql(u8, ext, "hpp")) return "\xee\x98\x9d"; // 
+    if (std.mem.eql(u8, ext, "rs")) return "\xee\x9e\xa8"; // 
+    if (std.mem.eql(u8, ext, "go")) return "\xee\x98\xa7"; // 
+    if (std.mem.eql(u8, ext, "py")) return "\xee\x98\x86"; // 
+    if (std.mem.eql(u8, ext, "js")) return "\xee\x9e\x81"; // 
+    if (std.mem.eql(u8, ext, "ts")) return "\xee\x98\xa8"; // 
+    if (std.mem.eql(u8, ext, "json")) return "\xee\x98\x8b"; // 
+    if (std.mem.eql(u8, ext, "md")) return "\xef\x92\x8a"; // 
+    if (std.mem.eql(u8, ext, "png") or std.mem.eql(u8, ext, "jpg") or std.mem.eql(u8, ext, "jpeg") or std.mem.eql(u8, ext, "gif")) return "\xef\x80\xbe"; // 
+    if (std.mem.eql(u8, ext, "pdf")) return "\xef\x87\x81"; // 
+    if (std.mem.eql(u8, ext, "zip") or std.mem.eql(u8, ext, "tar") or std.mem.eql(u8, ext, "gz") or std.mem.eql(u8, ext, "xz")) return "\xef\x90\x90"; // 
+    if (std.mem.eql(u8, ext, "txt")) return "\xef\x85\x9c"; // 
+    if (std.mem.eql(u8, ext, "sh") or std.mem.eql(u8, ext, "bash") or std.mem.eql(u8, ext, "zsh")) return "\xef\x92\x89"; // 
+    if (std.mem.eql(u8, ext, "vim")) return "\xee\x98\xab"; // 
+    if (std.mem.eql(u8, ext, "sql")) return "\xef\x87\x80"; // 
+    if (std.mem.eql(u8, ext, "xlsx") or std.mem.eql(u8, ext, "xls") or std.mem.eql(u8, ext, "csv")) return "\xef\x87\x83"; // 
+    if (std.mem.eql(u8, ext, "toml") or std.mem.eql(u8, ext, "yaml") or std.mem.eql(u8, ext, "yml") or std.mem.eql(u8, ext, "ini")) return "\xef\x83\x9a"; // 
+
+    return "\xef\x85\x9b"; //  generic
 }
