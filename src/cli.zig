@@ -134,6 +134,7 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\
         \\no buscador:
         \\  Tab                marca / desmarca      Enter  aceita a marcacao
+        \\  Ctrl+A             marca / desmarca tudo
         \\  {s}              abre e fecha o preview (comeca fechado)
         \\  {s}                 esta ajuda            Esc    cancela
         \\
@@ -1710,4 +1711,3 @@ fn warnFzf(w: *Io.Writer, err: anyerror) !void {
         else => try w.print("lst-f: fzf indisponivel ({s}); :find fica fora do ar.\n", .{@errorName(err)}),
     }
 }
-

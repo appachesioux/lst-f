@@ -191,6 +191,7 @@ pub const State = struct {
             \\    \ '  Atalhos no buffer:',
             \\    \ '    .              Alterna exibicao de arquivos ocultos',
             \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
+            \\    \ '    Ctrl+A         Seleciona todo o buffer',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
             \\    \ '    -              Sobe para o diretorio-pai',
             \\    \ '    r ou Ctrl+R    Recarrega (refresh) a lista atual',
@@ -618,41 +619,16 @@ pub const State = struct {
             \\  endfor
             \\endfunction
             \\
-            \\function! s:lstf_suffixed(path, n) abort
-            \\  let l:is_dir = a:path =~# '/$'
-            \\  let l:clean = substitute(a:path, '/$', '', '')
-            \\  let l:dir = fnamemodify(l:clean, ':h')
-            \\  let l:base = fnamemodify(l:clean, ':t')
-            \\  let l:dot = l:is_dir ? -1 : match(l:base, '\.[^.]*$')
-            \\  let l:stem = l:dot > 0 ? strpart(l:base, 0, l:dot) : l:base
-            \\  let l:ext = l:dot > 0 ? strpart(l:base, l:dot) : ''
-            \\  let l:name = l:stem . '-' . printf('%02d', a:n) . l:ext . (l:is_dir ? '/' : '')
-            \\  return l:dir ==# '.' ? l:name : l:dir . '/' . l:name
-            \\endfunction
-            \\
-            \\function! s:lstf_free_suggestion(path, occupied) abort
-            \\  for l:n in range(1, 99)
-            \\    let l:candidate = s:lstf_suffixed(a:path, l:n)
-            \\    if !has_key(a:occupied, l:candidate) && getftype(l:candidate) ==# ''
-            \\      let a:occupied[l:candidate] = 1
-            \\      return l:candidate
-            \\    endif
-            \\  endfor
-            \\  return ''
-            \\endfunction
-            \\
-            \\" Feedback anterior ao :w para conflitos que o conteudo atual
-            \\" prova sozinho. Quando ha um sufixo livre, ele entra diretamente
-            \\" na linha editada; a validacao definitiva continua no servidor.
+            \\" Identifica destinos colidentes no buffer sem mutar o texto nem fazer
+            \\" I/O de disco. Marca visualmente todas as linhas em conflito e exibe a
+            \\" contagem na barra de status para feedback instantaneo enquanto o usuario edita.
             \\function! s:lstf_update_collisions() abort
             \\  for l:match in get(w:, 'lstf_collision_matches', [])
             \\    silent! call matchdelete(l:match)
             \\  endfor
             \\  let w:lstf_collision_matches = []
             \\  let b:lstf_collision_count = 0
-            \\  let l:previous_suggestion = get(b:, 'lstf_suggestion', '')
             \\  let l:paths = {}
-            \\  let l:occupied = {}
             \\  let l:start = s:lstf_content_start()
             \\  if l:start <= 0 | redrawstatus | return | endif
             \\  for l:lnum in range(l:start, line('$'))
@@ -667,38 +643,16 @@ pub const State = struct {
             \\      let l:col = match(l:line, '\S') + 1
             \\    endif
             \\    if empty(l:path) || l:col <= 0 | continue | endif
-            \\    let l:occupied[l:path] = 1
             \\    if !has_key(l:paths, l:path) | let l:paths[l:path] = [] | endif
-            \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path), 'id': l:id})
+            \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path)})
             \\  endfor
-            \\  let b:lstf_suggestion = has_key(l:occupied, l:previous_suggestion) ? l:previous_suggestion : ''
             \\  for l:path in keys(l:paths)
             \\    let l:uses = l:paths[l:path]
             \\    if len(l:uses) < 2 | continue | endif
-            \\    " Preserva de preferencia a entrada que ainda ocupa seu caminho
-            \\    " original; a linha editada, criada ou colada recebe o sufixo.
-            \\    let l:anchor = 0
-            \\    for l:i in range(0, len(l:uses) - 1)
-            \\      if !empty(l:uses[l:i].id)
-            \\        \ && get(get(b:, 'lstf_original_path', {}), l:uses[l:i].id, '') ==# l:path
-            \\        let l:anchor = l:i
-            \\        break
-            \\      endif
-            \\    endfor
-            \\    for l:i in range(0, len(l:uses) - 1)
-            \\      if l:i == l:anchor | continue | endif
-            \\      let l:use = l:uses[l:i]
-            \\      let l:candidate = s:lstf_free_suggestion(l:path, l:occupied)
-            \\      if empty(l:candidate)
-            \\        let b:lstf_collision_count += 1
-            \\        call add(w:lstf_collision_matches,
-            \\          \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
-            \\        continue
-            \\      endif
-            \\      silent! undojoin
-            \\      noautocmd call setline(l:use.line,
-            \\        \ strpart(getline(l:use.line), 0, l:use.col - 1) . l:candidate)
-            \\      let b:lstf_suggestion = l:candidate
+            \\    let b:lstf_collision_count += len(l:uses)
+            \\    for l:use in l:uses
+            \\      call add(w:lstf_collision_matches,
+            \\        \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
             \\    endfor
             \\  endfor
             \\  redrawstatus
@@ -878,9 +832,7 @@ pub const State = struct {
             \\  let l:aviso = empty(s:lstf_notice) ? '' : '%#LstfStatusNotice# ' . substitute(s:lstf_notice, '%', '%%', 'g') . ' %#LstfStatusInfo#'
             \\  let l:collisions = get(b:, 'lstf_collision_count', 0)
             \\  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisao: ' . l:collisions . ' %#LstfStatusInfo#' : ''
-            \\  let l:suggested = get(b:, 'lstf_suggestion', '')
-            \\  let l:suggestion = empty(l:suggested) ? '' : '%#LstfStatusSuggestion# sugerido: ' . substitute(l:suggested, '%', '%%', 'g') . ' %#LstfStatusInfo#'
-            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . l:suggestion . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
+            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -1117,6 +1069,12 @@ pub const State = struct {
             \\highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
             \\highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\" A selecao normal do Vim termina no ultimo caractere. Esta camada
+            \\" preenche tambem o espaco ate a borda, para a lista continuar se
+            \\" comportando como uma tabela ao selecionar linhas inteiras. `Visual`
+            \\" usa a mesma cor, para nao haver uma emenda no fim do nome.
+            \\highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\" Cores por natureza da entrada, as mesmas do xpl-f. O par cterm
             \\" nao e enfeite: servidor sem truecolor so enxerga esse lado.
             \\highlight LstfDir cterm=bold ctermfg=12 gui=bold guifg=#61afef
@@ -1129,10 +1087,29 @@ pub const State = struct {
             \\set shortmess+=F
             \\set noruler noshowcmd
             \\
+            \\sign define LstfVisualLineSign linehl=LstfVisualLine
+            \\function! s:lstf_clear_visual_lines() abort
+            \\  execute 'sign unplace * group=lstf_visual buffer=' . bufnr('%')
+            \\endfunction
+            \\
+            \\function! s:lstf_highlight_visual_lines() abort
+            \\  call s:lstf_clear_visual_lines()
+            \\  let l:mode = mode()
+            \\  if l:mode !=# 'v' && l:mode !=# 'V' && l:mode !=# "\\<C-V>"
+            \\    return
+            \\  endif
+            \\  let l:first = min([line('.'), line('v')])
+            \\  let l:last = max([line('.'), line('v')])
+            \\  for l:lnum in range(l:first, l:last)
+            \\    execute 'sign place ' . l:lnum . ' group=lstf_visual line=' . l:lnum . ' name=LstfVisualLineSign buffer=' . bufnr('%')
+            \\  endfor
+            \\endfunction
+            \\
             \\" `:edit!` preserva opcoes e mapeamentos locais, mas Vim e Neovim
             \\" apagam os grupos de sintaxe do buffer relido. Centralizar toda a
             \\" aparencia local aqui deixa a abertura e cada recarga identicas.
             \\function! s:lstf_configure_buffer() abort
+            \\  call s:lstf_clear_visual_lines()
             \\  setlocal statusline=%!LstfStatusline()
             \\  if exists('+fillchars')
             \\    execute "setlocal fillchars+=eob:\\ "
@@ -1164,6 +1141,7 @@ pub const State = struct {
             \\  autocmd CursorMoved <buffer> call s:lstf_keep_cursor_below_header()
             \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_keep_cursor_in_name()
             \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_follow_scroll()
+            \\  autocmd CursorMoved <buffer> call s:lstf_highlight_visual_lines()
             \\  autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
             \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
             \\  autocmd InsertLeave <buffer> call s:lstf_restore_header()
@@ -1174,7 +1152,7 @@ pub const State = struct {
             \\augroup END
             \\augroup lstf_statusline
             \\  autocmd!
-            \\  autocmd ModeChanged * redrawstatus
+            \\  autocmd ModeChanged * redrawstatus | if exists('b:lstf_header') | call s:lstf_highlight_visual_lines() | endif
             \\  " Abrir o painel de destino estreita a janela da lista sem passar
             \\  " por ela: sem isto a barra de topo so voltaria a sincronizar no
             \\  " proximo Tab. Vim antigo nao tem o evento; ai sincroniza no Tab.
@@ -1239,11 +1217,12 @@ pub const State = struct {
             \\  let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
             \\    \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
             \\  call s:lstf_capture_prefixes()
-            \\  let b:lstf_suggestion = ''
             \\  call s:lstf_update_collisions()
             \\  let b:lstf_entry_lines = s:lstf_entry_lines()
             \\  call s:lstf_follow_scroll()
             \\  call s:lstf_restore_cursor()
+            \\  call s:lstf_draw_frame()
+            \\  redrawstatus!
             \\endfunction
             \\
             \\call s:lstf_after_reload()
@@ -1259,6 +1238,7 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> > :call LstfForward()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
             \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+            \\nnoremap <buffer> <silent> <C-a> ggVG
             \\nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
             \\nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
             \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
