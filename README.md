@@ -54,6 +54,7 @@ que você acabou de entrar por SSH.
 | `<` e `>`                             | voltam e avançam nos diretórios visitados na sessão |
 | `\`                                   | abre uma árvore visual do diretório atual  |
 | `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
+| `Ctrl+A`                              | seleciona todo o buffer do `lst-f`         |
 | `Ctrl+S`                              | abre/fecha o painel dividido de destino    |
 | `Tab`                                 | alterna o foco entre painel principal e split |
 | `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
@@ -85,7 +86,7 @@ subdiretórios for — e o que foi marcado **vira o conteúdo do buffer**. Renom
 doze arquivos de seis diretórios diferentes é um `:find`, doze `Tab` e uma
 edição.
 
-No buscador: `Tab` marca, `Enter` aceita, `alt-p` abre e fecha o preview, `F1`
+No buscador: `Tab` marca, `Ctrl+A` marca ou desmarca tudo, `Enter` aceita, `alt-p` abre e fecha o preview, `F1`
 mostra a ajuda, `Esc` cancela.
 
 ## Requisitos

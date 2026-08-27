@@ -81,6 +81,7 @@ pub fn parseVersion(text: []const u8) ?Version {
 pub const Keys = struct {
     pub const preview = "alt-p";
     pub const help = "f1";
+    pub const select_all = "ctrl-a";
     /// Como o fzf nomeia a tecla e como ela e mostrada ao usuario.
     pub const help_label = "F1";
 };
@@ -194,6 +195,9 @@ pub fn start(arena: Allocator, io: Io, options: Options) !Runner {
         try argv.append(arena, "--preview-window=right:50%:hidden");
         try argv.append(arena, "--bind=" ++ Keys.preview ++ ":toggle-preview");
     }
+    // A selecao multipla e parte do fluxo do lst-f. Fixar o atalho aqui evita
+    // que a configuracao global do fzf determine o comportamento da sessao.
+    try argv.append(arena, "--bind=" ++ Keys.select_all ++ ":toggle-all");
 
     if (options.query.len > 0) {
         try argv.append(arena, try std.fmt.allocPrint(arena, "--query={s}", .{options.query}));
@@ -303,4 +307,3 @@ fn writeSafe(w: *Io.Writer, s: []const u8) Io.Writer.Error!void {
         try w.writeByte(if (c < 0x20 or c == 0x7f) '?' else c);
     }
 }
-
