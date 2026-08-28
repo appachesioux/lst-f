@@ -69,3 +69,13 @@ test "flags de arquivos ocultos (-a, --all, --hidden, --no-hidden)" {
     try testing.expect((try parse(a, &.{ "lst-f", "--hidden" })).browse.options.show_hidden);
     try testing.expect(!((try parse(a, &.{ "lst-f", "-a", "--no-hidden" })).browse.options.show_hidden));
 }
+
+test "--client aceita reload e outros comandos" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    const cmd = try parse(a, &.{ "lst-f", "--client", "reload" });
+    try testing.expect(cmd == .client);
+    try testing.expectEqualStrings("reload", cmd.client);
+}

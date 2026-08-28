@@ -467,6 +467,7 @@ pub const State = struct {
             \\
             \\function! s:lstf_prepare_save() abort
             \\  call delete($LST_F_STATE . '/approved')
+            \\  let l:is_quitting = search('^:quit', 'nw') > 0
             \\  let l:entries = s:lstf_entry_lines()
             \\  if exists('b:lstf_entry_lines') && l:entries !=# b:lstf_entry_lines
             \\    call writefile(getline(1, '$'), $LST_F_STATE . '/proposal', 'b')
@@ -474,18 +475,29 @@ pub const State = struct {
             \\    if v:shell_error == 0
             \\      let l:plan = filereadable($LST_F_STATE . '/preview')
             \\        \ ? readfile($LST_F_STATE . '/preview') : []
-            \\      if !empty(l:plan) && !s:lstf_confirm_plan(l:plan)
-            \\        throw 'lst-f: operation cancelled'
+            \\      if !empty(l:plan)
+            \\        if !s:lstf_confirm_plan(l:plan)
+            \\          if l:is_quitting
+            \\            return
+            \\          endif
+            \\          throw 'lst-f: operation cancelled'
+            \\        endif
             \\      endif
             \\    elseif v:shell_error == 2
             \\      let l:answer = input('Apply filesystem changes? [y/N] ')
             \\      if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
+            \\        if l:is_quitting
+            \\          return
+            \\        endif
             \\        throw 'lst-f: operation cancelled'
             \\      endif
             \\    else
             \\      echohl ErrorMsg
             \\      echomsg substitute(l:out, "\n\\+$", '', '')
             \\      echohl None
+            \\      if l:is_quitting
+            \\        return
+            \\      endif
             \\      throw 'lst-f: invalid operation'
             \\    endif
             \\    call writefile(['approved'], $LST_F_STATE . '/approved')
@@ -859,8 +871,15 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! LstfRefresh() abort
+            \\  let l:out = system($LST_F_SELF . ' --client reload')
+            \\  if v:shell_error == 0
+            \\    silent! edit!
+            \\    call s:lstf_after_reload()
+            \\    redraw
+            \\    return
+            \\  endif
             \\  silent! edit!
-            \\  silent! write
+            \\  call s:lstf_after_reload()
             \\  let s:lstf_notice = 'Lista atualizada'
             \\  redrawstatus
             \\endfunction
@@ -1222,6 +1241,7 @@ pub const State = struct {
             \\  call s:lstf_follow_scroll()
             \\  call s:lstf_restore_cursor()
             \\  call s:lstf_draw_frame()
+            \\  setlocal nomodified
             \\  redrawstatus!
             \\endfunction
             \\
