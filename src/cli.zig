@@ -505,10 +505,23 @@ fn loop(s: *Session) !void {
         const changed = !plan_ok.isEmpty();
         if (changed) {
             const approved_in_editor = s.state.takeApproval(s.io);
+            if (document.directive) |d| {
+                if (d == .quit and !approved_in_editor) {
+                    return;
+                }
+            }
             if (!try confirmAndApply(s, plan_ok, approved_in_editor)) {
-                // Depois de recusar a confirmacao, o buffer ainda contem as
-                // linhas apagadas. Reabri-lo assim faria a mesma remocao ser
-                // proposta indefinidamente, inclusive ao tentar sair.
+                // Se o usuario pediu para sair (:quit), nos DEVEMOS sair,
+                // mesmo se a confirmacao foi recusada ou a aplicacao falhou.
+                if (document.directive) |d| {
+                    if (d == .quit) return;
+                }
+                // No modo fallback/sem diretiva, se o usuario recusou a confirmacao
+                // no prompt do terminal (approved_in_editor == false), ele optou
+                // por nao aplicar as mudancas ao fechar o editor.
+                if (document.directive == null and !approved_in_editor) {
+                    return;
+                }
                 try loadListing(s);
                 continue;
             }
@@ -660,6 +673,12 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         // Entrar pousa na primeira entrada: sem dica de cursor.
         s.state.dir.deleteFile(s.io, "cursor_name") catch {};
         ok = enterDirQuiet(s, arg);
+    } else if (std.mem.eql(u8, cmd, "reload") or std.mem.eql(u8, cmd, "refresh")) {
+        loadListing(s) catch {
+            s.notice = "nao consegui listar o diretorio";
+        };
+        s.notice = "lista atualizada";
+        ok = true;
     } else if (std.mem.eql(u8, cmd, "apply")) {
         if (try applySavedBufferLive(s)) |message| {
             response = message;
@@ -783,6 +802,21 @@ fn describeProblems(s: *Session, problems: []const plan.Problem) ![]const u8 {
     return result.written();
 }
 
+fn formatFsError(err: anyerror) []const u8 {
+    return switch (err) {
+        error.AccessDenied, error.PermissionDenied => "permissao negada",
+        error.FileNotFound => "arquivo nao encontrado",
+        error.ReadOnlyFileSystem => "sistema de arquivos somente leitura",
+        error.DeviceOrResourceBusy => "recurso ocupado",
+        error.DiskQuota => "cota de disco excedida",
+        error.NoSpaceLeft => "sem espaco no dispositivo",
+        error.SymlinkInPath => "symlink no caminho",
+        error.PathAlreadyExists => "caminho ja existe",
+        error.DirNotEmpty => "diretorio nao esta vazio",
+        else => @errorName(err),
+    };
+}
+
 fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
@@ -795,16 +829,16 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
         area_ptr = ensureArea(s) catch |err| return try std.fmt.allocPrint(
             s.arena,
             "nao foi possivel abrir a area de sessao ({s})",
-            .{@errorName(err)},
+            .{formatFsError(err)},
         );
     }
 
     const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr);
     if (outcome.failure) |failure| {
-        return try std.fmt.allocPrint(s.arena, "falha em {s}: {s} ({s}); rollback {s}", .{
+        return try std.fmt.allocPrint(s.arena, "falha em {s} {s}: {s}; rollback {s}", .{
             failure.phase,
             failure.detail,
-            @errorName(failure.err),
+            formatFsError(failure.err),
             if (outcome.rollback_errors.len == 0) "completo" else "incompleto",
         });
     }
@@ -1527,7 +1561,7 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
 fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
     const w = s.out;
     if (outcome.failure) |f| {
-        try w.print("\nFALHA em \"{s}\": {s} ({s})\n", .{ f.phase, f.detail, @errorName(f.err) });
+        try w.print("\nFALHA em \"{s}\": {s} ({s})\n", .{ f.phase, f.detail, formatFsError(f.err) });
         if (outcome.rollback_errors.len == 0) {
             try w.writeAll("Rollback completo: nada foi alterado.\n");
         } else {
