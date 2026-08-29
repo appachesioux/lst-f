@@ -313,8 +313,8 @@ pub const State = struct {
             \\    else
             \\      call system('xdg-open ' . shellescape(a:path) . ' >/dev/null 2>&1 &')
             \\    endif
-            \\    redraw
-            \\    echo 'Aberto via xdg-open: ' . a:path
+            \\    let s:lstf_notice = 'aberto via xdg-open'
+            \\    redrawstatus!
             \\    return 1
             \\  endif
             \\  return 0
@@ -360,9 +360,8 @@ pub const State = struct {
             \\  endif
             \\  let l:out = system($LST_F_SELF . ' --client ' . a:cmd)
             \\  if v:shell_error
-            \\    echohl ErrorMsg
-            \\    echomsg substitute(l:out, "\n\\+$", '', '')
-            \\    echohl None
+            \\    let s:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+            \\    redrawstatus!
             \\    return
             \\  endif
             \\  silent! edit!
@@ -492,9 +491,8 @@ pub const State = struct {
             \\        throw 'lst-f: operation cancelled'
             \\      endif
             \\    else
-            \\      echohl ErrorMsg
-            \\      echomsg substitute(l:out, "\n\\+$", '', '')
-            \\      echohl None
+            \\      let s:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+            \\      redrawstatus!
             \\      if l:is_quitting
             \\        return
             \\      endif
@@ -527,9 +525,8 @@ pub const State = struct {
             \\    " laco antigo ainda consegue aplicar o arquivo que foi salvo.
             \\    if v:shell_error != 2
             \\      setlocal modified
-            \\      echohl ErrorMsg
-            \\      echomsg substitute(l:out, "\n\\+$", '', '')
-            \\      echohl None
+            \\      let s:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+            \\      redrawstatus!
             \\      return
             \\    endif
             \\  endif
@@ -982,7 +979,8 @@ pub const State = struct {
             \\    let @\" = l:target
             \\    let @+ = l:target
             \\    let @* = l:target
-            \\    echo 'Destino copiado: ' . l:target
+            \\    let s:lstf_notice = 'destino copiado'
+            \\    redrawstatus!
             \\  endif
             \\endfunction
             \\
@@ -1011,7 +1009,8 @@ pub const State = struct {
             \\  let @\" = l:path
             \\  let @+ = l:path
             \\  let @* = l:path
-            \\  echo 'Caminho copiado: ' . l:path
+            \\  let s:lstf_notice = 'caminho copiado'
+            \\  redrawstatus!
             \\endfunction
             \\
             \\function! LstfToggleSplit() abort

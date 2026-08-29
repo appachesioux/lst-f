@@ -1001,9 +1001,7 @@ fn writeTree(s: *Session) !void {
 }
 
 fn changeDir(s: *Session, target: []const u8) !void {
-    if (!enterDirQuiet(s, target)) {
-        if (s.notice) |n| try report(s, n);
-    }
+    _ = enterDirQuiet(s, target);
 }
 
 /// Entra em `target`, relativo a base quando o caminho nao e absoluto.
@@ -1119,7 +1117,7 @@ const Feed = struct {
 /// vira o conteudo do buffer. Devolve `false` quando nada foi escolhido.
 fn runFind(s: *Session, query: []const u8) !bool {
     if (s.features.version.major == 0 and s.features.version.minor == 0) {
-        try report(s, "o fzf nao esta disponivel; a busca depende dele");
+        s.notice = "o fzf nao esta disponivel; a busca depende dele";
         return false;
     }
 
@@ -1413,7 +1411,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     }
 
     if (effective.isEmpty()) {
-        try report(s, "nada foi aplicado");
+        s.notice = "nada foi aplicado";
         return false;
     }
 
@@ -1633,12 +1631,12 @@ fn ensureArea(s: *Session) !*fsops.Area {
 
 fn undoLast(s: *Session) !void {
     const u = s.undo orelse {
-        try report(s, "nada para desfazer nesta sessao");
+        s.notice = "nada para desfazer nesta sessao";
         return;
     };
 
     var base_dir = Io.Dir.cwd().openDir(s.io, u.base, .{ .iterate = true }) catch {
-        try report(s, "o diretorio da ultima operacao nao esta mais acessivel");
+        s.notice = "o diretorio da ultima operacao nao esta mais acessivel";
         return;
     };
     defer base_dir.close(s.io);

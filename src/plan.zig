@@ -239,8 +239,11 @@ pub fn build(
     for (originals, 0..) |o, i| {
         const cd = copy_dests[i] orelse continue;
         const first = dests[i].?; // sempre presente quando copy_dests != null
-        const first_orig = std.mem.eql(u8, first, o.path);
-        const second_orig = std.mem.eql(u8, cd, o.path);
+        // Diretorios ganham `/` apenas na representacao editavel do buffer.
+        // A listagem interna guarda `dir`, enquanto o round-trip produz
+        // `dir/`; ambos precisam identificar a linha que permaneceu na origem.
+        const first_orig = matchesOriginalPath(o, first);
+        const second_orig = matchesOriginalPath(o, cd);
         if (first_orig) {
             try copies.append(arena, .{ .id = o.id, .from = o.path, .to = cd, .kind = o.kind });
             dests[i] = o.path;
@@ -623,6 +626,14 @@ fn order(arena: Allocator, moves: []const Move, options: Options) Allocator.Erro
     return out.toOwnedSlice(arena);
 }
 
+fn matchesOriginalPath(original: Original, edited: []const u8) bool {
+    if (std.mem.eql(u8, edited, original.path)) return true;
+    return original.kind == .dir and
+        edited.len == original.path.len + 1 and
+        edited[edited.len - 1] == '/' and
+        std.mem.eql(u8, edited[0..original.path.len], original.path);
+}
+
 fn tempPath(arena: Allocator, near: []const u8, prefix: []const u8, n: u32) Allocator.Error![]const u8 {
     const dir = std.fs.path.dirname(near);
     return if (dir) |d|
@@ -991,4 +1002,3 @@ pub fn writeBuffer(
         }
     }
 }
-
