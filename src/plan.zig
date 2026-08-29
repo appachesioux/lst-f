@@ -863,11 +863,9 @@ pub fn parseBuffer(
             const argument = std.mem.trim(u8, body[split..], " \t");
 
             if (std.mem.eql(u8, name, "cd")) {
-                if (argument.len == 0) {
-                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = "cd" } });
-                    continue;
-                }
-                directive = .{ .cd = argument };
+                directive = .{ .cd = if (argument.len == 0) "~" else argument };
+            } else if (std.mem.eql(u8, name, "home") or std.mem.eql(u8, name, "~")) {
+                directive = .{ .cd = "~" };
             } else if (std.mem.eql(u8, name, "open") or std.mem.eql(u8, name, "edit") or std.mem.eql(u8, name, "e")) {
                 if (argument.len == 0) {
                     try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = "open" } });

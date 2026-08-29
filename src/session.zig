@@ -181,7 +181,8 @@ pub const State = struct {
             \\    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar sao seguros)',
             \\    \ '',
             \\    \ '  Diretivas (escreva no buffer e salve):',
-            \\    \ '    :cd <dir>      Entra no diretorio (.. sobe)',
+            \\    \ '    :cd [dir]      Entra no diretorio (.. sobe, sem arg ou ~ vai para HOME)',
+            \\    \ '    :home          Vai direto para o diretorio HOME (~)',
             \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
             \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
             \\    \ '    :back/:forward Andam pelos diretorios visitados na sessao',
@@ -190,6 +191,7 @@ pub const State = struct {
             \\    \ '',
             \\    \ '  Atalhos no buffer:',
             \\    \ '    .              Alterna exibicao de arquivos ocultos',
+            \\    \ '    ~ ou gh        Vai direto para o diretorio HOME (~)',
             \\    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na arvore inteira',
             \\    \ '    Ctrl+A         Seleciona todo o buffer',
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
@@ -370,6 +372,22 @@ pub const State = struct {
             \\
             \\function! LstfUp() abort
             \\  call s:lstf_nav('up', ':cd ..')
+            \\endfunction
+            \\
+            \\function! LstfCd(dir) abort
+            \\  let l:target = empty(a:dir) ? '~' : a:dir
+            \\  let $LST_F_LIVE_ARG = l:target
+            \\  call s:lstf_nav('enter', ':cd ' . l:target)
+            \\  unlet $LST_F_LIVE_ARG
+            \\endfunction
+            \\
+            \\function! LstfHome() abort
+            \\  call s:lstf_nav('home', ':home')
+            \\endfunction
+            \\
+            \\function! s:lstf_cmd_find(query) abort
+            \\  let l:dir = empty(a:query) ? ':find' : ':find ' . a:query
+            \\  call s:lstf_write_directive(l:dir)
             \\endfunction
             \\
             \\function! LstfBack() abort
@@ -742,7 +760,7 @@ pub const State = struct {
             \\" Volta em pedacos porque quem pinta e `matchaddpos`, por coluna de
             \\" byte: e conteudo de buffer, nao expressao de statusline.
             \\function! s:lstf_frame_parts(width) abort
-            \\  let l:path = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
+            \\  let l:path = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
             \\  let l:avail = a:width - 10 - strdisplaywidth(s:lstf_identity)
             \\  if strdisplaywidth(l:path) > l:avail
             \\    let l:path = l:avail > 1 ? '…' . strcharpart(l:path, strchars(l:path) - l:avail + 1) : ''
@@ -827,7 +845,7 @@ pub const State = struct {
             \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^/\d\+\s\+''')) : 0
             \\  let l:mode = mode(1) =~# '^[iR]' ? 'EDIT' : mode(1) =~# '^[vV]' ? 'VISUAL' : 'NORMAL'
             \\  let l:name = substitute(s:lstf_entry_path(), '%', '%%', 'g')
-            \\  let l:location = empty($LST_F_LOCATION) ? fnamemodify(getcwd(), ':~') : $LST_F_LOCATION
+            \\  let l:location = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
             \\  let l:location = substitute(l:location, '%', '%%', 'g')
             \\  let l:editor = has('nvim') ? 'Neovim' : 'Vim'
             \\  " A pasta corrente fica junto do nome, nao na outra ponta da barra:
@@ -990,6 +1008,11 @@ pub const State = struct {
             \\  call s:lstf_render_dest(l:parent)
             \\endfunction
             \\
+            \\function! s:lstf_dest_home() abort
+            \\  let l:home = empty($HOME) ? expand('~') : $HOME
+            \\  call s:lstf_render_dest(l:home)
+            \\endfunction
+            \\
             \\function! s:lstf_dest_yank() abort
             \\  let l:line = getline('.')
             \\  let l:sep = strridx(l:line, ' │  ')
@@ -1037,6 +1060,8 @@ pub const State = struct {
             \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  nnoremap <buffer> <silent> <CR> :call <SID>lstf_dest_open()<CR>
             \\  nnoremap <buffer> <silent> - :call <SID>lstf_dest_up()<CR>
+            \\  nnoremap <buffer> <silent> ~ :call <SID>lstf_dest_home()<CR>
+            \\  nnoremap <buffer> <silent> gh :call <SID>lstf_dest_home()<CR>
             \\  nnoremap <buffer> <silent> . :call <SID>lstf_dest_toggle_hidden()<CR>
             \\  nnoremap <buffer> <silent> Y :call <SID>lstf_dest_yank()<CR>
             \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
@@ -1253,6 +1278,8 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
             \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
             \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
+            \\nnoremap <buffer> <silent> ~ :call LstfHome()<CR>
+            \\nnoremap <buffer> <silent> gh :call LstfHome()<CR>
             \\nnoremap <buffer> <silent> <lt> :call LstfBack()<CR>
             \\nnoremap <buffer> <silent> > :call LstfForward()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
@@ -1264,6 +1291,41 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
             \\nnoremap <buffer> <silent> q :call LstfQuit()<CR>
             \\nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
+            \\function! s:lstf_cmd_cr() abort
+            \\  if getcmdtype() ==# ':'
+            \\    let l:cmd = substitute(getcmdline(), '^\s*', '', '')
+            \\    if l:cmd =~# '^cd\%(\s.*\|\)$'
+            \\      return "\x15Cd" . l:cmd[2:] . "\r"
+            \\    elseif l:cmd =~# '^home$'
+            \\      return "\x15Home\r"
+            \\    elseif l:cmd =~# '^back$'
+            \\      return "\x15Back\r"
+            \\    elseif l:cmd =~# '^forward$'
+            \\      return "\x15Forward\r"
+            \\    elseif l:cmd =~# '^hidden$'
+            \\      return "\x15Hidden\r"
+            \\    elseif l:cmd =~# '^find\%(\s.*\|\)$'
+            \\      return "\x15Find" . l:cmd[4:] . "\r"
+            \\    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
+            \\      return "\x15call LstfQuit()\r"
+            \\    endif
+            \\  endif
+            \\  return "\r"
+            \\endfunction
+            \\cnoremap <expr> <CR> <SID>lstf_cmd_cr()
+            \\command! -buffer -nargs=? -complete=dir Cd call LstfCd(<q-args>)
+            \\command! -buffer -nargs=? -complete=dir CD call LstfCd(<q-args>)
+            \\cnoreabbrev <expr> <buffer> cd getcmdtype() ==# ':' && getcmdline() =~# '^cd\%(\s.*\|\)$' ? 'Cd' : 'cd'
+            \\command! -buffer -nargs=0 Home call LstfHome()
+            \\cnoreabbrev <expr> <buffer> home getcmdtype() ==# ':' && getcmdline() ==# 'home' ? 'call LstfHome()' : 'home'
+            \\command! -buffer -nargs=0 Back call LstfBack()
+            \\cnoreabbrev <expr> <buffer> back getcmdtype() ==# ':' && getcmdline() ==# 'back' ? 'Back' : 'back'
+            \\command! -buffer -nargs=0 Forward call LstfForward()
+            \\cnoreabbrev <expr> <buffer> forward getcmdtype() ==# ':' && getcmdline() ==# 'forward' ? 'Forward' : 'forward'
+            \\command! -buffer -nargs=0 Hidden call LstfToggleHidden()
+            \\cnoreabbrev <expr> <buffer> hidden getcmdtype() ==# ':' && getcmdline() ==# 'hidden' ? 'Hidden' : 'hidden'
+            \\command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
+            \\cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
             \\cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
             \\cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
             \\" Por ultimo: abrir o split antes daqui faria os `setlocal` e os
