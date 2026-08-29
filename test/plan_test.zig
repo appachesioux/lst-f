@@ -546,6 +546,18 @@ test "diretivas de navegacao" {
     try testing.expectEqualStrings("src", cd.directive.?.cd);
     try testing.expectEqual(@as(usize, 1), cd.edits.len);
 
+    const cd_home = (try parseBuffer(f.a(), ":cd\n", &.{})).ok;
+    try testing.expectEqualStrings("~", cd_home.directive.?.cd);
+
+    const cd_tilde = (try parseBuffer(f.a(), ":cd ~\n", &.{})).ok;
+    try testing.expectEqualStrings("~", cd_tilde.directive.?.cd);
+
+    const home_dir = (try parseBuffer(f.a(), ":home\n", &.{})).ok;
+    try testing.expectEqualStrings("~", home_dir.directive.?.cd);
+
+    const tilde_dir = (try parseBuffer(f.a(), ":~\n", &.{})).ok;
+    try testing.expectEqualStrings("~", tilde_dir.directive.?.cd);
+
     const find = (try parseBuffer(f.a(), ":find  plan.zig\n", &.{})).ok;
     try testing.expectEqualStrings("plan.zig", find.directive.?.find);
 
@@ -567,7 +579,7 @@ test "diretivas invalidas abortam sem aplicar nada" {
     defer f.deinit();
     const cases = [_]struct { text: []const u8, tag: std.meta.Tag(Problem) }{
         .{ .text = ":voar\n", .tag = .unknown_directive },
-        .{ .text = ":cd\n", .tag = .directive_needs_argument },
+        .{ .text = ":open\n", .tag = .directive_needs_argument },
         .{ .text = ":cd a\n:cd b\n", .tag = .multiple_directives },
     };
     for (cases) |case| {

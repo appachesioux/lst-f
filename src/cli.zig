@@ -323,8 +323,6 @@ const Session = struct {
     base: []const u8,
     /// Conteudo corrente do buffer.
     entries: []const plan.Original = &.{},
-    /// De onde o conteudo veio, quando nao e a listagem do diretorio.
-    scope: ?[]const u8 = null,
     unlistable: []const []const u8 = &.{},
     /// Aviso de uma operacao concluida, mostrado uma vez no buffer reaberto.
     notice: ?[]const u8 = null,
@@ -655,6 +653,8 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     if (std.mem.eql(u8, cmd, "up")) {
         writeCursorNameHint(s);
         ok = enterDirQuiet(s, "..");
+    } else if (std.mem.eql(u8, cmd, "home")) {
+        ok = enterDirQuiet(s, "~");
     } else if (std.mem.eql(u8, cmd, "back")) {
         const before = s.base;
         try goBack(s);
@@ -903,7 +903,6 @@ fn loadListing(s: *Session) !void {
     try explorer.enumerate(s.arena, s.io, s.base, options, collector.sink());
     s.entries = try collector.entries.toOwnedSlice(s.arena);
     s.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
-    s.scope = null;
 }
 
 fn writeBuffer(s: *Session) !void {
@@ -935,7 +934,7 @@ fn writeBuffer(s: *Session) !void {
     try s.state.dir.writeFile(s.io, .{ .sub_path = "location", .data = location });
     try s.environ.put(session.env_location, location);
     const header: plan.BufferHeader = .{
-        .scope = s.scope,
+        .scope = null,
         .unlistable = s.unlistable,
         .notes = notes.items,
     };
@@ -1004,26 +1003,37 @@ fn changeDir(s: *Session, target: []const u8) !void {
     _ = enterDirQuiet(s, target);
 }
 
+fn expandHome(s: *Session, target: []const u8) []const u8 {
+    const home = s.environ.get("HOME") orelse return target;
+    if (home.len == 0) return target;
+    if (std.mem.eql(u8, target, "~") or target.len == 0) return home;
+    if (std.mem.startsWith(u8, target, "~/")) {
+        return std.fs.path.join(s.arena, &.{ home, target[2..] }) catch target;
+    }
+    return target;
+}
+
 /// Entra em `target`, relativo a base quando o caminho nao e absoluto.
 /// Silencioso: falha vai para `s.notice` (chip da proxima tela), nunca para
 /// o terminal -- durante a sessao viva a tela e do editor. `true` quando
 /// entrou.
-fn enterDirQuiet(s: *Session, target: []const u8) bool {
+fn enterDirQuiet(s: *Session, raw_target: []const u8) bool {
+    const target = expandHome(s, raw_target);
     const joined = if (std.fs.path.isAbsolute(target))
         target
     else
         std.fs.path.join(s.arena, &.{ s.base, target }) catch return false;
 
     const resolved = Io.Dir.cwd().realPathFileAlloc(s.io, joined, s.arena) catch {
-        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}) catch null;
+        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{raw_target}) catch null;
         return false;
     };
     const st = Io.Dir.cwd().statFile(s.io, resolved, .{}) catch {
-        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{target}) catch null;
+        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{raw_target}) catch null;
         return false;
     };
     if (st.kind != .directory) {
-        s.notice = std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{target}) catch null;
+        s.notice = std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{raw_target}) catch null;
         return false;
     }
     s.base = resolved;
@@ -1184,7 +1194,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
 
     s.entries = try entries.toOwnedSlice(s.arena);
     s.unlistable = try unlistable.toOwnedSlice(s.arena);
-    s.scope = if (query.len > 0)
+    s.notice = if (query.len > 0)
         try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s))", .{ query, s.entries.len })
     else
         try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s))", .{s.entries.len});
@@ -1240,15 +1250,6 @@ fn writeEllipsized(w: *Io.Writer, text: []const u8, width: usize) !void {
     try w.writeAll("<");
     try w.writeAll(text[text.len - (width - 1) ..]);
 }
-
-/// `$HOME` vira `~`, como na barra de localizacao de qualquer gerenciador de
-/// arquivos. So encurta a exibicao; o caminho real nunca passa por aqui.
-/// abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
-// const home = environ.get("HOME") orelse return path;
-// if (home.len == 0 or !std.mem.startsWith(u8, path, home)) return path;
-// if (path.len != home.len and path[home.len] != '/') return path;
-// return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
-// }
 
 fn abbreviateHome(_: Allocator, _: *const std.process.Environ.Map, path: []const u8) []const u8 {
     return path;
