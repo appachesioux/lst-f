@@ -252,6 +252,20 @@ test "ID duplicado vira copia" {
     try testing.expectEqual(@as(u32, 1), p.unchanged);
 }
 
+test "ID duplicado de diretorio exibido com barra vira copia" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(29, "lst-f", .dir)};
+    // O caminho interno nao tem a barra que writeBuffer acrescenta a pastas.
+    const edits = [_]Edit{ edit(29, "lst-f/"), edit(29, "lst-f-1/") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+    try testing.expectEqualStrings("lst-f", p.copies[0].from);
+    try testing.expectEqualStrings("lst-f-1", p.copies[0].to);
+    try testing.expectEqual(.dir, p.copies[0].kind);
+    try testing.expectEqual(@as(usize, 0), p.renames.len);
+}
+
 test "ID duplicado no proprio nome pede copia (sufixo fica para o disco)" {
     var f = Fixture.init();
     defer f.deinit();
