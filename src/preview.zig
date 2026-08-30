@@ -120,4 +120,3 @@ pub fn hexdump(w: *Io.Writer, data: []const u8) Io.Writer.Error!void {
         try w.writeAll("|\n");
     }
 }
-

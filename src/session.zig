@@ -177,6 +177,7 @@ pub const State = struct {
             \\    \ '  • :w sem edicao apenas atualiza a lista e mantem a sessao aberta',
             \\    \ '  • Apague a linha  : remove a entrada (area de sessao temporaria)',
             \\    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretorio)',
+            \\    \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
             \\    \ '  • So o nome e editavel: cabecalho e colunas voltam sozinhos',
             \\    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar sao seguros)',
             \\    \ '',
@@ -184,6 +185,8 @@ pub const State = struct {
             \\    \ '    :cd [dir]      Entra no diretorio (.. sobe, sem arg ou ~ vai para HOME)',
             \\    \ '    :home          Vai direto para o diretorio HOME (~)',
             \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
+            \\    \ '    :sh [dir]      Abre terminal / shell no diretorio (:shell, :terminal)',
+            \\    \ '    :ln <alvo> [n] Cria symlink para o alvo (:link, :symlink, :hardlink)',
             \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
             \\    \ '    :back/:forward Andam pelos diretorios visitados na sessao',
             \\    \ '    :undo          Desfaz a ultima operacao aplicada na sessao',
@@ -199,9 +202,12 @@ pub const State = struct {
             \\    \ '    r ou Ctrl+R    Recarrega (refresh) a lista atual',
             \\    \ '    < e >          Voltam e avancam nos diretorios visitados',
             \\    \ '    \              Mostra a arvore visual do diretorio',
+            \\    \ '    F4             Abre terminal / shell no diretorio atual',
             \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
             \\    \ '    Tab            Alterna foco entre painel principal e destino',
             \\    \ '    Y ou yy (dest) Copia caminho do destino para colar (p)',
+            \\    \ '    S ou s (dest)  Copia como symlink (nome -> caminho) para colar (p)',
+            \\    \ '    F4 (dest)      Abre terminal no diretorio de destino',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
             \\    \ '',
@@ -404,6 +410,11 @@ pub const State = struct {
             \\
             \\function! LstfFind() abort
             \\  call s:lstf_write_directive(':find')
+            \\endfunction
+            \\
+            \\function! LstfShell(...) abort
+            \\  let l:dir = a:0 > 0 && !empty(a:1) ? a:1 : ''
+            \\  call s:lstf_write_directive(empty(l:dir) ? ':sh' : ':sh ' . l:dir)
             \\endfunction
             \\
             \\function! LstfToggleHidden() abort
@@ -666,7 +677,9 @@ pub const State = struct {
             \\      let l:col = s:lstf_name_start(l:line) + 1
             \\    else
             \\      if l:line =~# '^\s*$' || l:line =~# '^[:#]' | continue | endif
-            \\      let l:path = substitute(l:line, '^\s*', '', '')
+            \\      let l:raw = substitute(l:line, '^\s*', '', '')
+            \\      let l:arrow = match(l:raw, '\s->\s\|\s=>\s')
+            \\      let l:path = l:arrow >= 0 ? substitute(strpart(l:raw, 0, l:arrow), '\s*$', '', '') : l:raw
             \\      let l:col = match(l:line, '\S') + 1
             \\    endif
             \\    if empty(l:path) || l:col <= 0 | continue | endif
@@ -942,7 +955,7 @@ pub const State = struct {
             \\  let l:lines = [
             \\    \ 'DESTINATION: ' . s:lstf_dest_dir,
             \\    \ '──┬───────────┬───────────┬──────────────────┬──────────────────────────',
-            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy . =hidden]',
+            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy S=link .=hidden]',
             \\    \ '──┼───────────┼───────────┼──────────────────┼──────────────────────────',
             \\    \ 'd │ rwxr-xr-x │         - │                - │  ../'
             \\    \ ]
@@ -1036,6 +1049,39 @@ pub const State = struct {
             \\  redrawstatus!
             \\endfunction
             \\
+            \\function! s:lstf_dest_yank_link() abort
+            \\  let l:line = getline('.')
+            \\  let l:sep = strridx(l:line, ' │  ')
+            \\  if l:sep < 0
+            \\    let l:sep = strridx(l:line, ' │ ')
+            \\  endif
+            \\  if l:sep >= 0
+            \\    let l:name = substitute(strpart(l:line, l:sep + 3), '^\s*', '', '')
+            \\  else
+            \\    let l:name = ''
+            \\  endif
+            \\  if !empty(l:name) && l:name !=# '../' && l:name !=# '..'
+            \\    let l:target = s:lstf_dest_dir . l:name
+            \\    let l:clean_name = substitute(l:name, '/$', '', '')
+            \\    let l:link_entry = l:clean_name . ' -> ' . l:target
+            \\  else
+            \\    let l:target = s:lstf_dest_dir
+            \\    let l:clean_name = fnamemodify(simplify(s:lstf_dest_dir), ':t')
+            \\    if empty(l:clean_name) | let l:clean_name = 'link' | endif
+            \\    let l:link_entry = l:clean_name . ' -> ' . l:target
+            \\  endif
+            \\  let @\" = l:link_entry
+            \\  let @+ = l:link_entry
+            \\  let @* = l:link_entry
+            \\  let s:lstf_notice = 'link copiado: ' . l:link_entry
+            \\  redrawstatus!
+            \\endfunction
+            \\
+            \\function! s:lstf_dest_shell() abort
+            \\  call s:lstf_focus_list()
+            \\  call LstfShell(s:lstf_dest_dir)
+            \\endfunction
+            \\
             \\function! LstfToggleSplit() abort
             \\  if exists('t:lstf_dest_win') && win_id2win(t:lstf_dest_win) > 0
             \\    let l:w = win_id2win(t:lstf_dest_win)
@@ -1065,6 +1111,10 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> . :call <SID>lstf_dest_toggle_hidden()<CR>
             \\  nnoremap <buffer> <silent> Y :call <SID>lstf_dest_yank()<CR>
             \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
+            \\  nnoremap <buffer> <silent> S :call <SID>lstf_dest_yank_link()<CR>
+            \\  nnoremap <buffer> <silent> s :call <SID>lstf_dest_yank_link()<CR>
+            \\  nnoremap <buffer> <silent> L :call <SID>lstf_dest_yank_link()<CR>
+            \\  nnoremap <buffer> <silent> <F4> :call <SID>lstf_dest_shell()<CR>
             \\  nnoremap <buffer> <silent> r :call <SID>lstf_render_dest(s:lstf_dest_dir)<CR>
             \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
             \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
@@ -1123,6 +1173,8 @@ pub const State = struct {
             \\highlight LstfDir cterm=bold ctermfg=12 gui=bold guifg=#61afef
             \\highlight LstfExec cterm=bold ctermfg=10 gui=bold guifg=#a6d189
             \\highlight LstfLink ctermfg=14 gui=italic guifg=#56b6c2
+            \\highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
+            \\highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
             \\highlight LstfFile ctermfg=252 guifg=#c0caf5
             \\highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
             \\set laststatus=2
@@ -1160,9 +1212,11 @@ pub const State = struct {
             \\  setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
             \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal conceallevel=2 concealcursor=nvic
-            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink
+            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink LstfLinkCreate LstfArrow
             \\  syntax match LstfInternalId /^\/\d\+\s\+/ conceal
             \\  syntax match LstfSep /│/ contained
+            \\  syntax match LstfArrow / -> \| => / contained
+            \\  syntax match LstfLinkCreate /^[^\/:\#].*\%( -> \| => \).*$/ contains=LstfArrow
             \\  " O sequencial e metadado interno: oculta-lo tambem na linha do
             \\  " cursor evita deslocar as colunas, inclusive ao voltar do :find.
             \\  " A linha inteira e um item por natureza, com o ID e os divisores
@@ -1283,6 +1337,7 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <lt> :call LstfBack()<CR>
             \\nnoremap <buffer> <silent> > :call LstfForward()<CR>
             \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
+            \\nnoremap <buffer> <silent> <F4> :call LstfShell()<CR>
             \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
             \\nnoremap <buffer> <silent> <C-a> ggVG
             \\nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
@@ -1306,6 +1361,12 @@ pub const State = struct {
             \\      return "\x15Hidden\r"
             \\    elseif l:cmd =~# '^find\%(\s.*\|\)$'
             \\      return "\x15Find" . l:cmd[4:] . "\r"
+            \\    elseif l:cmd =~# '^\%(sh\|shell\|terminal\|term\)\%(\s.*\|\)$'
+            \\      return "\x15Sh" . l:cmd[match(l:cmd, '\s\|\$')..] . "\r"
+            \\    elseif l:cmd =~# '^\%(ln\|link\|symlink\)\%(\s.*\|\)$'
+            \\      return "\x15Ln" . l:cmd[match(l:cmd, '\s\|\$')..] . "\r"
+            \\    elseif l:cmd =~# '^hardlink\%(\s.*\|\)$'
+            \\      return "\x15Hardlink" . l:cmd[8:] . "\r"
             \\    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
             \\      return "\x15call LstfQuit()\r"
             \\    endif
@@ -1326,6 +1387,30 @@ pub const State = struct {
             \\cnoreabbrev <expr> <buffer> hidden getcmdtype() ==# ':' && getcmdline() ==# 'hidden' ? 'Hidden' : 'hidden'
             \\command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
             \\cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
+            \\command! -buffer -nargs=? Sh call LstfShell(<q-args>)
+            \\command! -buffer -nargs=? Shell call LstfShell(<q-args>)
+            \\command! -buffer -nargs=? Terminal call LstfShell(<q-args>)
+            \\command! -buffer -nargs=? Term call LstfShell(<q-args>)
+            \\cnoreabbrev <expr> <buffer> sh getcmdtype() ==# ':' && getcmdline() =~# '^sh\%(\s.*\|\)$' ? 'Sh' : 'sh'
+            \\cnoreabbrev <expr> <buffer> shell getcmdtype() ==# ':' && getcmdline() =~# '^shell\%(\s.*\|\)$' ? 'Shell' : 'shell'
+            \\cnoreabbrev <expr> <buffer> terminal getcmdtype() ==# ':' && getcmdline() =~# '^terminal\%(\s.*\|\)$' ? 'Terminal' : 'terminal'
+            \\cnoreabbrev <expr> <buffer> term getcmdtype() ==# ':' && getcmdline() =~# '^term\%(\s.*\|\)$' ? 'Term' : 'term'
+            \\function! s:lstf_cmd_ln(args) abort
+            \\  if empty(a:args) | return | endif
+            \\  call s:lstf_write_directive(':ln ' . a:args)
+            \\endfunction
+            \\function! s:lstf_cmd_hardlink(args) abort
+            \\  if empty(a:args) | return | endif
+            \\  call s:lstf_write_directive(':hardlink ' . a:args)
+            \\endfunction
+            \\command! -buffer -nargs=+ Ln call s:lstf_cmd_ln(<q-args>)
+            \\command! -buffer -nargs=+ Link call s:lstf_cmd_ln(<q-args>)
+            \\command! -buffer -nargs=+ Symlink call s:lstf_cmd_ln(<q-args>)
+            \\command! -buffer -nargs=+ Hardlink call s:lstf_cmd_hardlink(<q-args>)
+            \\cnoreabbrev <expr> <buffer> ln getcmdtype() ==# ':' && getcmdline() =~# '^ln\%(\s.*\|\)$' ? 'Ln' : 'ln'
+            \\cnoreabbrev <expr> <buffer> link getcmdtype() ==# ':' && getcmdline() =~# '^link\%(\s.*\|\)$' ? 'Link' : 'link'
+            \\cnoreabbrev <expr> <buffer> symlink getcmdtype() ==# ':' && getcmdline() =~# '^symlink\%(\s.*\|\)$' ? 'Symlink' : 'symlink'
+            \\cnoreabbrev <expr> <buffer> hardlink getcmdtype() ==# ':' && getcmdline() =~# '^hardlink\%(\s.*\|\)$' ? 'Hardlink' : 'hardlink'
             \\cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
             \\cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
             \\" Por ultimo: abrir o split antes daqui faria os `setlocal` e os

@@ -127,10 +127,14 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  :hidden            alterna exibicao de arquivos ocultos
         \\  :find [termo]      busca fuzzy na arvore com o fzf; o que voce marcar
         \\                     vira o conteudo do buffer
+        \\  :sh [dir]          abre terminal / shell no diretorio (:shell, :terminal)
+        \\  :ln <alvo> [nome]  cria symlink para o alvo (:link, :symlink, :hardlink)
         \\  :undo              desfaz a ultima operacao aplicada nesta sessao
         \\  :quit              sai (salvar sem mudancas tambem sai; :cq aborta)
         \\  .                  alterna exibicao de arquivos ocultos
+        \\  F4                 abre terminal / shell no diretorio atual
         \\  Enter              abre o arquivo da linha ou entra no diretorio
+        \\  nome -> alvo       em linha nova cria symlink (nome => alvo cria hardlink)
         \\
         \\no buscador:
         \\  Tab                marca / desmarca      Enter  aceita a marcacao
@@ -540,6 +544,7 @@ fn loop(s: *Session) !void {
             .forward => try goForward(s),
             .cd => |target| try changeDir(s, target),
             .open => |target| try openFileInEditor(s, target),
+            .shell => |target| try openShell(s, target),
             .hidden => |opt| {
                 if (opt) |val| {
                     s.options.show_hidden = val;
@@ -1096,6 +1101,44 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
     try loadListing(s);
 }
 
+fn openShell(s: *Session, target: ?[]const u8) !void {
+    const shell = s.environ.get("SHELL") orelse "/bin/sh";
+    var dir_to_open = s.base;
+    if (target) |t| {
+        const trimmed = std.mem.trim(u8, t, " \t");
+        if (trimmed.len > 0) {
+            if (trimmed[0] == '~') {
+                if (s.environ.get("HOME")) |home| {
+                    if (trimmed.len == 1) {
+                        dir_to_open = home;
+                    } else if (trimmed[1] == '/') {
+                        dir_to_open = try std.fmt.allocPrint(s.arena, "{s}{s}", .{ home, trimmed[1..] });
+                    }
+                }
+            } else if (trimmed[0] == '/') {
+                dir_to_open = trimmed;
+            } else {
+                dir_to_open = try std.fmt.allocPrint(s.arena, "{s}/{s}", .{ s.base, trimmed });
+            }
+        }
+    }
+
+    var child = std.process.spawn(s.io, .{
+        .argv = &.{shell},
+        .environ_map = s.environ,
+        .cwd = .{ .path = dir_to_open },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch |err| {
+        try s.out.print("lst-f: falha ao abrir terminal ({s}): {s}\n", .{ dir_to_open, @errorName(err) });
+        try pause(s);
+        return;
+    };
+    _ = child.wait(s.io) catch {};
+    try loadListing(s);
+}
+
 // ---------------------------------------------------------------------------
 // Buscador
 // ---------------------------------------------------------------------------
@@ -1441,14 +1484,24 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
 /// relatorio completo continua indo para o terminal, onde ha espaco.
 fn appliedNotice(s: *Session, applied: fsops.Applied) ![]const u8 {
     var parents: usize = applied.created_dirs.len;
-    var created: usize = 0;
+    var created_files: usize = 0;
+    var created_links: usize = 0;
     for (applied.created) |c| {
-        if (c.implicit) parents += 1 else created += 1;
+        if (c.implicit) {
+            parents += 1;
+        } else if (c.kind == .symlink or c.kind == .hardlink) {
+            created_links += 1;
+        } else {
+            created_files += 1;
+        }
     }
 
     var parts: std.ArrayList([]const u8) = .empty;
-    if (created > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} criado(s)", .{created}));
+    if (created_files > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} criado(s)", .{created_files}));
+    }
+    if (created_links > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} link(s)", .{created_links}));
     }
     if (applied.copied.len > 0) {
         try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} copiado(s)", .{applied.copied.len}));
@@ -1496,11 +1549,17 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
     if (asked > 0) {
         try w.print("Create ({d}):\n", .{asked});
         for (p.creates) |c| {
-            try w.print("  {s}{s}{s}\n", .{
-                c.path,
-                if (c.kind == .dir) "/" else "",
-                if (c.implicit) "  (parent directory)" else "",
-            });
+            if (c.implicit) continue;
+            if (c.kind == .symlink) {
+                try w.print("  {s} -> {s}  (symlink)\n", .{ c.path, c.target orelse "" });
+            } else if (c.kind == .hardlink) {
+                try w.print("  {s} => {s}  (hardlink)\n", .{ c.path, c.target orelse "" });
+            } else {
+                try w.print("  {s}{s}\n", .{
+                    c.path,
+                    if (c.kind == .dir) "/" else "",
+                });
+            }
         }
         try w.writeAll("\n");
     }

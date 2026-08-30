@@ -563,3 +563,41 @@ test "desfazer mantem o arquivo criado que deixou de estar vazio" {
     try testing.expect(!h.exists("vazio.md"));
     try testing.expect(h.exists("escrito.md"));
 }
+
+test "aplica e desfaz criacao de symlink e hardlink" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.touch("original.txt", "conteudo do arquivo");
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .creates = &.{
+            .{ .path = "meu_symlink", .target = "original.txt", .kind = .symlink },
+            .{ .path = "meu_hardlink", .target = "original.txt", .kind = .hardlink },
+        },
+        .copies = &.{},
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+    };
+
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure == null);
+    try testing.expect(h.exists("meu_symlink"));
+    try testing.expect(h.exists("meu_hardlink"));
+    try testing.expectEqualStrings("conteudo do arquivo", try h.read("meu_symlink"));
+    try testing.expectEqualStrings("conteudo do arquivo", try h.read("meu_hardlink"));
+
+    // Desfaz criacao
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, null);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expect(!h.exists("meu_symlink"));
+    try testing.expect(!h.exists("meu_hardlink"));
+    try testing.expect(h.exists("original.txt"));
+    try testing.expectEqualStrings("conteudo do arquivo", try h.read("original.txt"));
+}

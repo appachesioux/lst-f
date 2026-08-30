@@ -189,7 +189,27 @@ pub fn apply(
                 // um diretorio que ja existe foi barrado antes, na validacao.
                 if (dirStatus(io, base, c.path) == .dir) continue;
                 base.createDir(io, c.path, .default_dir) catch |err| {
-                    failure = .{ .phase = "criar", .detail = c.path, .err = err };
+                    failure = .{ .phase = "criar diretorio", .detail = c.path, .err = err };
+                    break;
+                };
+            } else if (c.kind == .symlink) {
+                const target = c.target orelse "";
+                base.symLink(io, target, c.path, .{}) catch |err| {
+                    failure = .{
+                        .phase = "criar symlink",
+                        .detail = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ c.path, target }),
+                        .err = err,
+                    };
+                    break;
+                };
+            } else if (c.kind == .hardlink) {
+                const target = c.target orelse "";
+                base.hardLink(target, base, c.path, io, .{}) catch |err| {
+                    failure = .{
+                        .phase = "criar hardlink",
+                        .detail = try std.fmt.allocPrint(arena, "{s} => {s}", .{ c.path, target }),
+                        .err = err,
+                    };
                     break;
                 };
             } else {
@@ -341,6 +361,17 @@ pub fn revert(
                 else => try errors.append(arena, try std.fmt.allocPrint(
                     arena,
                     "remover {s}/ criado: {s}",
+                    .{ entry.path, @errorName(err) },
+                )),
+            };
+            continue;
+        }
+        if (entry.kind == .symlink or entry.kind == .hardlink) {
+            base.deleteFile(io, entry.path) catch |err| switch (err) {
+                error.FileNotFound => {},
+                else => try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "remover {s} criado: {s}",
                     .{ entry.path, @errorName(err) },
                 )),
             };
@@ -538,4 +569,3 @@ pub fn processAlive(pid: std.posix.pid_t) bool {
     };
     return true;
 }
-

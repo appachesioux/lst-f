@@ -203,4 +203,3 @@ pub fn which(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, 
     }
     return whichPathOnly(arena, io, environ, name);
 }
-
