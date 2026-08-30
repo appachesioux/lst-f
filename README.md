@@ -46,6 +46,7 @@ que você acabou de entrar por SSH.
 | `q` no buffer                        | sai do `lst-f`                            |
 | `ZZ`                                  | sai do `lst-f`                            |
 | `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
+| `F4`                                  | abre terminal / shell interativo no diretório atual |
 | `Enter` sobre diretório               | entra nele                                 |
 | `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista   |
 | `Enter` sobre arquivo binário/mídia   | abre no app padrão via `xdg-open`          |
@@ -58,7 +59,14 @@ que você acabou de entrar por SSH.
 | `Ctrl+S`                              | abre/fecha o painel dividido de destino    |
 | `Tab`                                 | alterna o foco entre painel principal e split |
 | `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
+| `S` ou `s` no split                   | copia formato de symlink (`nome -> caminho`) para colar (`p`) |
+| `F4` no split                         | abre terminal no diretório de destino      |
+| `nome -> alvo` em linha nova          | cria symlink apontando para o alvo         |
+| `nome => alvo` em linha nova          | cria hardlink apontando para o alvo        |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
+| `:sh [dir]`                          | abre terminal / shell no diretório (`:shell`, `:terminal`) |
+| `:ln <alvo> [nome]`                  | cria symlink para o alvo (`:link`, `:symlink`) |
+| `:hardlink <alvo> [nome]`            | cria hardlink para o alvo                  |
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
@@ -130,7 +138,15 @@ Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
 
 Uma linha que não começa por ID é um nome novo: `notas.md` cria o arquivo vazio,
 `docs/` cria o diretório, `docs/2026/notas.md` cria os dois níveis que faltarem
-antes do arquivo. As criações acontecem depois das renomeações, então um nome
+antes do arquivo.
+
+Para criar **links**:
+- `meu-link -> /caminho/do/alvo` cria um **symlink** apontando para o alvo (relativo ou absoluto).
+- `meu-link => /caminho/do/alvo` cria um **hardlink** apontando para o alvo.
+- Ou use as diretivas `:ln <alvo> [nome]` (`:link`, `:symlink`) e `:hardlink <alvo> [nome]`.
+- No painel dividido (`Ctrl+S`), pressione `S` ou `s` sobre qualquer entrada para copiar no formato `nome -> /caminho/completo` e colar (`p`) direto no buffer principal.
+
+As criações acontecem depois das renomeações, então um nome
 liberado no mesmo `:w` pode ser reocupado — arquivar `log.txt` como `log.1.txt`
 e criar um `log.txt` novo funciona em um passo só.
 

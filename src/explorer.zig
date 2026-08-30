@@ -338,6 +338,8 @@ pub fn kindChar(e: Entry) u8 {
     return switch (e.kind) {
         .dir => 'd',
         .file => '-',
+        .symlink => 'l',
+        .hardlink => '-',
         .other => '?',
     };
 }
@@ -429,4 +431,3 @@ pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool) []const u8 {
 
     return "\xef\x85\x9b"; //  generic
 }
-

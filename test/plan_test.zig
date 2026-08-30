@@ -703,3 +703,96 @@ test "diretiva :hidden eh parseada corretamente" {
     const t3 = (try parseBuffer(f.a(), "/0001  a.txt\n:hidden off\n", &.{})).ok;
     try testing.expectEqual(@as(?bool, false), t3.directive.?.hidden);
 }
+
+test "criacao de symlink e hardlink por sintaxe no buffer" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const text =
+        \\/0001  a.txt
+        \\meu-link.txt -> a.txt
+        \\atalho-relativo -> ../outro.txt
+        \\meu-hardlink => a.txt
+    ;
+    const doc = (try parseBuffer(f.a(), text, &.{})).ok;
+    try testing.expectEqual(@as(usize, 1), doc.edits.len);
+    try testing.expectEqual(@as(usize, 3), doc.creates.len);
+
+    try testing.expectEqualStrings("meu-link.txt", doc.creates[0].path);
+    try testing.expectEqualStrings("a.txt", doc.creates[0].target.?);
+    try testing.expectEqual(Kind.symlink, doc.creates[0].kind);
+
+    try testing.expectEqualStrings("atalho-relativo", doc.creates[1].path);
+    try testing.expectEqualStrings("../outro.txt", doc.creates[1].target.?);
+    try testing.expectEqual(Kind.symlink, doc.creates[1].kind);
+
+    try testing.expectEqualStrings("meu-hardlink", doc.creates[2].path);
+    try testing.expectEqualStrings("a.txt", doc.creates[2].target.?);
+    try testing.expectEqual(Kind.hardlink, doc.creates[2].kind);
+
+    const plan_res = try build(f.a(), &.{orig(1, "a.txt", .file)}, doc.edits, doc.creates, .{});
+    const p = plan_res.ok;
+    try testing.expectEqual(@as(usize, 3), p.creates.len);
+    try testing.expectEqualStrings("meu-link.txt", p.creates[0].path);
+    try testing.expectEqualStrings("a.txt", p.creates[0].target.?);
+}
+
+test "criacao de symlink e hardlink por diretivas :ln, :symlink, :hardlink" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const text =
+        \\/0001  a.txt
+        \\:ln /var/log/app.log link-log
+        \\:symlink /tmp/dados.csv
+        \\:hardlink a.txt a-hard.txt
+    ;
+    const doc = (try parseBuffer(f.a(), text, &.{})).ok;
+    try testing.expectEqual(@as(usize, 3), doc.creates.len);
+
+    try testing.expectEqualStrings("link-log", doc.creates[0].path);
+    try testing.expectEqualStrings("/var/log/app.log", doc.creates[0].target.?);
+    try testing.expectEqual(Kind.symlink, doc.creates[0].kind);
+
+    try testing.expectEqualStrings("dados.csv", doc.creates[1].path);
+    try testing.expectEqualStrings("/tmp/dados.csv", doc.creates[1].target.?);
+    try testing.expectEqual(Kind.symlink, doc.creates[1].kind);
+
+    try testing.expectEqualStrings("a-hard.txt", doc.creates[2].path);
+    try testing.expectEqualStrings("a.txt", doc.creates[2].target.?);
+    try testing.expectEqual(Kind.hardlink, doc.creates[2].kind);
+}
+
+test "link sem destino reporta erro" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const bad_creates = [_]Create{.{
+        .line = 1,
+        .path = "meu-link",
+        .target = "",
+        .kind = .symlink,
+    }};
+    try expectProblem(try build(f.a(), &.{}, &.{}, &bad_creates, .{}), .link_empty_target);
+}
+
+test "diretiva :sh / :shell / :terminal eh parseada corretamente" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const t1 = (try parseBuffer(f.a(), "/0001  a.txt\n:sh\n", &.{})).ok;
+    try testing.expect(t1.directive.? == .shell);
+    try testing.expectEqual(@as(?[]const u8, null), t1.directive.?.shell);
+
+    const t2 = (try parseBuffer(f.a(), "/0001  a.txt\n:shell /tmp\n", &.{})).ok;
+    try testing.expect(t2.directive.? == .shell);
+    try testing.expectEqualStrings("/tmp", t2.directive.?.shell.?);
+
+    const t3 = (try parseBuffer(f.a(), "/0001  a.txt\n:terminal\n", &.{})).ok;
+    try testing.expect(t3.directive.? == .shell);
+    try testing.expectEqual(@as(?[]const u8, null), t3.directive.?.shell);
+
+    const t4 = (try parseBuffer(f.a(), "/0001  a.txt\n:term sub/dir\n", &.{})).ok;
+    try testing.expect(t4.directive.? == .shell);
+    try testing.expectEqualStrings("sub/dir", t4.directive.?.shell.?);
+}

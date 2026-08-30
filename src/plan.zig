@@ -7,7 +7,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-pub const Kind = enum { dir, file, other };
+pub const Kind = enum { dir, file, symlink, hardlink, other };
 
 /// Uma entrada enviada ao editor. `path` e relativo ao diretorio-base da operacao.
 pub const Original = struct {
@@ -27,11 +27,13 @@ pub const Edit = struct {
 };
 
 /// Uma linha do buffer que nao comeca por ID: pedido de criacao. Barra no fim
-/// pede diretorio; qualquer pai que falte entra em `Plan.mkdirs`.
+/// pede diretorio; qualquer pai que falte entra em `Plan.mkdirs`. `target` e o
+/// destino de um symlink ou hardlink.
 pub const Create = struct {
     /// Linha no buffer, para o relatorio de problemas.
     line: u32 = 0,
     path: []const u8,
+    target: ?[]const u8 = null,
     kind: Kind,
     /// Diretorio-pai derivado de outra criacao. Ja existir e o caso normal,
     /// nao um erro -- ao contrario do que a linha pediu explicitamente.
@@ -57,6 +59,7 @@ pub const Problem = union(enum) {
     create_over_removed: struct { line: u32, path: []const u8, id: u32 },
     create_under_touched: struct { line: u32, path: []const u8, id: u32 },
     create_exists: struct { line: u32, path: []const u8 },
+    link_empty_target: struct { line: u32, path: []const u8 },
     copy_no_free_name: struct { id: u32, path: []const u8 },
     copy_under_touched: struct { id: u32, path: []const u8 },
     id_without_path: struct { line: u32 },
@@ -92,6 +95,7 @@ pub const Problem = union(enum) {
                 .{ v.line, v.path, v.id },
             ),
             .create_exists => |v| try w.print("linha {d}: {s} ja existe no disco", .{ v.line, v.path }),
+            .link_empty_target => |v| try w.print("linha {d}: link \"{s}\" sem destino (alvo)", .{ v.line, v.path }),
             .copy_no_free_name => |v| try w.print(
                 "ID {d}: {s} colide e nao sobrou nome livre com sufixo (-01 a -99)",
                 .{ v.id, v.path },
@@ -285,6 +289,12 @@ pub fn build(
     const create_paths = try arena.alloc(?[]const u8, creates.len);
     @memset(create_paths, null);
     for (creates, 0..) |c, i| {
+        if (c.kind == .symlink or c.kind == .hardlink) {
+            if (c.target == null or c.target.?.len == 0) {
+                try problems.append(arena, .{ .link_empty_target = .{ .line = c.line, .path = c.path } });
+                continue;
+            }
+        }
         if (c.path.len > 0 and c.path[0] == '/') {
             try problems.append(arena, .{ .create_absolute = .{ .line = c.line, .path = c.path } });
             continue;
@@ -526,7 +536,12 @@ pub fn build(
         }
         // Diretorio que ja entrou como pai implicito nao entra duas vezes.
         if ((try new_seen.getOrPut(arena, path)).found_existing) continue;
-        try new_entries.append(arena, .{ .line = c.line, .path = path, .kind = c.kind });
+        try new_entries.append(arena, .{
+            .line = c.line,
+            .path = path,
+            .target = c.target,
+            .kind = c.kind,
+        });
     }
 
     // --- 8. Ordem de execucao: ciclos, troca so de caixa e remocao antecipada -
@@ -717,6 +732,7 @@ pub const Directive = union(enum) {
     cd: []const u8,
     find: []const u8,
     open: []const u8,
+    shell: ?[]const u8,
     hidden: ?bool,
     /// Inserida pelo helper antes de `:w`, para que salvar sem alteracao
     /// mantenha a sessao aberta e apenas atualize a listagem.
@@ -815,12 +831,41 @@ fn extractPath(body: []const u8) []const u8 {
 
 /// Linha do corpo que nao comeca por ID: pedido de criacao. O espaco a esquerda
 /// e alinhamento com a coluna NAME, nunca parte do nome.
+/// `nome -> alvo` cria symlink; `nome => alvo` cria hardlink.
 fn newEntry(line: []const u8, line_no: u32) ?Create {
     const body = std.mem.trimStart(u8, extractPath(std.mem.trimStart(u8, line, " \t")), " \t");
     if (body.len == 0) return null;
+
+    if (std.mem.indexOf(u8, body, " -> ")) |sep| {
+        const link_name = std.mem.trim(u8, body[0..sep], " \t");
+        const target = std.mem.trim(u8, body[sep + 4 ..], " \t");
+        if (link_name.len > 0) {
+            return .{
+                .line = line_no,
+                .path = link_name,
+                .target = target,
+                .kind = .symlink,
+            };
+        }
+    }
+
+    if (std.mem.indexOf(u8, body, " => ")) |sep| {
+        const link_name = std.mem.trim(u8, body[0..sep], " \t");
+        const target = std.mem.trim(u8, body[sep + 4 ..], " \t");
+        if (link_name.len > 0) {
+            return .{
+                .line = line_no,
+                .path = link_name,
+                .target = target,
+                .kind = .hardlink,
+            };
+        }
+    }
+
     return .{
         .line = line_no,
         .path = body,
+        .target = null,
         .kind = if (body[body.len - 1] == '/') .dir else .file,
     };
 }
@@ -853,14 +898,49 @@ pub fn parseBuffer(
         if (isHeaderLine(line, header)) continue;
 
         if (line[0] == ':') {
-            if (directive != null) {
-                try problems.append(arena, .{ .multiple_directives = .{ .line = line_no } });
-                continue;
-            }
             const body = std.mem.trim(u8, line[1..], " \t");
             const split = std.mem.indexOfAny(u8, body, " \t") orelse body.len;
             const name = body[0..split];
             const argument = std.mem.trim(u8, body[split..], " \t");
+
+            if (std.mem.eql(u8, name, "ln") or std.mem.eql(u8, name, "link") or std.mem.eql(u8, name, "symlink")) {
+                if (argument.len == 0) {
+                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = try arena.dupe(u8, name) } });
+                    continue;
+                }
+                const split_arg = std.mem.indexOfAny(u8, argument, " \t") orelse argument.len;
+                const target = argument[0..split_arg];
+                const raw_name = std.mem.trim(u8, argument[split_arg..], " \t");
+                const link_name = if (raw_name.len > 0) raw_name else std.fs.path.basename(target);
+                try creates.append(arena, .{
+                    .line = line_no,
+                    .path = link_name,
+                    .target = target,
+                    .kind = .symlink,
+                });
+                continue;
+            } else if (std.mem.eql(u8, name, "hardlink")) {
+                if (argument.len == 0) {
+                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = "hardlink" } });
+                    continue;
+                }
+                const split_arg = std.mem.indexOfAny(u8, argument, " \t") orelse argument.len;
+                const target = argument[0..split_arg];
+                const raw_name = std.mem.trim(u8, argument[split_arg..], " \t");
+                const link_name = if (raw_name.len > 0) raw_name else std.fs.path.basename(target);
+                try creates.append(arena, .{
+                    .line = line_no,
+                    .path = link_name,
+                    .target = target,
+                    .kind = .hardlink,
+                });
+                continue;
+            }
+
+            if (directive != null) {
+                try problems.append(arena, .{ .multiple_directives = .{ .line = line_no } });
+                continue;
+            }
 
             if (std.mem.eql(u8, name, "cd")) {
                 directive = .{ .cd = if (argument.len == 0) "~" else argument };
@@ -872,6 +952,8 @@ pub fn parseBuffer(
                     continue;
                 }
                 directive = .{ .open = argument };
+            } else if (std.mem.eql(u8, name, "sh") or std.mem.eql(u8, name, "shell") or std.mem.eql(u8, name, "terminal") or std.mem.eql(u8, name, "term")) {
+                directive = .{ .shell = if (argument.len == 0) null else argument };
             } else if (std.mem.eql(u8, name, "find")) {
                 directive = .{ .find = argument };
             } else if (std.mem.eql(u8, name, "hidden") or std.mem.eql(u8, name, "hide") or std.mem.eql(u8, name, "dotfiles")) {
