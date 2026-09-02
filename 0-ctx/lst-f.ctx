@@ -225,6 +225,11 @@ O MVP e as funcionalidades principais estão implementados.
    - Abertura de arquivos binários via `explorer.exe` / `start` no Windows quando `xdg-open` não estiver presente.
    - Mapeamento de atributos NTFS (ReadOnly, Archive, Hidden) para a coluna `PERMS`.
 
+2. **Movimentação entre diretórios via Cut/Paste integrado à Área de Sessão (`dd` / `:cut` -> `:cd` -> `:paste` / `p`)**:
+   - Integração do fluxo de recorte com a área temporária da sessão (`.lst-f-<pid>/`): arquivos removidos ou marcados com `:cut` podem ser colados com `:paste` em outro diretório visitado durante a mesma sessão viva.
+   - Resolução de IDs reindexados na navegação: vincular o arquivo temporário da área de sessão ao novo diretório `s.base` ao salvar (`:w`).
+   - Fallback de cross-device (`EXDEV`): cópia recursiva + remoção na origem quando a pasta de destino estiver em outro ponto de montagem / filesystem.
+
 Fora de escopo: lixeira do sistema (FreeDesktop/Recycle Bin) e integração com Git (fora de escopo em definitivo).
 
 ## Referências

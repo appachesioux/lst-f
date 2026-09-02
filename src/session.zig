@@ -151,7 +151,7 @@ pub const State = struct {
             \\set nocompatible
             \\" A busca do Vim segue a mesma regra do fzf: minusculas ignoram
             \\" caixa; uma maiuscula torna a consulta sensivel a caixa.
-            \\set ignorecase smartcase
+            \\set ignorecase smartcase incsearch
             \\let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
             \\  \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
             \\let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
@@ -200,6 +200,8 @@ pub const State = struct {
             \\    \ '    Enter          Abre arquivo ou entra no diretorio da linha',
             \\    \ '    -              Sobe para o diretorio-pai',
             \\    \ '    r ou Ctrl+R    Recarrega (refresh) a lista atual',
+            \\    \ '    yr ou yp       Copia caminho relativo para o clipboard',
+            \\    \ '    ya             Copia caminho absoluto para o clipboard',
             \\    \ '    < e >          Voltam e avancam nos diretorios visitados',
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    F4             Abre terminal / shell no diretorio atual',
@@ -276,7 +278,10 @@ pub const State = struct {
             \\function! s:lstf_entry_path(...) abort
             \\  let l:line = a:0 > 0 ? a:1 : getline('.')
             \\  if l:line !~# '^/\d\+\s\+'
-            \\    return ''
+            \\    if l:line =~# '^[:#]' || l:line =~# '^\s*$' | return '' | endif
+            \\    let l:raw = substitute(substitute(l:line, '^\s*', '', ''), '\s*$', '', '')
+            \\    let l:arrow = match(l:raw, '\s->\s\|\s=>\s')
+            \\    return l:arrow >= 0 ? substitute(strpart(l:raw, 0, l:arrow), '\s*$', '', '') : l:raw
             \\  endif
             \\  let l:start = s:lstf_name_start(l:line)
             \\  if l:start > 0
@@ -293,6 +298,62 @@ pub const State = struct {
             \\    return strpart(l:body, l:sep2 + 7)
             \\  endif
             \\  return l:body
+            \\endfunction
+            \\
+            \\function! s:lstf_set_clipboard(text) abort
+            \\  let @" = a:text
+            \\  let @+ = a:text
+            \\  let @* = a:text
+            \\  if executable('wl-copy') && (!empty($WAYLAND_DISPLAY) || !empty($WAYLAND_SOCKET))
+            \\    call system('wl-copy', a:text)
+            \\  elseif executable('xclip') && !empty($DISPLAY)
+            \\    call system('xclip -selection clipboard', a:text)
+            \\  elseif executable('xsel') && !empty($DISPLAY)
+            \\    call system('xsel --clipboard --input', a:text)
+            \\  elseif executable('pbcopy')
+            \\    call system('pbcopy', a:text)
+            \\  elseif executable('clip.exe')
+            \\    call system('clip.exe', a:text)
+            \\  elseif executable('wl-copy')
+            \\    call system('wl-copy', a:text)
+            \\  endif
+            \\endfunction
+            \\
+            \\function! LstfYank(...) abort
+            \\  let l:abs = a:0 > 0 ? a:1 : 0
+            \\  let l:entry = s:lstf_entry_path()
+            \\  if empty(l:entry)
+            \\    return
+            \\  endif
+            \\  if l:abs
+            \\    let l:loc = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\    let l:path = simplify(l:loc . '/' . l:entry)
+            \\  else
+            \\    let l:path = l:entry
+            \\  endif
+            \\  call s:lstf_set_clipboard(l:path)
+            \\  let s:lstf_notice = 'caminho copiado: ' . l:path
+            \\  redrawstatus!
+            \\endfunction
+            \\
+            \\function! s:lstf_yank_visual(abs) range abort
+            \\  let l:paths = []
+            \\  let l:loc = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\  for l:lnum in range(a:firstline, a:lastline)
+            \\    let l:entry = s:lstf_entry_path(getline(l:lnum))
+            \\    if empty(l:entry) | continue | endif
+            \\    if a:abs
+            \\      call add(l:paths, simplify(l:loc . '/' . l:entry))
+            \\    else
+            \\      call add(l:paths, l:entry)
+            \\    endif
+            \\  endfor
+            \\  if !empty(l:paths)
+            \\    let l:text = join(l:paths, "\n")
+            \\    call s:lstf_set_clipboard(l:text)
+            \\    let s:lstf_notice = len(l:paths) == 1 ? ('caminho copiado: ' . l:paths[0]) : (len(l:paths) . ' caminhos copiados')
+            \\    redrawstatus!
+            \\  endif
             \\endfunction
             \\
             \\function! s:lstf_is_binary(path) abort
@@ -1007,10 +1068,8 @@ pub const State = struct {
             \\  if isdirectory(l:target)
             \\    call s:lstf_render_dest(l:target)
             \\  else
-            \\    let @\" = l:target
-            \\    let @+ = l:target
-            \\    let @* = l:target
-            \\    let s:lstf_notice = 'destino copiado'
+            \\    call s:lstf_set_clipboard(l:target)
+            \\    let s:lstf_notice = 'destino copiado: ' . l:target
             \\    redrawstatus!
             \\  endif
             \\endfunction
@@ -1042,10 +1101,8 @@ pub const State = struct {
             \\  else
             \\    let l:path = s:lstf_dest_dir
             \\  endif
-            \\  let @\" = l:path
-            \\  let @+ = l:path
-            \\  let @* = l:path
-            \\  let s:lstf_notice = 'caminho copiado'
+            \\  call s:lstf_set_clipboard(l:path)
+            \\  let s:lstf_notice = 'caminho copiado: ' . l:path
             \\  redrawstatus!
             \\endfunction
             \\
@@ -1070,9 +1127,7 @@ pub const State = struct {
             \\    if empty(l:clean_name) | let l:clean_name = 'link' | endif
             \\    let l:link_entry = l:clean_name . ' -> ' . l:target
             \\  endif
-            \\  let @\" = l:link_entry
-            \\  let @+ = l:link_entry
-            \\  let @* = l:link_entry
+            \\  call s:lstf_set_clipboard(l:link_entry)
             \\  let s:lstf_notice = 'link copiado: ' . l:link_entry
             \\  redrawstatus!
             \\endfunction
@@ -1344,6 +1399,14 @@ pub const State = struct {
             \\nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
             \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
             \\nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
+            \\nnoremap <buffer> <silent> yr :call LstfYank(0)<CR>
+            \\nnoremap <buffer> <silent> yp :call LstfYank(0)<CR>
+            \\nnoremap <buffer> <silent> ya :call LstfYank(1)<CR>
+            \\nnoremap <buffer> <silent> yA :call LstfYank(1)<CR>
+            \\xnoremap <buffer> <silent> yr :<C-u>call <SID>lstf_yank_visual(0)<CR>
+            \\xnoremap <buffer> <silent> yp :<C-u>call <SID>lstf_yank_visual(0)<CR>
+            \\xnoremap <buffer> <silent> ya :<C-u>call <SID>lstf_yank_visual(1)<CR>
+            \\xnoremap <buffer> <silent> yA :<C-u>call <SID>lstf_yank_visual(1)<CR>
             \\nnoremap <buffer> <silent> q :call LstfQuit()<CR>
             \\nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\function! s:lstf_cmd_cr() abort
@@ -1367,6 +1430,10 @@ pub const State = struct {
             \\      return "\x15Ln" . l:cmd[match(l:cmd, '\s\|\$')..] . "\r"
             \\    elseif l:cmd =~# '^hardlink\%(\s.*\|\)$'
             \\      return "\x15Hardlink" . l:cmd[8:] . "\r"
+            \\    elseif l:cmd =~# '^\%(yank\|copy\|relpath\)\%(\s.*\|\)$'
+            \\      return "\x15Yank\r"
+            \\    elseif l:cmd =~# '^\%(abspath\|realpath\)\%(\s.*\|\)$'
+            \\      return "\x15YankAbs\r"
             \\    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
             \\      return "\x15call LstfQuit()\r"
             \\    endif
@@ -1395,6 +1462,15 @@ pub const State = struct {
             \\cnoreabbrev <expr> <buffer> shell getcmdtype() ==# ':' && getcmdline() =~# '^shell\%(\s.*\|\)$' ? 'Shell' : 'shell'
             \\cnoreabbrev <expr> <buffer> terminal getcmdtype() ==# ':' && getcmdline() =~# '^terminal\%(\s.*\|\)$' ? 'Terminal' : 'terminal'
             \\cnoreabbrev <expr> <buffer> term getcmdtype() ==# ':' && getcmdline() =~# '^term\%(\s.*\|\)$' ? 'Term' : 'term'
+            \\command! -buffer -nargs=0 Yank call LstfYank(0)
+            \\command! -buffer -nargs=0 YankRel call LstfYank(0)
+            \\command! -buffer -nargs=0 YankAbs call LstfYank(1)
+            \\command! -buffer -nargs=0 Copy call LstfYank(0)
+            \\cnoreabbrev <expr> <buffer> yank getcmdtype() ==# ':' && getcmdline() =~# '^yank\%(\s.*\|\)$' ? 'Yank' : 'yank'
+            \\cnoreabbrev <expr> <buffer> copy getcmdtype() ==# ':' && getcmdline() =~# '^copy\%(\s.*\|\)$' ? 'Copy' : 'copy'
+            \\cnoreabbrev <expr> <buffer> relpath getcmdtype() ==# ':' && getcmdline() =~# '^relpath\%(\s.*\|\)$' ? 'Yank' : 'relpath'
+            \\cnoreabbrev <expr> <buffer> abspath getcmdtype() ==# ':' && getcmdline() =~# '^abspath\%(\s.*\|\)$' ? 'YankAbs' : 'abspath'
+            \\cnoreabbrev <expr> <buffer> realpath getcmdtype() ==# ':' && getcmdline() =~# '^realpath\%(\s.*\|\)$' ? 'YankAbs' : 'realpath'
             \\function! s:lstf_cmd_ln(args) abort
             \\  if empty(a:args) | return | endif
             \\  call s:lstf_write_directive(':ln ' . a:args)
