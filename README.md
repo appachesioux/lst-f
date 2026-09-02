@@ -56,6 +56,8 @@ que você acabou de entrar por SSH.
 | `\`                                   | abre uma árvore visual do diretório atual  |
 | `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
 | `Ctrl+A`                              | seleciona todo o buffer do `lst-f`         |
+| `yr` ou `yp`                          | copia caminho relativo do arquivo/diretório para o clipboard |
+| `ya`                                  | copia caminho absoluto do arquivo/diretório para o clipboard |
 | `Ctrl+S`                              | abre/fecha o painel dividido de destino    |
 | `Tab`                                 | alterna o foco entre painel principal e split |
 | `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
@@ -67,6 +69,8 @@ que você acabou de entrar por SSH.
 | `:sh [dir]`                          | abre terminal / shell no diretório (`:shell`, `:terminal`) |
 | `:ln <alvo> [nome]`                  | cria symlink para o alvo (`:link`, `:symlink`) |
 | `:hardlink <alvo> [nome]`            | cria hardlink para o alvo                  |
+| `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor (:copy) |
+| `:abspath` / `:realpath`             | copia o caminho absoluto do arquivo sob o cursor |
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
