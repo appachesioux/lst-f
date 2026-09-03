@@ -1083,8 +1083,26 @@ fn enterVisited(s: *Session, target: []const u8) !bool {
 }
 
 fn openFileInEditor(s: *Session, target: []const u8) !void {
-    const editor = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
-        try explainEditor(s.out, err);
+    // Ao abrir um arquivo para edicao, respeita $VISUAL ou $EDITOR se definido;
+    // se nenhum estiver definido ou se falhar, usa o editor da sessao / vim como fallback.
+    const preferred = s.environ.get("VISUAL") orelse s.environ.get("EDITOR") orelse s.editor_spec;
+    const editor = editor_mod.resolve(s.arena, s.io, s.environ, preferred) catch {
+        const fallback = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
+            try explainEditor(s.out, err);
+            return;
+        };
+        _ = editor_mod.run(
+            s.arena,
+            s.io,
+            fallback,
+            s.environ,
+            target,
+            s.base,
+            null,
+        ) catch |err| {
+            try s.out.print("lst-f: falha ao abrir arquivo no editor: {s}\n", .{@errorName(err)});
+        };
+        try loadListing(s);
         return;
     };
     _ = editor_mod.run(
