@@ -1232,6 +1232,8 @@ pub const State = struct {
             \\highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
             \\highlight LstfFile ctermfg=252 guifg=#c0caf5
             \\highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
+            \\highlight LstfDateRecent cterm=bold ctermfg=10 gui=bold guifg=#a6d189
+            \\highlight LstfDateDay cterm=NONE ctermfg=14 gui=NONE guifg=#7dcfff
             \\set laststatus=2
             \\set noshowmode showtabline=0
             \\set shortmess+=F
@@ -1267,7 +1269,7 @@ pub const State = struct {
             \\  setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
             \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal conceallevel=2 concealcursor=nvic
-            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink LstfLinkCreate LstfArrow
+            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink LstfLinkCreate LstfArrow LstfDateRecent LstfDateDay
             \\  syntax match LstfInternalId /^\/\d\+\s\+/ conceal
             \\  syntax match LstfSep /│/ contained
             \\  syntax match LstfArrow / -> \| => / contained
@@ -1284,6 +1286,15 @@ pub const State = struct {
             \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{2,3} │ .*$/ contains=LstfInternalId,LstfSep
             \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
             \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
+            \\  " Destaque de data para recentes e hoje (arquivos antigos usam a cor padrao da linha):
+            \\  let l:all = 'LstfFile,LstfExec,LstfDir,LstfLink'
+            \\  let l:now = localtime()
+            \\  let l:today = strftime('%Y-%m-%d', l:now)
+            \\  let l:cur_hour = strftime('%Y-%m-%d %H:', l:now)
+            \\  let l:prev_hour = strftime('%Y-%m-%d %H:', l:now - 3600)
+            \\  execute 'syntax match LstfDateDay /' . l:today . ' \d\{2}:\d\{2}/ containedin=' . l:all
+            \\  execute 'syntax match LstfDateRecent /' . l:cur_hour . '\d\{2}/ containedin=' . l:all
+            \\  execute 'syntax match LstfDateRecent /' . l:prev_hour . '\d\{2}/ containedin=' . l:all
             \\endfunction
             \\call s:lstf_configure_buffer()
             \\augroup lstf_buffer

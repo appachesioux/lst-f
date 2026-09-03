@@ -120,6 +120,9 @@ test "editores que nao seguram o terminal sao recusados" {
     _ = try resolve(a, io, &map, "subl -w");
     _ = try resolve(a, io, &map, "vim");
     _ = try resolve(a, io, &map, "vi");
+    _ = try resolve(a, io, &map, "nvim");
+    _ = try resolve(a, io, &map, "nano");
+    _ = try resolve(a, io, &map, "hx");
 }
 
 test "which localiza binarios no PATH e caminhos diretos" {
