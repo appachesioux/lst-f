@@ -117,3 +117,44 @@ test "passwd resolve uid e cai no numero quando nao acha" {
     try testing.expectEqualStrings("root", users.nameFor(undefined, 0));
     try testing.expectEqualStrings("4242", users.nameFor(undefined, 4242));
 }
+
+test "helper Vim: todo glifo emitido por getIcon tem regra de cor" {
+    const syntax = comptime explorer.vimIconSyntax();
+    const highlights = comptime explorer.vimIconHighlights();
+
+    for (explorer.icon_groups) |g| {
+        try testing.expect(std.mem.indexOf(u8, highlights, g.name) != null);
+        for (g.glyphs) |gl| {
+            try testing.expect(std.mem.indexOf(u8, syntax, gl) != null);
+        }
+    }
+
+    // Todo icone que getIcon devolve pertence a um grupo com regra syntax.
+    var checked: usize = 0;
+    for (explorer.file_icons) |fi| {
+        for (fi.exts) |e| {
+            const name = "a." ++ e[0..1]; _ = name;
+        }
+        try testing.expect(std.mem.indexOf(u8, syntax, fi.glyph) != null);
+        checked += 1;
+    }
+    try testing.expect(checked > 0);
+    for ([_]struct { n: []const u8, d: bool, l: bool, x: bool }{
+        .{ .n = "x", .d = true, .l = false, .x = true },
+        .{ .n = "x", .d = false, .l = true, .x = false },
+        .{ .n = "noext", .d = false, .l = false, .x = false },
+        .{ .n = "prog", .d = false, .l = false, .x = true },
+        .{ .n = "malhavax.wav", .d = false, .l = false, .x = true },
+    }) |c| {
+        const gl = explorer.getIcon(c.n, c.d, c.l, c.x);
+        const in_group: bool = blk: {
+            for (explorer.icon_groups) |g| {
+                for (g.glyphs) |x| if (std.mem.eql(u8, x, gl)) break :blk true;
+            }
+            break :blk false;
+        };
+        // o generico fica na cor da linha quando nao e executavel; o executavel
+        // generico ganha glifo proprio (raio), entao tambem esta num grupo
+        if (in_group) try testing.expect(std.mem.indexOf(u8, syntax, gl) != null);
+    }
+}

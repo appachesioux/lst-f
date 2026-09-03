@@ -320,7 +320,7 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try w.writeAll(" │ ");
     try writeTime(w, e.mtime_s);
     try w.writeAll(" │ ");
-    try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink));
+    try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink, e.mode & 0o111 != 0));
 }
 
 pub fn writePadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
@@ -402,32 +402,169 @@ pub fn displayColumns(text: []const u8) usize {
     return total;
 }
 
-pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool) []const u8 {
-    if (is_link) return "\xef\x92\x81"; // 
-    if (is_dir) return "\xef\x84\x95"; // 
+/// Icones e classes de cor. Uma unica tabela alimenta o `getIcon`, as regras
+/// de `syntax match` do helper Vim e as sequencias ANSI da busca fzf: e o que
+/// impede os tres lados de divergirem no glifo.
+pub const glyphs = struct {
+    pub const dir = "\xef\x84\x95"; //
+    pub const link = "\xef\x92\x81"; //
+    pub const generic = "\xef\x85\x9b"; //
+    pub const zig = "\xee\x9a\xa9"; //
+    pub const c = "\xee\x98\x9e"; //
+    pub const cpp = "\xee\x98\x9d"; //
+    pub const rust = "\xee\x9e\xa8"; //
+    pub const go = "\xee\x98\xa7"; //
+    pub const py = "\xee\x98\x86"; //
+    pub const js = "\xee\x9e\x81"; //
+    pub const ts = "\xee\x98\xa8"; //
+    pub const json = "\xee\x98\x8b"; //
+    pub const md = "\xef\x92\x8a"; //
+    pub const img = "\xef\x80\xbe"; //
+    pub const pdf = "\xef\x87\x81"; //
+    pub const zip = "\xef\x90\x90"; //
+    pub const txt = "\xef\x85\x9c"; //
+    pub const sh = "\xef\x92\x89"; //
+    pub const exec = "\xef\x83\xa7"; // nf-fa-bolt: arquivo executavel sem extensao conhecida
+    pub const vim = "\xee\x98\xab"; //
+    pub const sql = "\xef\x87\x80"; //
+    pub const sheet = "\xef\x87\x83"; //
+    pub const config = "\xef\x83\x9a"; //
+    pub const log = "\xef\x83\xb6"; // nf-fa-file_text_o
+    pub const music = "\xef\x80\x81"; // nf-fa-music
+    pub const video = "\xef\x80\x88"; // nf-fa-film
+};
 
-    const ext_idx = std.mem.lastIndexOfScalar(u8, name, '.') orelse return "\xef\x85\x9b"; // 
+pub const IconGroup = struct {
+    /// sufixo do grupo de destaque no Vim: LstfIcon<name>
+    name: []const u8,
+    cterm: []const u8,
+    gui: []const u8,
+    /// ANSI para a busca fzf; '' deixa o icone na cor da linha
+    fzf: []const u8 = "",
+    glyphs: []const []const u8 = &.{},
+};
+
+pub const icon_groups = [_]IconGroup{
+    .{ .name = "Dir", .cterm = "cterm=bold ctermfg=12", .gui = "gui=bold guifg=#61afef", .fzf = "\x1b[1;34m", .glyphs = &.{glyphs.dir} },
+    .{ .name = "Link", .cterm = "cterm=italic ctermfg=14", .gui = "gui=italic guifg=#56b6c2", .fzf = "\x1b[36m", .glyphs = &.{glyphs.link} },
+    .{ .name = "Exec", .cterm = "cterm=bold ctermfg=10", .gui = "gui=bold guifg=#a6d189", .fzf = "\x1b[1;32m", .glyphs = &.{ glyphs.sh, glyphs.vim, glyphs.exec } },
+    .{ .name = "Zig", .cterm = "cterm=bold ctermfg=9", .gui = "gui=bold guifg=#fab387", .fzf = "\x1b[38;5;209m", .glyphs = &.{glyphs.zig} },
+    .{ .name = "Code", .cterm = "ctermfg=13", .gui = "guifg=#cba6f7", .fzf = "\x1b[35m", .glyphs = &.{ glyphs.c, glyphs.cpp, glyphs.rust, glyphs.go, glyphs.js, glyphs.ts } },
+    .{ .name = "Python", .cterm = "ctermfg=11", .gui = "guifg=#f9e2af", .fzf = "\x1b[33m", .glyphs = &.{glyphs.py} },
+    .{ .name = "Data", .cterm = "ctermfg=3", .gui = "guifg=#e5c07b", .fzf = "\x1b[38;5;180m", .glyphs = &.{ glyphs.json, glyphs.sql, glyphs.sheet, glyphs.config, glyphs.log } },
+    .{ .name = "Doc", .cterm = "cterm=bold ctermfg=15", .gui = "gui=bold guifg=#cdd6f4", .fzf = "\x1b[1;37m", .glyphs = &.{ glyphs.md, glyphs.txt } },
+    .{ .name = "Image", .cterm = "ctermfg=5", .gui = "guifg=#f5c2e7", .fzf = "\x1b[38;5;218m", .glyphs = &.{glyphs.img} },
+    .{ .name = "Binary", .cterm = "ctermfg=9", .gui = "guifg=#f38ba8", .fzf = "\x1b[38;5;210m", .glyphs = &.{ glyphs.pdf, glyphs.zip } },
+    .{ .name = "Music", .cterm = "ctermfg=4", .gui = "guifg=#b4befe", .fzf = "\x1b[38;5;147m", .glyphs = &.{glyphs.music} },
+    .{ .name = "Video", .cterm = "ctermfg=6", .gui = "guifg=#94e2d5", .fzf = "\x1b[38;5;116m", .glyphs = &.{glyphs.video} },
+};
+
+/// Extensao -> glifo. A ordem manda: a primeira coincidencia vence.
+pub const file_icons = [_]struct { exts: []const []const u8, glyph: []const u8 }{
+    .{ .exts = &.{ "zig", "zon" }, .glyph = glyphs.zig },
+    .{ .exts = &.{ "c", "h" }, .glyph = glyphs.c },
+    .{ .exts = &.{ "cpp", "hpp" }, .glyph = glyphs.cpp },
+    .{ .exts = &.{"rs"}, .glyph = glyphs.rust },
+    .{ .exts = &.{"go"}, .glyph = glyphs.go },
+    .{ .exts = &.{"py"}, .glyph = glyphs.py },
+    .{ .exts = &.{"js"}, .glyph = glyphs.js },
+    .{ .exts = &.{"ts"}, .glyph = glyphs.ts },
+    .{ .exts = &.{"json"}, .glyph = glyphs.json },
+    .{ .exts = &.{"md"}, .glyph = glyphs.md },
+    .{ .exts = &.{ "png", "jpg", "jpeg", "gif", "svg" }, .glyph = glyphs.img },
+    .{ .exts = &.{"pdf"}, .glyph = glyphs.pdf },
+    .{ .exts = &.{ "zip", "tar", "gz", "xz" }, .glyph = glyphs.zip },
+    .{ .exts = &.{"txt"}, .glyph = glyphs.txt },
+    .{ .exts = &.{ "sh", "bash", "zsh" }, .glyph = glyphs.sh },
+    .{ .exts = &.{"vim"}, .glyph = glyphs.vim },
+    .{ .exts = &.{"sql"}, .glyph = glyphs.sql },
+    .{ .exts = &.{ "xlsx", "xls", "csv" }, .glyph = glyphs.sheet },
+    .{ .exts = &.{ "toml", "yaml", "yml", "ini" }, .glyph = glyphs.config },
+    .{ .exts = &.{ "log" }, .glyph = glyphs.log },
+    .{ .exts = &.{ "mp3", "wav", "flac", "ogg", "oga", "m4a", "opus", "aac" }, .glyph = glyphs.music },
+    .{ .exts = &.{ "mp4", "mkv", "avi", "mov", "webm", "m4v", "mpg", "mpeg" }, .glyph = glyphs.video },
+};
+
+/// `is_exec` so entra quando nem diretorio nem link: o raio marca o binario
+/// executavel cuja extensao nao tem glifo proprio -- sem ele, o coitado
+/// chegaria com o generico e ficaria sem cor, porque a cor mora no glifo.
+pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool, is_exec: bool) []const u8 {
+    if (is_link) return glyphs.link;
+    if (is_dir) return glyphs.dir;
+
+    const ext_idx = std.mem.lastIndexOfScalar(u8, name, '.') orelse
+        return if (is_exec) glyphs.exec else glyphs.generic;
     const ext = name[ext_idx + 1 ..];
 
-    if (std.mem.eql(u8, ext, "zig")) return "\xee\x9a\xa9"; // 
-    if (std.mem.eql(u8, ext, "c") or std.mem.eql(u8, ext, "h")) return "\xee\x98\x9e"; // 
-    if (std.mem.eql(u8, ext, "cpp") or std.mem.eql(u8, ext, "hpp")) return "\xee\x98\x9d"; // 
-    if (std.mem.eql(u8, ext, "rs")) return "\xee\x9e\xa8"; // 
-    if (std.mem.eql(u8, ext, "go")) return "\xee\x98\xa7"; // 
-    if (std.mem.eql(u8, ext, "py")) return "\xee\x98\x86"; // 
-    if (std.mem.eql(u8, ext, "js")) return "\xee\x9e\x81"; // 
-    if (std.mem.eql(u8, ext, "ts")) return "\xee\x98\xa8"; // 
-    if (std.mem.eql(u8, ext, "json")) return "\xee\x98\x8b"; // 
-    if (std.mem.eql(u8, ext, "md")) return "\xef\x92\x8a"; // 
-    if (std.mem.eql(u8, ext, "png") or std.mem.eql(u8, ext, "jpg") or std.mem.eql(u8, ext, "jpeg") or std.mem.eql(u8, ext, "gif")) return "\xef\x80\xbe"; // 
-    if (std.mem.eql(u8, ext, "pdf")) return "\xef\x87\x81"; // 
-    if (std.mem.eql(u8, ext, "zip") or std.mem.eql(u8, ext, "tar") or std.mem.eql(u8, ext, "gz") or std.mem.eql(u8, ext, "xz")) return "\xef\x90\x90"; // 
-    if (std.mem.eql(u8, ext, "txt")) return "\xef\x85\x9c"; // 
-    if (std.mem.eql(u8, ext, "sh") or std.mem.eql(u8, ext, "bash") or std.mem.eql(u8, ext, "zsh")) return "\xef\x92\x89"; // 
-    if (std.mem.eql(u8, ext, "vim")) return "\xee\x98\xab"; // 
-    if (std.mem.eql(u8, ext, "sql")) return "\xef\x87\x80"; // 
-    if (std.mem.eql(u8, ext, "xlsx") or std.mem.eql(u8, ext, "xls") or std.mem.eql(u8, ext, "csv")) return "\xef\x87\x83"; // 
-    if (std.mem.eql(u8, ext, "toml") or std.mem.eql(u8, ext, "yaml") or std.mem.eql(u8, ext, "yml") or std.mem.eql(u8, ext, "ini")) return "\xef\x83\x9a"; // 
+    for (file_icons) |fi| {
+        for (fi.exts) |e| {
+            if (std.mem.eql(u8, ext, e)) return fi.glyph;
+        }
+    }
 
-    return "\xef\x85\x9b"; //  generic
+    return if (is_exec) glyphs.exec else glyphs.generic;
+}
+
+/// ANSI da classe do icone, para a busca fzf; null no generico, que fica na
+/// cor da linha.
+pub fn iconAnsi(glyph: []const u8) ?[]const u8 {
+    for (icon_groups) |g| {
+        for (g.glyphs) |x| {
+            if (std.mem.eql(u8, x, glyph)) return if (g.fzf.len > 0) g.fzf else null;
+        }
+    }
+    return null;
+}
+
+/// Linhas `highlight` dos grupos de icone, geradas da mesma tabela que
+/// `getIcon`: trocar uma cor ou um glifo ali atualiza as duas pontas.
+pub fn vimIconHighlights() []const u8 {
+    @setEvalBranchQuota(100_000);
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    // A ultima linha de cada bloco `\\` do helper nao ganha nova: comecar
+    // com \n e o que evita costurar na linha anterior.
+    buf[0] = '\n';
+    n = 1;
+    inline for (icon_groups) |g| {
+        const line = "highlight LstfIcon" ++ g.name ++ " " ++ g.cterm ++ " " ++ g.gui ++ "\n";
+        @memcpy(buf[n .. n + line.len], line);
+        n += line.len;
+    }
+    const finalized: [4096]u8 = buf; // desvincula do comptime var
+    return finalized[0..n];
+}
+
+/// Regras `syntax match` que pintam so o glifo do icone. O glifo e de uso
+/// privado (PUA) e unico por grupo, entao ele mesmo basta como âncora: nao ha
+/// porque casar o `│ ` anterior -- e nao se pode: o `LstfSep` ja consome cada
+/// divisor como item contido, e regra contida nao pode comecar em ponto ja
+/// coberto por outra; por isso a cor mora no glifo, e o binario executavel sem
+/// extensao conhecida ganha glifo proprio em `getIcon` (um override que olhasse
+/// a permissao `x` na linha nunca casaria: o unico ponto livre antes do icone
+/// generico esta atras das barras). O `containedin` ancora a regra na linha,
+/// ja colorida de forma neutra.
+pub fn vimIconSyntax() []const u8 {
+    @setEvalBranchQuota(100_000);
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    const put = struct {
+        fn at(b: *[4096]u8, idx: *usize, s: []const u8) void {
+            @memcpy(b[idx.* .. idx.* + s.len], s);
+            idx.* += s.len;
+        }
+    }.at;
+    put(&buf, &n, "\n  silent! syntax clear");
+    inline for (icon_groups) |g| put(&buf, &n, " LstfIcon" ++ g.name);
+    put(&buf, &n, "\n");
+    inline for (icon_groups) |g| {
+        put(&buf, &n, "  syntax match LstfIcon" ++ g.name ++ " /\\%(");
+        for (g.glyphs, 0..) |gl, i| {
+            if (i != 0) put(&buf, &n, "\\|");
+            put(&buf, &n, gl);
+        }
+        put(&buf, &n, "\\)/ containedin=LstfFile\n");
+    }
+    const finalized: [4096]u8 = buf; // desvincula do comptime var
+    return finalized[0..n];
 }
