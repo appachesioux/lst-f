@@ -248,14 +248,20 @@ const ansi = struct {
 pub fn writeDisplay(w: *Io.Writer, e: explorer.Entry, options: explorer.Options) Io.Writer.Error!void {
     try writeDetails(w, e, options);
     if (options.icons) {
-        try w.writeAll(explorer.getIcon(e.path, e.kind == .dir, e.symlink));
+        const glyph = explorer.getIcon(e.path, e.kind == .dir, e.symlink, e.mode & 0o111 != 0);
+        const tint = if (options.color) explorer.iconAnsi(glyph) else null;
+        if (tint) |a| try w.writeAll(a);
+        try w.writeAll(glyph);
+        if (tint) |_| try w.writeAll(ansi.reset);
         try w.writeAll(" ");
     }
     if (!e.utf8_ok) {
         if (options.color) try w.writeAll(ansi.warn);
         try w.writeAll("!");
     }
-    if (options.color and e.utf8_ok) {
+    // Sem icone na tela, a cor volta para o nome: ele e o unico sinal visual
+    // do tipo. Com icone, a linha fica neutra e o glifo carrega a cor.
+    if (options.color and !options.icons and e.utf8_ok) {
         if (e.symlink) {
             try w.writeAll(ansi.link);
         } else if (e.kind == .dir) {

@@ -8,6 +8,7 @@
 //! filhos recebem o caminho deste diretorio pela variavel `LST_F_STATE`.
 
 const std = @import("std");
+const explorer = @import("explorer.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -862,7 +863,7 @@ pub const State = struct {
             \\    endfor
             \\  endif
             \\  let l:icon_at = len(l:parts[0]) + 1
-            \\  call matchaddpos('LstfDir', [[1, l:icon_at, len(l:parts[1])]], 10)
+            \\  call matchaddpos('LstfIconDir', [[1, l:icon_at, len(l:parts[1])]], 10)
             \\  let l:spots = []
             \\  let l:at = l:icon_at + len(l:parts[1])
             \\  if len(l:parts[2]) > 0 | call add(l:spots, [1, l:at, len(l:parts[2])]) | endif
@@ -1223,14 +1224,16 @@ pub const State = struct {
             \\" usa a mesma cor, para nao haver uma emenda no fim do nome.
             \\highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
-            \\" Cores por natureza da entrada, as mesmas do xpl-f. O par cterm
-            \\" nao e enfeite: servidor sem truecolor so enxerga esse lado.
-            \\highlight LstfDir cterm=bold ctermfg=12 gui=bold guifg=#61afef
-            \\highlight LstfExec cterm=bold ctermfg=10 gui=bold guifg=#a6d189
-            \\highlight LstfLink ctermfg=14 gui=italic guifg=#56b6c2
+            \\" Cores por natureza da entrada: a linha e neutra e o tipo mora no icone.
+            \\" O mapa glifo-destaque sai gerado da tabela Zig, logo abaixo, para que
+            \\" buffer, helper e busca nunca divirjam. O par cterm nao e enfeite:
+            \\" servidor sem truecolor so enxerga esse lado.
+            \\highlight LstfFile ctermfg=252 guifg=#c0caf5
+        );
+        try w.writeAll(comptime explorer.vimIconHighlights());
+        try w.writeAll(
             \\highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
             \\highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
-            \\highlight LstfFile ctermfg=252 guifg=#c0caf5
             \\highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
             \\highlight LstfDateRecent cterm=bold ctermfg=10 gui=bold guifg=#a6d189
             \\highlight LstfDateDay cterm=NONE ctermfg=14 gui=NONE guifg=#7dcfff
@@ -1269,25 +1272,24 @@ pub const State = struct {
             \\  setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
             \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal conceallevel=2 concealcursor=nvic
-            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfExec LstfDir LstfLink LstfLinkCreate LstfArrow LstfDateRecent LstfDateDay
+            \\  silent! syntax clear LstfInternalId LstfSep LstfFile LstfLinkCreate LstfArrow LstfDateRecent LstfDateDay
             \\  syntax match LstfInternalId /^\/\d\+\s\+/ conceal
             \\  syntax match LstfSep /│/ contained
             \\  syntax match LstfArrow / -> \| => / contained
             \\  syntax match LstfLinkCreate /^[^\/:\#].*\%( -> \| => \).*$/ contains=LstfArrow
             \\  " O sequencial e metadado interno: oculta-lo tambem na linha do
             \\  " cursor evita deslocar as colunas, inclusive ao voltar do :find.
-            \\  " A linha inteira e um item por natureza, com o ID e os divisores
-            \\  " contidos nele. Ancorar nos cinco divisores, e nao em contagem de
-            \\  " caracteres, e o que deixa o nome com `│` dentro ainda cair no
-            \\  " grupo certo. LstfExec vem depois de LstfFile de proposito: entre
-            \\  " itens que comecam na mesma coluna, o Vim da prioridade ao definido
-            \\  " por ultimo.
-            \\  syntax match LstfFile /^\/\d\+\s\+[-?]\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfExec /^\/\d\+\s\+- │ [^│]*x[^│]*\%( │ [^│]*\)\{2,3} │ .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfDir /^\/\d\+\s\+d\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
-            \\  syntax match LstfLink /^\/\d\+\s\+l\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
+            \\  " A linha inteira e um item, com o ID e os divisores contidos
+            \\  " nela -- e neutra por design: o tipo se ve no icone colorido,
+            \\  " pintado pelas regras geradas da tabela Zig logo abaixo. Ancorar
+            \\  " nos cinco divisores, e nao em contagem de caracteres, e o que
+            \\  " deixa o nome com `│` dentro ainda cair no grupo certo.
+            \\  syntax match LstfFile /^\/\d\+\s\+[-dl?]\%( │ [^│]*\)\{3,4} │ .*$/ contains=LstfInternalId,LstfSep
+        );
+        try w.writeAll(comptime explorer.vimIconSyntax());
+        try w.writeAll(
             \\  " Destaque de data para recentes e hoje (arquivos antigos usam a cor padrao da linha):
-            \\  let l:all = 'LstfFile,LstfExec,LstfDir,LstfLink'
+            \\  let l:all = 'LstfFile'
             \\  let l:now = localtime()
             \\  let l:today = strftime('%Y-%m-%d', l:now)
             \\  let l:cur_hour = strftime('%Y-%m-%d %H:', l:now)
