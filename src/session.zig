@@ -1214,7 +1214,7 @@ pub const State = struct {
             \\" baixo e a statusline da janela de cabecalho, na cor da moldura.
             \\highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
             \\highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
-            \\highlight LstfPath cterm=bold ctermfg=11 gui=bold guifg=#f9e2af guibg=NONE
+            \\highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
             \\highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
             \\highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
             \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
@@ -1235,8 +1235,8 @@ pub const State = struct {
             \\highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
             \\highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
             \\highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
-            \\highlight LstfDateRecent cterm=bold ctermfg=10 gui=bold guifg=#a6d189
-            \\highlight LstfDateDay cterm=NONE ctermfg=14 gui=NONE guifg=#7dcfff
+            \\highlight LstfDateRecent cterm=NONE ctermfg=11 gui=NONE guifg=#f9e2af
+            \\highlight LstfDateDay cterm=NONE ctermfg=10 gui=NONE guifg=#a6d189
             \\set laststatus=2
             \\set noshowmode showtabline=0
             \\set shortmess+=F
