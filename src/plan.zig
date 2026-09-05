@@ -728,12 +728,15 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
 /// Diretiva de navegacao: a linha comeca por `:`, como um comando ex. Linha de
 /// entrada sempre comeca por `/` seguido de digitos, entao nao ha ambiguidade
 /// com nome de arquivo nem com diretiva.
+pub const Theme = enum { light, dark };
+
 pub const Directive = union(enum) {
     cd: []const u8,
     find: []const u8,
     open: []const u8,
     shell: ?[]const u8,
     hidden: ?bool,
+    theme: ?Theme,
     /// Inserida pelo helper antes de `:w`, para que salvar sem alteracao
     /// mantenha a sessao aberta e apenas atualize a listagem.
     refresh,
@@ -968,6 +971,22 @@ pub fn parseBuffer(
                         .unknown_directive = .{ .line = line_no, .name = try arena.dupe(u8, name) },
                     });
                 }
+            } else if (std.mem.eql(u8, name, "theme")) {
+                if (argument.len == 0 or std.mem.eql(u8, argument, "toggle")) {
+                    directive = .{ .theme = null };
+                } else if (std.mem.eql(u8, argument, "light")) {
+                    directive = .{ .theme = .light };
+                } else if (std.mem.eql(u8, argument, "dark")) {
+                    directive = .{ .theme = .dark };
+                } else {
+                    try problems.append(arena, .{
+                        .unknown_directive = .{ .line = line_no, .name = try arena.dupe(u8, name) },
+                    });
+                }
+            } else if (std.mem.eql(u8, name, "light")) {
+                directive = .{ .theme = .light };
+            } else if (std.mem.eql(u8, name, "dark")) {
+                directive = .{ .theme = .dark };
             } else if (std.mem.eql(u8, name, "back")) {
                 directive = .back;
             } else if (std.mem.eql(u8, name, "forward")) {

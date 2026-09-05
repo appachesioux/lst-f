@@ -81,4 +81,20 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "LstfDateOld") == null);
     try testing.expect(std.mem.indexOf(u8, script, "syntax match LstfDateRecent") != null);
     try testing.expect(std.mem.indexOf(u8, script, "syntax match LstfDateDay") != null);
+
+    // Deteccao dinamica de tema claro e escuro no Vim/Neovim
+    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_apply_colors()") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "if &background ==# 'light'") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "autocmd OptionSet background call s:lstf_apply_colors()") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "guifg=#4c4f69") != null); // Cor de texto clara (Latte)
+    try testing.expect(std.mem.indexOf(u8, script, "guibg=#ccd0da") != null); // Cursorline claro (Latte)
+    try testing.expect(std.mem.indexOf(u8, script, "guifg=#c0caf5") != null); // Cor de texto escura (Mocha)
+
+    // Toggle interno de tema (F2, cob, :theme, :light, :dark)
+    try testing.expect(std.mem.indexOf(u8, script, "function! LstfToggleTheme(...)") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <silent> <F2> :call LstfToggleTheme()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=? Theme call LstfToggleTheme(<q-args>)") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Light call LstfToggleTheme('light')") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')") != null);
 }

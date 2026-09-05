@@ -439,24 +439,26 @@ pub const IconGroup = struct {
     name: []const u8,
     cterm: []const u8,
     gui: []const u8,
+    cterm_light: []const u8,
+    gui_light: []const u8,
     /// ANSI para a busca fzf; '' deixa o icone na cor da linha
     fzf: []const u8 = "",
     glyphs: []const []const u8 = &.{},
 };
 
 pub const icon_groups = [_]IconGroup{
-    .{ .name = "Dir", .cterm = "cterm=bold ctermfg=12", .gui = "gui=bold guifg=#61afef", .fzf = "\x1b[1;34m", .glyphs = &.{glyphs.dir} },
-    .{ .name = "Link", .cterm = "cterm=italic ctermfg=14", .gui = "gui=italic guifg=#56b6c2", .fzf = "\x1b[36m", .glyphs = &.{glyphs.link} },
-    .{ .name = "Exec", .cterm = "cterm=bold ctermfg=10", .gui = "gui=bold guifg=#a6d189", .fzf = "\x1b[1;32m", .glyphs = &.{ glyphs.sh, glyphs.vim, glyphs.exec } },
-    .{ .name = "Zig", .cterm = "cterm=bold ctermfg=9", .gui = "gui=bold guifg=#fab387", .fzf = "\x1b[38;5;209m", .glyphs = &.{glyphs.zig} },
-    .{ .name = "Code", .cterm = "ctermfg=13", .gui = "guifg=#cba6f7", .fzf = "\x1b[35m", .glyphs = &.{ glyphs.c, glyphs.cpp, glyphs.rust, glyphs.go, glyphs.js, glyphs.ts } },
-    .{ .name = "Python", .cterm = "ctermfg=11", .gui = "guifg=#f9e2af", .fzf = "\x1b[33m", .glyphs = &.{glyphs.py} },
-    .{ .name = "Data", .cterm = "ctermfg=3", .gui = "guifg=#e5c07b", .fzf = "\x1b[38;5;180m", .glyphs = &.{ glyphs.json, glyphs.sql, glyphs.sheet, glyphs.config, glyphs.log } },
-    .{ .name = "Doc", .cterm = "cterm=bold ctermfg=15", .gui = "gui=bold guifg=#cdd6f4", .fzf = "\x1b[1;37m", .glyphs = &.{ glyphs.md, glyphs.txt } },
-    .{ .name = "Image", .cterm = "ctermfg=5", .gui = "guifg=#f5c2e7", .fzf = "\x1b[38;5;218m", .glyphs = &.{glyphs.img} },
-    .{ .name = "Binary", .cterm = "ctermfg=9", .gui = "guifg=#f38ba8", .fzf = "\x1b[38;5;210m", .glyphs = &.{ glyphs.pdf, glyphs.zip } },
-    .{ .name = "Music", .cterm = "ctermfg=4", .gui = "guifg=#b4befe", .fzf = "\x1b[38;5;147m", .glyphs = &.{glyphs.music} },
-    .{ .name = "Video", .cterm = "ctermfg=6", .gui = "guifg=#94e2d5", .fzf = "\x1b[38;5;116m", .glyphs = &.{glyphs.video} },
+    .{ .name = "Dir", .cterm = "cterm=bold ctermfg=12", .gui = "gui=bold guifg=#61afef", .cterm_light = "cterm=bold ctermfg=4", .gui_light = "gui=bold guifg=#1e66f5", .fzf = "\x1b[1;34m", .glyphs = &.{glyphs.dir} },
+    .{ .name = "Link", .cterm = "cterm=italic ctermfg=14", .gui = "gui=italic guifg=#56b6c2", .cterm_light = "cterm=italic ctermfg=6", .gui_light = "gui=italic guifg=#179299", .fzf = "\x1b[36m", .glyphs = &.{glyphs.link} },
+    .{ .name = "Exec", .cterm = "cterm=bold ctermfg=10", .gui = "gui=bold guifg=#a6d189", .cterm_light = "cterm=bold ctermfg=2", .gui_light = "gui=bold guifg=#40a02b", .fzf = "\x1b[1;32m", .glyphs = &.{ glyphs.sh, glyphs.vim, glyphs.exec } },
+    .{ .name = "Zig", .cterm = "cterm=bold ctermfg=9", .gui = "gui=bold guifg=#fab387", .cterm_light = "cterm=bold ctermfg=9", .gui_light = "gui=bold guifg=#fe640b", .fzf = "\x1b[38;5;209m", .glyphs = &.{glyphs.zig} },
+    .{ .name = "Code", .cterm = "ctermfg=13", .gui = "guifg=#cba6f7", .cterm_light = "ctermfg=5", .gui_light = "guifg=#8839ef", .fzf = "\x1b[35m", .glyphs = &.{ glyphs.c, glyphs.cpp, glyphs.rust, glyphs.go, glyphs.js, glyphs.ts } },
+    .{ .name = "Python", .cterm = "ctermfg=11", .gui = "guifg=#f9e2af", .cterm_light = "ctermfg=3", .gui_light = "guifg=#df8e1d", .fzf = "\x1b[33m", .glyphs = &.{glyphs.py} },
+    .{ .name = "Data", .cterm = "ctermfg=3", .gui = "guifg=#e5c07b", .cterm_light = "ctermfg=130", .gui_light = "guifg=#b87333", .fzf = "\x1b[38;5;180m", .glyphs = &.{ glyphs.json, glyphs.sql, glyphs.sheet, glyphs.config, glyphs.log } },
+    .{ .name = "Doc", .cterm = "cterm=bold ctermfg=15", .gui = "gui=bold guifg=#cdd6f4", .cterm_light = "cterm=bold ctermfg=240", .gui_light = "gui=bold guifg=#5c5f77", .fzf = "\x1b[1;37m", .glyphs = &.{ glyphs.md, glyphs.txt } },
+    .{ .name = "Image", .cterm = "ctermfg=5", .gui = "guifg=#f5c2e7", .cterm_light = "ctermfg=5", .gui_light = "guifg=#ea76cb", .fzf = "\x1b[38;5;218m", .glyphs = &.{glyphs.img} },
+    .{ .name = "Binary", .cterm = "ctermfg=9", .gui = "guifg=#f38ba8", .cterm_light = "ctermfg=1", .gui_light = "guifg=#d20f39", .fzf = "\x1b[38;5;210m", .glyphs = &.{ glyphs.pdf, glyphs.zip } },
+    .{ .name = "Music", .cterm = "ctermfg=4", .gui = "guifg=#b4befe", .cterm_light = "ctermfg=4", .gui_light = "guifg=#7287fd", .fzf = "\x1b[38;5;147m", .glyphs = &.{glyphs.music} },
+    .{ .name = "Video", .cterm = "ctermfg=6", .gui = "guifg=#94e2d5", .cterm_light = "ctermfg=6", .gui_light = "guifg=#209fb5", .fzf = "\x1b[38;5;116m", .glyphs = &.{glyphs.video} },
 };
 
 /// Extensao -> glifo. A ordem manda: a primeira coincidencia vence.
@@ -518,21 +520,38 @@ pub fn iconAnsi(glyph: []const u8) ?[]const u8 {
 
 /// Linhas `highlight` dos grupos de icone, geradas da mesma tabela que
 /// `getIcon`: trocar uma cor ou um glifo ali atualiza as duas pontas.
-pub fn vimIconHighlights() []const u8 {
+pub fn vimIconHighlightsDark() []const u8 {
     @setEvalBranchQuota(100_000);
     var buf: [4096]u8 = undefined;
     var n: usize = 0;
-    // A ultima linha de cada bloco `\\` do helper nao ganha nova: comecar
-    // com \n e o que evita costurar na linha anterior.
     buf[0] = '\n';
     n = 1;
     inline for (icon_groups) |g| {
-        const line = "highlight LstfIcon" ++ g.name ++ " " ++ g.cterm ++ " " ++ g.gui ++ "\n";
+        const line = "    highlight LstfIcon" ++ g.name ++ " " ++ g.cterm ++ " " ++ g.gui ++ "\n";
         @memcpy(buf[n .. n + line.len], line);
         n += line.len;
     }
-    const finalized: [4096]u8 = buf; // desvincula do comptime var
+    const finalized: [4096]u8 = buf;
     return finalized[0..n];
+}
+
+pub fn vimIconHighlightsLight() []const u8 {
+    @setEvalBranchQuota(100_000);
+    var buf: [4096]u8 = undefined;
+    var n: usize = 0;
+    buf[0] = '\n';
+    n = 1;
+    inline for (icon_groups) |g| {
+        const line = "    highlight LstfIcon" ++ g.name ++ " " ++ g.cterm_light ++ " " ++ g.gui_light ++ "\n";
+        @memcpy(buf[n .. n + line.len], line);
+        n += line.len;
+    }
+    const finalized: [4096]u8 = buf;
+    return finalized[0..n];
+}
+
+pub fn vimIconHighlights() []const u8 {
+    return vimIconHighlightsDark();
 }
 
 /// Regras `syntax match` que pintam so o glifo do icone. O glifo e de uso

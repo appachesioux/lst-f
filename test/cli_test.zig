@@ -79,3 +79,19 @@ test "--client aceita reload e outros comandos" {
     try testing.expect(cmd == .client);
     try testing.expectEqualStrings("reload", cmd.client);
 }
+
+test "flags de tema (--light, --dark, --theme)" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    try testing.expectEqual(cli.ThemePreference.auto, (try parse(a, &.{"lst-f"})).browse.theme);
+    try testing.expectEqual(cli.ThemePreference.light, (try parse(a, &.{ "lst-f", "--light" })).browse.theme);
+    try testing.expectEqual(cli.ThemePreference.dark, (try parse(a, &.{ "lst-f", "--dark" })).browse.theme);
+    try testing.expectEqual(cli.ThemePreference.light, (try parse(a, &.{ "lst-f", "--theme", "light" })).browse.theme);
+    try testing.expectEqual(cli.ThemePreference.dark, (try parse(a, &.{ "lst-f", "--theme", "dark" })).browse.theme);
+    try testing.expectEqual(cli.ThemePreference.auto, (try parse(a, &.{ "lst-f", "--theme", "auto" })).browse.theme);
+
+    try testing.expectError(error.MissingValue, parse(a, &.{ "lst-f", "--theme" }));
+    try testing.expectError(error.BadValue, parse(a, &.{ "lst-f", "--theme", "invalido" }));
+}

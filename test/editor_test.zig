@@ -150,3 +150,48 @@ test "which localiza binarios no PATH e caminhos diretos" {
     try testing.expect(fzf_cand != null);
     try testing.expect(std.mem.endsWith(u8, fzf_cand.?, "fzf"));
 }
+
+test "parseOsc11Response identifica tema claro (Latte) e escuro (Macchiato)" {
+    const latte = "\x1b]11;rgb:eff1/f1f1/f5f5\x1b\\";
+    try testing.expectEqual(editor_mod.Background.light, editor_mod.parseOsc11Response(latte).?);
+
+    const macchiato = "\x1b]11;rgb:2424/2727/3a3a\x1b\\";
+    try testing.expectEqual(editor_mod.Background.dark, editor_mod.parseOsc11Response(macchiato).?);
+
+    const bel_terminated = "\x1b]11;rgb:ffff/ffff/ffff\x07";
+    try testing.expectEqual(editor_mod.Background.light, editor_mod.parseOsc11Response(bel_terminated).?);
+
+    const black_bel = "\x1b]11;rgb:0000/0000/0000\x07";
+    try testing.expectEqual(editor_mod.Background.dark, editor_mod.parseOsc11Response(black_bel).?);
+
+    const short_hex = "\x1b]11;rgb:ff/ff/ff\x1b\\";
+    try testing.expectEqual(editor_mod.Background.light, editor_mod.parseOsc11Response(short_hex).?);
+
+    try testing.expectEqual(@as(?editor_mod.Background, null), editor_mod.parseOsc11Response("invalido"));
+}
+
+test "parseColorFgBg identifica cores de fundo claras e escuras" {
+    try testing.expectEqual(editor_mod.Background.dark, editor_mod.parseColorFgBg("15;0").?);
+    try testing.expectEqual(editor_mod.Background.light, editor_mod.parseColorFgBg("0;15").?);
+    try testing.expectEqual(editor_mod.Background.light, editor_mod.parseColorFgBg("default;7").?);
+    try testing.expectEqual(editor_mod.Background.dark, editor_mod.parseColorFgBg("default;2").?);
+    try testing.expectEqual(@as(?editor_mod.Background, null), editor_mod.parseColorFgBg(""));
+}
+
+test "detectTerminalBackground prioriza variaveis de ambiente e nao checa desktop" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var map_light = try mapWith(testing.allocator, &.{
+        .{ "LSTF_THEME", "light" },
+    });
+    defer map_light.deinit();
+    try testing.expectEqual(editor_mod.Background.light, editor_mod.detectTerminalBackground(io, &map_light).?);
+
+    var map_dark = try mapWith(testing.allocator, &.{
+        .{ "COLORFGBG", "15;0" },
+    });
+    defer map_dark.deinit();
+    try testing.expectEqual(editor_mod.Background.dark, editor_mod.detectTerminalBackground(io, &map_dark).?);
+}

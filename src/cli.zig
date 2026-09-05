@@ -33,12 +33,19 @@ pub const Command = union(enum) {
     version,
 };
 
+pub const ThemePreference = enum {
+    auto,
+    light,
+    dark,
+};
+
 pub const Browse = struct {
     dir: []const u8 = ".",
     editor: ?[]const u8 = null,
     /// Abre direto no buscador, com o termo ja digitado.
     find: ?[]const u8 = null,
     options: explorer.Options = .{},
+    theme: ThemePreference = .auto,
 };
 
 pub const ArgError = error{ UnknownOption, MissingValue, BadValue, TooManyPaths };
@@ -75,6 +82,22 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             browse.options.color = true;
         } else if (std.mem.eql(u8, arg, "--no-color")) {
             browse.options.color = false;
+        } else if (std.mem.eql(u8, arg, "--light")) {
+            browse.theme = .light;
+        } else if (std.mem.eql(u8, arg, "--dark")) {
+            browse.theme = .dark;
+        } else if (std.mem.eql(u8, arg, "--theme")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            if (std.mem.eql(u8, args[i], "light")) {
+                browse.theme = .light;
+            } else if (std.mem.eql(u8, args[i], "dark")) {
+                browse.theme = .dark;
+            } else if (std.mem.eql(u8, args[i], "auto")) {
+                browse.theme = .auto;
+            } else {
+                return error.BadValue;
+            }
         } else if (std.mem.eql(u8, arg, "--editor")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
@@ -119,6 +142,8 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  --max-depth <n>    profundidade maxima da busca recursiva
         \\  --icons            emite icones na busca
         \\  --no-color         desliga as cores
+        \\  --light, --dark    forca tema claro ou escuro (padrao: auto-detectado)
+        \\  --theme <modo>     define tema: auto, light ou dark
         \\  -h, --help         esta ajuda
         \\  -V, --version      versao
         \\
@@ -323,6 +348,7 @@ const Session = struct {
     helper_path: []const u8,
     /// Identidade exibida na barra permanente do buffer.
     editor_name: []const u8,
+    background: ?editor_mod.Background = null,
 
     base: []const u8,
     /// Conteudo corrente do buffer.
@@ -367,6 +393,20 @@ fn runSession(
         break :blk fzf.Features{ .version = .{ .major = 0, .minor = 0 }, .raw = "" };
     };
 
+    const bg: ?editor_mod.Background = switch (opts.theme) {
+        .light => .light,
+        .dark => .dark,
+        .auto => editor_mod.detectTerminalBackground(io, environ),
+    };
+    if (bg) |b| {
+        if (environ.get("COLORFGBG") == null) {
+            environ.put("COLORFGBG", switch (b) {
+                .light => "0;15",
+                .dark => "15;0",
+            }) catch {};
+        }
+    }
+
     const pid = std.os.linux.getpid();
     var state = try session.State.create(arena, io, environ, pid);
     defer state.destroy(io);
@@ -383,6 +423,16 @@ fn runSession(
     const helper_path = try std.fmt.allocPrint(arena, "{s}/helper.vim", .{state.path});
     try state.writeHelperScript(io, build_options.app_name, build_options.version);
 
+    if (bg) |b| {
+        state.dir.writeFile(io, .{
+            .sub_path = "theme",
+            .data = switch (b) {
+                .light => "light\n",
+                .dark => "dark\n",
+            },
+        }) catch {};
+    }
+
     var s: Session = .{
         .arena = arena,
         .io = io,
@@ -392,6 +442,7 @@ fn runSession(
         .options = opts.options,
         .editor_spec = opts.editor,
         .editor_name = editorLabel(initial_editor),
+        .background = bg,
         .features = features,
         .state = state,
         .pid = pid,
@@ -414,6 +465,15 @@ fn runSession(
 
 fn loop(s: *Session) !void {
     while (true) {
+        if (s.state.dir.readFileAlloc(s.io, "theme", s.arena, .limited(32))) |content| {
+            const trimmed = std.mem.trim(u8, content, " \t\r\n");
+            if (std.mem.eql(u8, trimmed, "light")) {
+                s.background = .light;
+            } else if (std.mem.eql(u8, trimmed, "dark")) {
+                s.background = .dark;
+            }
+        } else |_| {}
+
         if (!s.keep_buffer) {
             s.state.clearApproval(s.io);
             try writeBuffer(s);
@@ -432,6 +492,7 @@ fn loop(s: *Session) !void {
             s.buffer_path,
             s.base,
             s.helper_path,
+            s.background,
         ) catch |err| {
             try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
             return;
@@ -555,6 +616,28 @@ fn loop(s: *Session) !void {
             },
             .find => |query| {
                 if (!try runFind(s, query)) try loadListing(s);
+            },
+            .theme => |opt| {
+                const next_bg: editor_mod.Background = if (opt) |val| switch (val) {
+                    .light => .light,
+                    .dark => .dark,
+                } else switch (s.background orelse .dark) {
+                    .light => .dark,
+                    .dark => .light,
+                };
+                s.background = next_bg;
+                s.state.dir.writeFile(s.io, .{
+                    .sub_path = "theme",
+                    .data = switch (next_bg) {
+                        .light => "light\n",
+                        .dark => "dark\n",
+                    },
+                }) catch {};
+                s.environ.put("COLORFGBG", switch (next_bg) {
+                    .light => "0;15",
+                    .dark => "15;0",
+                }) catch {};
+                try loadListing(s);
             },
         }
     }
@@ -697,6 +780,28 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         } else {
             ok = true;
         }
+    } else if (std.mem.eql(u8, cmd, "theme")) {
+        const next_bg: editor_mod.Background = if (std.mem.eql(u8, arg, "light"))
+            .light
+        else if (std.mem.eql(u8, arg, "dark"))
+            .dark
+        else switch (s.background orelse .dark) {
+            .light => .dark,
+            .dark => .light,
+        };
+        s.background = next_bg;
+        s.state.dir.writeFile(s.io, .{
+            .sub_path = "theme",
+            .data = switch (next_bg) {
+                .light => "light\n",
+                .dark => "dark\n",
+            },
+        }) catch {};
+        s.environ.put("COLORFGBG", switch (next_bg) {
+            .light => "0;15",
+            .dark => "15;0",
+        }) catch {};
+        ok = true;
     }
 
     const failure = s.notice;
@@ -704,7 +809,8 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     // e preserva no disco o buffer editado quando precisa devolver um erro.
     if (!rewrote_buffer and
         !std.mem.eql(u8, cmd, "apply") and
-        !std.mem.eql(u8, cmd, "preview")) try writeBuffer(s);
+        !std.mem.eql(u8, cmd, "preview") and
+        !std.mem.eql(u8, cmd, "theme")) try writeBuffer(s);
 
     if (ok) {
         _ = linux.write(conn, "K", 1);

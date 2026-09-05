@@ -46,6 +46,7 @@ que você acabou de entrar por SSH.
 | `q` no buffer                        | sai do `lst-f`                            |
 | `ZZ`                                  | sai do `lst-f`                            |
 | `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
+| `F2` ou `cob`                        | alterna tema entre claro e escuro (`light`/`dark`) |
 | `F4`                                  | abre terminal / shell interativo no diretório atual |
 | `Enter` sobre diretório               | entra nele                                 |
 | `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista   |
@@ -72,6 +73,7 @@ que você acabou de entrar por SSH.
 | `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor (:copy) |
 | `:abspath` / `:realpath`             | copia o caminho absoluto do arquivo sob o cursor |
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
+| `:theme [light|dark]`                | alterna ou define tema claro/escuro (`:light`, `:dark`) |
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
 | `:back` / `:forward`                 | andam pelos diretórios visitados na sessão |
@@ -134,7 +136,7 @@ lst-f -a               # inclui arquivos ocultos (dotfiles)
 lst-f --find relatorio # começa direto no buscador
 ```
 
-Opções: `-a`, `--all`, `--hidden`, `--editor <cmd>`, `--max-depth <n>`, `--icons`, `--no-color`.
+Opções: `-a`, `--all`, `--hidden`, `--light`, `--dark`, `--theme <modo>`, `--editor <cmd>`, `--max-depth <n>`, `--icons`, `--no-color`.
 
 Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
 
