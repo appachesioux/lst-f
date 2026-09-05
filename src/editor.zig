@@ -83,6 +83,108 @@ fn checkForeground(e: Editor) ResolveError!void {
 
 pub const RunResult = enum { saved, aborted };
 
+pub const Background = enum {
+    light,
+    dark,
+};
+
+pub fn parseHexComponent(s: []const u8) ?u32 {
+    const val = std.fmt.parseInt(u32, s, 16) catch return null;
+    return switch (s.len) {
+        1 => val * 4369,
+        2 => val * 257,
+        4 => val,
+        else => null,
+    };
+}
+
+pub fn parseOsc11Response(resp: []const u8) ?Background {
+    const prefix = "rgb:";
+    const idx = std.mem.indexOf(u8, resp, prefix) orelse return null;
+    const body = resp[idx + prefix.len ..];
+    var it = std.mem.tokenizeScalar(u8, body, '/');
+    const r_str = it.next() orelse return null;
+    const g_str = it.next() orelse return null;
+    const rest = it.next() orelse return null;
+    var b_len: usize = 0;
+    while (b_len < rest.len and rest[b_len] != 0x1b and rest[b_len] != 0x07 and rest[b_len] != '\r' and rest[b_len] != '\n') : (b_len += 1) {}
+    const b_str = rest[0..b_len];
+
+    const r = parseHexComponent(r_str) orelse return null;
+    const g = parseHexComponent(g_str) orelse return null;
+    const b = parseHexComponent(b_str) orelse return null;
+
+    const lum = (299 * r + 587 * g + 114 * b) / 1000;
+    return if (lum > 32767) .light else .dark;
+}
+
+pub fn parseColorFgBg(cfg: []const u8) ?Background {
+    const trimmed = std.mem.trim(u8, cfg, " \t\r\n");
+    const last_semi = std.mem.lastIndexOfScalar(u8, trimmed, ';') orelse return null;
+    const bg_str = trimmed[last_semi + 1 ..];
+    const bg_num = std.fmt.parseInt(u8, bg_str, 10) catch return null;
+    return switch (bg_num) {
+        0...6, 8 => .dark,
+        7, 9...15 => .light,
+        else => null,
+    };
+}
+
+pub fn queryOsc11(io: Io) ?Background {
+    const file = Io.Dir.cwd().openFile(io, "/dev/tty", .{ .mode = .read_write }) catch return null;
+    defer file.close(io);
+    const fd = file.handle;
+
+    const orig = std.posix.tcgetattr(fd) catch return null;
+    var raw = orig;
+    raw.lflag.ECHO = false;
+    raw.lflag.ICANON = false;
+    raw.cc[@intFromEnum(std.posix.V.TIME)] = 1;
+    raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+    std.posix.tcsetattr(fd, .NOW, raw) catch return null;
+    defer std.posix.tcsetattr(fd, .NOW, orig) catch {};
+
+    const query = "\x1b]11;?\x1b\\";
+    var written: usize = 0;
+    while (written < query.len) {
+        const w = std.os.linux.write(fd, query[written..].ptr, query.len - written);
+        if (std.os.linux.errno(w) == .INTR) continue;
+        if (w <= 0) return null;
+        written += @intCast(w);
+    }
+
+    var buf: [128]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const r = std.os.linux.read(fd, buf[total..].ptr, buf.len - total);
+        if (std.os.linux.errno(r) == .INTR) continue;
+        if (r <= 0) break;
+        total += @intCast(r);
+        if (total >= 2 and buf[total - 2] == 0x1b and buf[total - 1] == '\\') break;
+        if (total >= 1 and buf[total - 1] == 0x07) break;
+    }
+
+    if (total == 0) return null;
+    return parseOsc11Response(buf[0..total]);
+}
+
+/// Deteccao do tema do terminal (nunca do desktop/KDE, ja que o terminal
+/// pode ser claro enquanto o ambiente e escuro).
+pub fn detectTerminalBackground(io: Io, environ: *const std.process.Environ.Map) ?Background {
+    if (environ.get("LSTF_THEME")) |val| {
+        if (std.ascii.eqlIgnoreCase(val, "light")) return .light;
+        if (std.ascii.eqlIgnoreCase(val, "dark")) return .dark;
+    }
+    if (environ.get("LSTF_BACKGROUND")) |val| {
+        if (std.ascii.eqlIgnoreCase(val, "light")) return .light;
+        if (std.ascii.eqlIgnoreCase(val, "dark")) return .dark;
+    }
+    if (environ.get("COLORFGBG")) |cfg| {
+        if (parseColorFgBg(cfg)) |bg| return bg;
+    }
+    return queryOsc11(io);
+}
+
 /// Abre `path` no editor, em foreground, herdando o TTY. O terminal volta para
 /// o lst-f quando o editor sai.
 pub fn run(
@@ -96,7 +198,7 @@ pub fn run(
     cwd: []const u8,
     helper_script: ?[]const u8,
 ) !RunResult {
-    var child = try spawn(arena, io, e, environ, path, cwd, helper_script);
+    var child = try spawn(arena, io, e, environ, path, cwd, helper_script, null);
     const term = try child.wait(io);
     return switch (term) {
         .exited => |code| if (code == 0) .saved else .aborted,
@@ -114,6 +216,7 @@ pub fn spawn(
     path: []const u8,
     cwd: []const u8,
     helper_script: ?[]const u8,
+    background: ?Background,
 ) !std.process.Child {
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.appendSlice(arena, e.argv);
@@ -134,6 +237,12 @@ pub fn spawn(
         // entrou. Vale so para a tela do lst-f, que e sempre UTF-8; arquivo
         // aberto pela diretiva `:open` segue com a deteccao normal do usuario.
         try argv.appendSlice(arena, &.{ "--cmd", "set encoding=utf-8" });
+        if (background) |bg| {
+            switch (bg) {
+                .light => try argv.appendSlice(arena, &.{ "--cmd", "set background=light" }),
+                .dark => try argv.appendSlice(arena, &.{ "--cmd", "set background=dark" }),
+            }
+        }
         if (std.mem.indexOf(u8, e.name(), "nvim") != null) {
             try argv.append(arena, "--clean");
         } else {

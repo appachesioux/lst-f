@@ -189,6 +189,7 @@ pub const State = struct {
             \\    \ '    :sh [dir]      Abre terminal / shell no diretorio (:shell, :terminal)',
             \\    \ '    :ln <alvo> [n] Cria symlink para o alvo (:link, :symlink, :hardlink)',
             \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
+            \\    \ '    :theme [modo]  Alterna ou define tema: light ou dark (:light, :dark)',
             \\    \ '    :back/:forward Andam pelos diretorios visitados na sessao',
             \\    \ '    :undo          Desfaz a ultima operacao aplicada na sessao',
             \\    \ '    :quit          Sai da sessao (:cq aborta sem aplicar nada)',
@@ -205,6 +206,7 @@ pub const State = struct {
             \\    \ '    ya             Copia caminho absoluto para o clipboard',
             \\    \ '    < e >          Voltam e avancam nos diretorios visitados',
             \\    \ '    \              Mostra a arvore visual do diretorio',
+            \\    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
             \\    \ '    F4             Abre terminal / shell no diretorio atual',
             \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
             \\    \ '    Tab            Alterna foco entre painel principal e destino',
@@ -482,6 +484,33 @@ pub const State = struct {
             \\function! LstfToggleHidden() abort
             \\  call s:lstf_nav('hidden', ':hidden')
             \\endfunction
+            \\
+            \\function! LstfToggleTheme(...) abort
+            \\  let l:target = a:0 > 0 && !empty(a:1) ? tolower(a:1) : 'toggle'
+            \\  if l:target ==# 'light'
+            \\    let &background = 'light'
+            \\  elseif l:target ==# 'dark'
+            \\    let &background = 'dark'
+            \\  elseif l:target ==# 'toggle'
+            \\    let &background = (&background ==# 'light' ? 'dark' : 'light')
+            \\  else
+            \\    echoerr 'Uso: :theme [light|dark|toggle]'
+            \\    return
+            \\  endif
+            \\  call s:lstf_apply_colors()
+            \\  if exists('$LST_F_STATE') && isdirectory($LST_F_STATE)
+            \\    call writefile([&background], $LST_F_STATE . '/theme')
+            \\  endif
+            \\  if exists('$LST_F_SELF') && filereadable($LST_F_SELF) && exists('$LST_F_STATE') && filereadable($LST_F_STATE . '/live.sock')
+            \\    let $LST_F_LIVE_ARG = &background
+            \\    silent! call system($LST_F_SELF . ' --client theme')
+            \\    unlet! $LST_F_LIVE_ARG
+            \\  endif
+            \\  redraw!
+            \\  redrawstatus!
+            \\  echo 'Tema: ' . &background
+            \\endfunction
+            \\
             \\
             \\function! s:lstf_confirm_plan(plan) abort
             \\  let l:lines = [''] + a:plan + ['',
@@ -1181,6 +1210,8 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> <Tab> :call <SID>lstf_focus_list()<CR>
             \\  nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
             \\  nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
+            \\  nnoremap <buffer> <silent> <F2> :call LstfToggleTheme()<CR>
+            \\  nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>
             \\  call s:lstf_render_dest(getcwd())
             \\  " O split estreitou a janela da lista sem passar por ela, entao a
             \\  " barra de topo ficaria descrevendo a largura antiga.
@@ -1204,39 +1235,65 @@ pub const State = struct {
             \\if has('termguicolors') && !has('gui_running') && ($COLORTERM ==# 'truecolor' || $COLORTERM ==# '24bit')
             \\  set termguicolors
             \\endif
-            \\highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
-            \\highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
-            \\highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
-            \\highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
-            \\highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#c94f6d
-            \\highlight LstfStatusSuggestion cterm=bold ctermfg=0 ctermbg=10 gui=bold guifg=#1e1e2e guibg=#a6e3a1
-            \\" Faixa dos titulos, moldura e caminho: a grade do xpl-f. A regra de
-            \\" baixo e a statusline da janela de cabecalho, na cor da moldura.
-            \\highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
-            \\highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
-            \\highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
-            \\highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
-            \\highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
-            \\highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
-            \\" A selecao normal do Vim termina no ultimo caractere. Esta camada
-            \\" preenche tambem o espaco ate a borda, para a lista continuar se
-            \\" comportando como uma tabela ao selecionar linhas inteiras. `Visual`
-            \\" usa a mesma cor, para nao haver uma emenda no fim do nome.
-            \\highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
-            \\highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
-            \\" Cores por natureza da entrada: a linha e neutra e o tipo mora no icone.
-            \\" O mapa glifo-destaque sai gerado da tabela Zig, logo abaixo, para que
-            \\" buffer, helper e busca nunca divirjam. O par cterm nao e enfeite:
-            \\" servidor sem truecolor so enxerga esse lado.
-            \\highlight LstfFile ctermfg=252 guifg=#c0caf5
+            \\function! s:lstf_apply_colors() abort
+            \\  if &background ==# 'light'
+            \\    highlight LstfStatusMode cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+            \\    highlight LstfStatusInfo ctermfg=0 ctermbg=NONE guifg=#4c4f69 guibg=NONE
+            \\    highlight LstfStatusHelp cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+            \\    highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=3 gui=bold guifg=#202020 guibg=#df8e1d
+            \\    highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#d20f39
+            \\    highlight LstfStatusSuggestion cterm=bold ctermfg=15 ctermbg=2 gui=bold guifg=#ffffff guibg=#40a02b
+            \\    highlight LstfTitles cterm=bold ctermfg=0 ctermbg=254 gui=bold guifg=#4c4f69 guibg=#dce0e8
+            \\    highlight LstfFrame ctermfg=246 guifg=#8c8fa1 guibg=NONE
+            \\    highlight LstfPath cterm=bold ctermfg=166 gui=bold guifg=#bc5215 guibg=NONE
+            \\    highlight LstfTitlesSep cterm=NONE ctermfg=248 ctermbg=254 gui=NONE guifg=#9ca0b0 guibg=#dce0e8
+            \\    highlight LstfSep ctermfg=250 guifg=#bcc0cc guibg=NONE
+            \\    highlight CursorLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
+            \\    highlight Visual cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
+            \\    highlight LstfVisualLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
+            \\    highlight LstfFile ctermfg=0 guifg=#4c4f69
+            \\    highlight LstfLinkCreate ctermfg=6 gui=italic guifg=#179299
+            \\    highlight LstfArrow cterm=bold ctermfg=6 gui=bold guifg=#179299
+            \\    highlight LstfCollision cterm=bold,underline ctermfg=1 gui=bold,underline guifg=#d20f39
+            \\    highlight LstfDateRecent cterm=NONE ctermfg=130 gui=NONE guifg=#df8e1d
+            \\    highlight LstfDateDay cterm=NONE ctermfg=28 gui=NONE guifg=#40a02b
         );
-        try w.writeAll(comptime explorer.vimIconHighlights());
+        try w.writeAll(comptime explorer.vimIconHighlightsLight());
         try w.writeAll(
-            \\highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
-            \\highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
-            \\highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
-            \\highlight LstfDateRecent cterm=NONE ctermfg=11 gui=NONE guifg=#f9e2af
-            \\highlight LstfDateDay cterm=NONE ctermfg=10 gui=NONE guifg=#a6d189
+            \\  else
+            \\    highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\    highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
+            \\    highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\    highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
+            \\    highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#c94f6d
+            \\    highlight LstfStatusSuggestion cterm=bold ctermfg=0 ctermbg=10 gui=bold guifg=#1e1e2e guibg=#a6e3a1
+            \\    highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
+            \\    highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
+            \\    highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
+            \\    highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
+            \\    highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
+            \\    highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\    highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\    highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+            \\    highlight LstfFile ctermfg=252 guifg=#c0caf5
+            \\    highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
+            \\    highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
+            \\    highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
+            \\    highlight LstfDateRecent cterm=NONE ctermfg=11 gui=NONE guifg=#f9e2af
+            \\    highlight LstfDateDay cterm=NONE ctermfg=10 gui=NONE guifg=#a6d189
+        );
+        try w.writeAll(comptime explorer.vimIconHighlightsDark());
+        try w.writeAll(
+            \\  endif
+            \\  if exists('s:lstf_header_win') && win_id2win(s:lstf_header_win) > 0
+            \\    call s:lstf_draw_frame()
+            \\  endif
+            \\endfunction
+            \\call s:lstf_apply_colors()
+            \\augroup lstf_colors
+            \\  autocmd!
+            \\  autocmd OptionSet background call s:lstf_apply_colors()
+            \\augroup END
             \\set laststatus=2
             \\set noshowmode showtabline=0
             \\set shortmess+=F
@@ -1362,6 +1419,13 @@ pub const State = struct {
             \\
             \\function! s:lstf_after_reload() abort
             \\  call s:lstf_configure_buffer()
+            \\  if filereadable($LST_F_STATE . '/theme')
+            \\    let l:saved_bg = get(readfile($LST_F_STATE . '/theme'), 0, '')
+            \\    if !empty(l:saved_bg) && l:saved_bg !=# &background
+            \\      let &background = l:saved_bg
+            \\      call s:lstf_apply_colors()
+            \\    endif
+            \\  endif
             \\  if filereadable($LST_F_STATE . '/base')
             \\    let l:newbase = get(readfile($LST_F_STATE . '/base'), 0, '')
             \\    if !empty(l:newbase)
@@ -1397,6 +1461,8 @@ pub const State = struct {
             \\" o Vim abrir :help em um split e alterar a tela controlada.
             \\nnoremap <silent> <F1> :call LstfHelp()<CR>
             \\nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
+            \\nnoremap <silent> <F2> :call LstfToggleTheme()<CR>
+            \\nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>
             \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
             \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
             \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
@@ -1435,6 +1501,12 @@ pub const State = struct {
             \\      return "\x15Forward\r"
             \\    elseif l:cmd =~# '^hidden$'
             \\      return "\x15Hidden\r"
+            \\    elseif l:cmd =~# '^theme\%(\s.*\|\)$'
+            \\      return "\x15Theme" . l:cmd[5:] . "\r"
+            \\    elseif l:cmd ==# 'light'
+            \\      return "\x15Light\r"
+            \\    elseif l:cmd ==# 'dark'
+            \\      return "\x15Dark\r"
             \\    elseif l:cmd =~# '^find\%(\s.*\|\)$'
             \\      return "\x15Find" . l:cmd[4:] . "\r"
             \\    elseif l:cmd =~# '^\%(sh\|shell\|terminal\|term\)\%(\s.*\|\)$'
@@ -1465,6 +1537,12 @@ pub const State = struct {
             \\cnoreabbrev <expr> <buffer> forward getcmdtype() ==# ':' && getcmdline() ==# 'forward' ? 'Forward' : 'forward'
             \\command! -buffer -nargs=0 Hidden call LstfToggleHidden()
             \\cnoreabbrev <expr> <buffer> hidden getcmdtype() ==# ':' && getcmdline() ==# 'hidden' ? 'Hidden' : 'hidden'
+            \\command! -buffer -nargs=? Theme call LstfToggleTheme(<q-args>)
+            \\command! -buffer -nargs=0 Light call LstfToggleTheme('light')
+            \\command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')
+            \\cnoreabbrev <expr> <buffer> theme getcmdtype() ==# ':' && getcmdline() =~# '^theme\%(\s.*\|\)$' ? 'Theme' : 'theme'
+            \\cnoreabbrev <expr> <buffer> light getcmdtype() ==# ':' && getcmdline() ==# 'light' ? 'Light' : 'light'
+            \\cnoreabbrev <expr> <buffer> dark getcmdtype() ==# ':' && getcmdline() ==# 'dark' ? 'Dark' : 'dark'
             \\command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
             \\cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
             \\command! -buffer -nargs=? Sh call LstfShell(<q-args>)

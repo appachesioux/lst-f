@@ -704,6 +704,34 @@ test "diretiva :hidden eh parseada corretamente" {
     try testing.expectEqual(@as(?bool, false), t3.directive.?.hidden);
 }
 
+test "diretiva :theme, :light e :dark sao parseadas corretamente" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const t1 = (try parseBuffer(f.a(), "/0001  a.txt\n:theme\n", &.{})).ok;
+    try testing.expect(t1.directive.? == .theme);
+    try testing.expectEqual(@as(?plan.Theme, null), t1.directive.?.theme);
+
+    const t2 = (try parseBuffer(f.a(), "/0001  a.txt\n:theme toggle\n", &.{})).ok;
+    try testing.expectEqual(@as(?plan.Theme, null), t2.directive.?.theme);
+
+    const t3 = (try parseBuffer(f.a(), "/0001  a.txt\n:theme light\n", &.{})).ok;
+    try testing.expectEqual(@as(?plan.Theme, .light), t3.directive.?.theme);
+
+    const t4 = (try parseBuffer(f.a(), "/0001  a.txt\n:theme dark\n", &.{})).ok;
+    try testing.expectEqual(@as(?plan.Theme, .dark), t4.directive.?.theme);
+
+    const t5 = (try parseBuffer(f.a(), "/0001  a.txt\n:light\n", &.{})).ok;
+    try testing.expectEqual(@as(?plan.Theme, .light), t5.directive.?.theme);
+
+    const t6 = (try parseBuffer(f.a(), "/0001  a.txt\n:dark\n", &.{})).ok;
+    try testing.expectEqual(@as(?plan.Theme, .dark), t6.directive.?.theme);
+
+    const bad = try parseBuffer(f.a(), "/0001  a.txt\n:theme azul\n", &.{});
+    try testing.expect(bad == .invalid);
+    try testing.expect(bad.invalid[0] == .unknown_directive);
+}
+
 test "criacao de symlink e hardlink por sintaxe no buffer" {
     var f = Fixture.init();
     defer f.deinit();
