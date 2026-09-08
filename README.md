@@ -63,6 +63,7 @@ que você acabou de entrar por SSH.
 | `Tab`                                 | alterna o foco entre painel principal e split |
 | `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
 | `S` ou `s` no split                   | copia formato de symlink (`nome -> caminho`) para colar (`p`) |
+| `p` ou `P` no split                   | cola linhas yankadas da lista (`yy`) como cópia no destino |
 | `F4` no split                         | abre terminal no diretório de destino      |
 | `nome -> alvo` em linha nova          | cria symlink apontando para o alvo         |
 | `nome => alvo` em linha nova          | cria hardlink apontando para o alvo        |
@@ -151,6 +152,11 @@ Para criar **links**:
 - `meu-link => /caminho/do/alvo` cria um **hardlink** apontando para o alvo.
 - Ou use as diretivas `:ln <alvo> [nome]` (`:link`, `:symlink`) e `:hardlink <alvo> [nome]`.
 - No painel dividido (`Ctrl+S`), pressione `S` ou `s` sobre qualquer entrada para copiar no formato `nome -> /caminho/completo` e colar (`p`) direto no buffer principal.
+- Com linhas yankadas da lista (`yy` ou visual+`y`), `p` no painel de destino as
+  cola no buffer principal como pedidos de cópia para o diretório do painel
+  (fora do diretório-base o caminho sobe com `../`). Nada toca o disco até o
+  `:w`, que mostra a confirmação de sempre; colisão no destino ganha sufixo
+  `-01` a `-99`, e `:undo` remove a cópia materializada.
 
 As criações acontecem depois das renomeações, então um nome
 liberado no mesmo `:w` pode ser reocupado — arquivar `log.txt` como `log.1.txt`

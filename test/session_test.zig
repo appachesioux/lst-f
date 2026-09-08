@@ -97,4 +97,10 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=? Theme call LstfToggleTheme(<q-args>)") != null);
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Light call LstfToggleTheme('light')") != null);
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')") != null);
+
+    // Painel de destino (split) com colagem de copia (p/P)
+    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_dest_paste() abort") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> p :call <SID>lstf_dest_paste()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> P :call <SID>lstf_dest_paste()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "NAME [Y=copy S=link p=paste .=hidden]") != null);
 }

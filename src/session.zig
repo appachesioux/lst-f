@@ -212,6 +212,7 @@ pub const State = struct {
             \\    \ '    Tab            Alterna foco entre painel principal e destino',
             \\    \ '    Y ou yy (dest) Copia caminho do destino para colar (p)',
             \\    \ '    S ou s (dest)  Copia como symlink (nome -> caminho) para colar (p)',
+            \\    \ '    p ou P (dest)  Cola linhas yankadas da lista (yy) como copia aqui',
             \\    \ '    F4 (dest)      Abre terminal no diretorio de destino',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
@@ -1046,7 +1047,7 @@ pub const State = struct {
             \\  let l:lines = [
             \\    \ 'DESTINATION: ' . s:lstf_dest_dir,
             \\    \ '──┬───────────┬───────────┬──────────────────┬──────────────────────────',
-            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy S=link .=hidden]',
+            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy S=link p=paste .=hidden]',
             \\    \ '──┼───────────┼───────────┼──────────────────┼──────────────────────────',
             \\    \ 'd │ rwxr-xr-x │         - │                - │  ../'
             \\    \ ]
@@ -1162,6 +1163,75 @@ pub const State = struct {
             \\  redrawstatus!
             \\endfunction
             \\
+            \\" Caminho relativo de a:from (diretorio absoluto) ate a:to. O
+            \\" destino das copias no buffer e relativo ao base, entao sair do
+            \\" base vira uma sequencia de `../`.
+            \\function! s:lstf_relpath(from, to) abort
+            \\  let l:a = split(a:from, '/')
+            \\  let l:b = split(a:to, '/')
+            \\  let l:i = 0
+            \\  while l:i < len(l:a) && l:i < len(l:b) && l:a[l:i] ==# l:b[l:i]
+            \\    let l:i += 1
+            \\  endwhile
+            \\  let l:comps = repeat(['..'], len(l:a) - l:i) + l:b[l:i:]
+            \\  return join(l:comps, '/')
+            \\endfunction
+            \\
+            \\" Colar no painel de destino: as linhas yankadas da lista (yy ou
+            \\" visual+y) viram linhas de copia no buffer principal, com o nome
+            \\" apontando para o diretorio deste painel. Nada toca o disco ate
+            \\" o :w, que passa pela confirmacao de sempre.
+            \\function! s:lstf_dest_paste() abort
+            \\  let l:reg = getreg('0')
+            \\  if l:reg !~# '^/\d\+\s' && getreg('"') =~# '^/\d\+\s'
+            \\    let l:reg = getreg('"')
+            \\  elseif l:reg !~# '^/\d\+\s' && getreg('+') =~# '^/\d\+\s'
+            \\    let l:reg = getreg('+')
+            \\  elseif l:reg !~# '^/\d\+\s' && getreg('*') =~# '^/\d\+\s'
+            \\    let l:reg = getreg('*')
+            \\  endif
+            \\  let l:ids = []
+            \\  for l:line in split(l:reg, "\n")
+            \\    let l:m = matchlist(l:line, '^/\(\d\+\)\s')
+            \\    if !empty(l:m) && index(l:ids, str2nr(l:m[1])) < 0
+            \\      call add(l:ids, str2nr(l:m[1]))
+            \\    endif
+            \\  endfor
+            \\  if empty(l:ids)
+            \\    let s:lstf_notice = 'nada para colar: yanke linhas da lista antes (yy ou visual+y)'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  let l:base = ''
+            \\  if exists('$LST_F_STATE') && filereadable($LST_F_STATE . '/base')
+            \\    let l:base = get(readfile($LST_F_STATE . '/base'), 0, '')
+            \\  endif
+            \\  if empty(l:base)
+            \\    let s:lstf_notice = 'sem o diretorio-base da sessao para calcular o destino'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  let l:rel = s:lstf_relpath(l:base, s:lstf_dest_dir)
+            \\  call s:lstf_focus_list()
+            \\  let l:lines = []
+            \\  for l:id in l:ids
+            \\    let l:ln = search('^/' . printf('%04d', l:id) . '\%(\s\|$\)', 'nw')
+            \\    if l:ln == 0 | continue | endif
+            \\    let l:name = s:lstf_entry_path(getline(l:ln))
+            \\    if empty(l:name) | continue | endif
+            \\    call add(l:lines, '/' . printf('%04d', l:id) . '  ' . (empty(l:rel) ? l:name : l:rel . '/' . l:name))
+            \\  endfor
+            \\  if empty(l:lines)
+            \\    let s:lstf_notice = 'as linhas yankadas nao estao na lista atual'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  call append(line('$'), l:lines)
+            \\  call cursor(line('$') - len(l:lines) + 1, 1)
+            \\  let s:lstf_notice = printf('%d copia(s) pronta(s) para %s: revise e :w', len(l:lines), s:lstf_dest_dir)
+            \\  redrawstatus!
+            \\endfunction
+            \\
             \\function! s:lstf_dest_shell() abort
             \\  call s:lstf_focus_list()
             \\  call LstfShell(s:lstf_dest_dir)
@@ -1199,6 +1269,8 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> S :call <SID>lstf_dest_yank_link()<CR>
             \\  nnoremap <buffer> <silent> s :call <SID>lstf_dest_yank_link()<CR>
             \\  nnoremap <buffer> <silent> L :call <SID>lstf_dest_yank_link()<CR>
+            \\  nnoremap <buffer> <silent> p :call <SID>lstf_dest_paste()<CR>
+            \\  nnoremap <buffer> <silent> P :call <SID>lstf_dest_paste()<CR>
             \\  nnoremap <buffer> <silent> <F4> :call <SID>lstf_dest_shell()<CR>
             \\  nnoremap <buffer> <silent> r :call <SID>lstf_render_dest(s:lstf_dest_dir)<CR>
             \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
