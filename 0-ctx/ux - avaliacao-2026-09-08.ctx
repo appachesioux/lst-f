@@ -1,0 +1,206 @@
+# Avaliação 2026-09-08 — UX na direção do oil.nvim, plugin próprio e limpeza de armengues
+
+Registro de avaliação do dono do projeto, com o refinamento do que ela significa
+e o caminho para replicar, do ponto de vista do usuário, o comportamento do
+`oil.nvim` neste projeto.
+
+## A avaliação, como dada
+
+- Quando digo "não querer plugin", me refiro a **plugins externos**. Nada impede
+  que tenhamos um plugin nosso.
+- A aplicação está muito boa, mas tem muitos armengues — "jeitinhos" para que as
+  coisas aconteçam.
+- A operacionalização pelo usuário precisa ser semelhante ao que acontece no
+  `oil.nvim`, e isso é alcançado só parcialmente hoje.
+- Não gosto de copiar um arquivo para o split panel e o arquivo ser colado na
+  pasta de onde foi copiado.
+- Usamos um CLI em Zig para orquestrar tudo e ser um file explorer que usa Vim e
+  fzf como instrumentos.
+
+## O que a avaliação significa
+
+### "Nada de plugin" era sobre dependência externa, não sobre a forma
+
+A regra registrada em `lst-f.ctx` ("não há plugin") existe para garantir o uso
+sem instalação: entrar num servidor por SSH e ter o lst-f funcionando. O que a
+avaliação esclarece é que o alvo da regra é **plugin de terceiro** (gerenciador
+de plugin, Neovim obrigatório, setup do usuário). Um plugin **nosso**,
+distribuído e versionado junto com o binário, não viola nada disso — e remove
+uma classe inteira de armengues (script gerado por sessão com SID dinâmico,
+funções globais para statusline, autocmds remendados). O fallback sem
+instalação continua obrigatório: o plugin nosso é o caminho rico; o helper
+gerado por sessão continua sendo o caminho que funciona em qualquer servidor.
+
+### "Armengues" são estados paralelos que o usuário não vê
+
+Um jeitinho, aqui, é quase sempre uma segunda representação da mesma verdade:
+um formato de linha próprio do split, um parser próprio (com offset de byte
+errado, que já produziu bug), um buffer `nomodifiable` com teclas silenciadas
+por `<Nop>`, um painel que injeta linhas no buffer de outra janela, uma âncora
+de caminho (`base`) diferente da âncora que o plano usa (`location`). Cada um
+funciona; juntos, fazem o usuário confiar menos no que vê. A direção é uma
+representação só: um formato de linha, um parser, um keymap por tipo de buffer,
+uma âncora.
+
+### O split panel atual não é um diretório; é um anexo
+
+No oil.nvim, um split mostrando outro diretório é só o Vim: dois buffers de
+diretório em duas janelas. No lst-f, o split é um artefato paralelo
+(`__lstf_dest_panel__`): renderização própria, keymap próprio, e um paste que
+não estagia a operação no painel onde o `p` foi pressionado — ele appende
+linhas no buffer da outra janela. O usuário pressiona `p` num lugar e vê o
+efeito aparecer em outro. Isso é o oposto do modelo mental do oil.
+
+## O modelo operacional do oil.nvim, do ponto de vista do usuário
+
+1. **Diretório é buffer, e cada caminho é um buffer.** Abrir um diretório num
+   split é `:vsplit` + navegar: pura mecânica do Vim. Dois diretórios lado a
+   lado não exigem feature do plugin — exigem que cada diretório seja um buffer
+   de verdade.
+2. **Editar o texto é editar o filesystem.** Renomear = editar o nome; mover =
+   editar o caminho (inclusive para outro diretório); criar = linha nova;
+   remover = apagar a linha. Nada disso é tecla especial: é texto.
+3. **Nada acontece até o `:w` — e o `:w` mostra o que vai acontecer.** Ao
+   salvar, o oil apresenta o preview das operações (move/copy/create/delete,
+   origem → destino) e pede confirmação. O usuário revisa antes, não depois.
+4. **Copiar é yank num buffer, paste no outro.** `yy` na origem, janela/buffer
+   do destino, `p`. O destino da cópia é **o diretório do buffer onde o `p`
+   aconteceu** — sempre visível na tela. A entrada colada aparece no buffer de
+   destino, e o preview do `:w` mostra `copy origem -> destino`.
+5. **Undo de texto é undo de operação.** Antes do `:w`, `u` desfaz a edição do
+   buffer, ou seja, desfaz o plano. Nenhum buffer é `nomodifiable`; nenhuma
+   tecla precisa ser silenciada.
+6. **O buffer é a única fonte de verdade** (mais o registro de yank do oil).
+   Não há painel-espelho, não há linhas-injeção, não há âncoras concorrentes.
+
+## Onde o lst-f está hoje, contra esse modelo
+
+Já é oil, ou quase:
+
+- Editar o texto é editar o filesystem: rename, move (com `mkdir -p` implícito),
+  create e remove saem do buffer, com IDs ocultos por conceal casando linha e
+  entrada — o mesmo truque de integridade do oil.
+- O `:w` aplica por um plano seguro (ordenação, ciclos, troca de caixa,
+  destinos duplicados) e a área de sessão dá rollback com `:undo`.
+- Navegação (`Enter`, `-`, `<`, `>`) não passa por diretiva: recarrega o buffer
+  pelo canal vivo.
+
+Parcial, ou faltando:
+
+- **Navegação recarrega o mesmo buffer.** Não existe um buffer por caminho;
+  portanto `:vsplit` + navegar não produz dois diretórios lado a lado. O split
+  de destino existe justamente para tampar esse buraco — e vira armengue.
+- **O paste no split não estagia no split.** Ele appende linhas `/ID caminho`
+  no fim do buffer principal (outra janela), com um aviso "revise e :w".
+- **Âncora dupla no paste (a queixa registrada).** O `p` do split calcula o
+  caminho relativo contra o **base** da sessão (`$LST_F_STATE/base`, fixo na
+  largada), mas o plano resolve caminhos relativos contra a **location**
+  corrente do buffer principal. Com o painel principal navegado para longe do
+  base, a cópia cai dentro da árvore de origem — exatamente "copiar para o
+  split e o arquivo ser colado na pasta de onde foi copiado". Com split e
+  location no mesmo diretório, a linha colada é idêntica à original (cópia sobre
+  si mesma).
+- **O `:w` aplica sem preview.** A revisão é o próprio buffer antes do `:w` e o
+  `:undo` depois. O oil revisa o plano *antes* de aplicar; o lst-f revisa o
+  texto e confia no plano.
+- **Buffers de painel com regras próprias.** O dest é `nomodifiable` fora do
+  redraw, com `u`/`U` em `<Nop>` e `<C-r>` remapeado para não dar E21 — remendos
+  para um buffer que não deveria existir como categoria separada.
+
+## O que é preciso fazer para replicar o comportamento do oil.nvim (ponto de vista do usuário)
+
+Na ordem em que o usuário sente, não na ordem de implementação.
+
+### 1. Cada diretório, um buffer de verdade
+
+Navegar para um diretório abre (ou reusa) o buffer daquele caminho, nomeado e
+listável (`:ls`, `:b`, `:vsplit` funcionam como no oil). Consequências diretas:
+
+- dois diretórios lado a lado viram mecânica pura do Vim, e o "split panel"
+  como categoria especial deixa de existir: o split é uma janela com um buffer
+  de diretório;
+- um formato de linha só, um parser só (offsets de byte corretos, testados),
+  um keymap por tipo de buffer;
+- o destino de qualquer operação é sempre "o diretório deste buffer", visível
+  na moldura/header do próprio buffer.
+
+O buffer principal atual (arquivo de listagem recarregado no mesmo buffer) vira
+o caso particular "buffer do diretório corrente". O canal vivo com o laço Zig
+continua sendo quem produz o conteúdo; muda o endereço vim do resultado.
+
+### 2. Copiar e colar com destino visível e correto
+
+- `y`/`yy` guarda a origem (absoluta) no registro de yank da sessão.
+- `p` num buffer de diretório estagia **cópia da origem para o diretório desse
+  buffer**. A entrada colada aparece no buffer onde o `p` foi pressionado (como
+  linha nova marcada como cópia, ou no mínimo no preview do `:w`) — nunca em
+  outra janela.
+- A âncora de todo caminho editado é o diretório do buffer, em absoluto, por
+  baixo dos panos; o texto relativo que o usuário vê é apresentação. Acaba a
+  disputa `base` × `location`.
+- Conflitos (destino existente, cópia sobre si) são reportados como problema de
+  plano, não como silêncio.
+
+### 3. Preview e confirmação no `:w`
+
+Ao `:w`, renderizar o `Plan` que o Zig já produz (`moves`, `copies`,
+`creates`, `removes`, `mkdirs`) num preview de confirmação: popup no Vim 8.2+,
+janela temporária no piso antigo, buffer no Neovim. Confirmar aplica; cancelar
+volta ao buffer sem tocar no filesystem. O `:undo` continua como rollback
+pós-fato; o preview é a revisão antes. Isso transforma o plano seguro — hoje um
+detalhe interno — no momento central da UX, como no oil.
+
+### 4. Undo de texto válido em todo buffer de diretório
+
+Buffers de diretório são modificáveis como qualquer buffer (são a edição do
+plano); `u`/`<C-r>` são undo/redo de texto normais até o `:w`. Os `<Nop>`, o
+`nomodifiable` e o `undolevels=-1` de hoje desaparecem junto com o painel
+paralelo que os exigia.
+
+### 5. Plugin nosso, como artefato do binário
+
+- Plugin próprio (`plugin/lst-f.vim` + `autoload/`) embutido no binário e
+  instalável por comando (`lst-f --install-plugin` ou similar), com SID
+  estável, `:command`s, ftplugin dos buffers de diretório e `<Plug>` para os
+  maps.
+- O helper gerado por sessão continua existindo como fallback zero-instalação
+  (SSH em servidor alheio): mesmos maps, mesmos contratos, sem exigir o plugin.
+- A lógica pesada (enumeração, plano, sessão, rollback) continua no Zig; o
+  plugin é camada de vista e contrato. Vim e fzf seguem instrumentos; o CLI
+  segue o cérebro.
+
+### 6. Mapa de limpeza dos armengues atuais
+
+Cada linha é um jeitinho de hoje e o que o substitui nos itens acima:
+
+- painel `__lstf_dest_panel__` com render/keymap/parser próprios → item 1;
+- paste que appende linhas no buffer de outra janela → item 2;
+- âncora `base` no paste vs `location` no plano → item 2;
+- parser de colunas com offset de byte errado (`strpart` em UTF-8) → item 1 (parser único, testado);
+- `nomodifiable` + `u`/`U` `<Nop>` + `<C-r>` remapeado contra E21 → itens 1 e 4;
+- `undolevels=-1` no redraw → item 4;
+- helper por sessão com SID dinâmico e funções globais de statusline → item 5;
+- avisos por variável global + `redrawstatus!` → statusline/`echo` do plugin próprio, com estado por buffer.
+
+## O que não muda
+
+- CLI em Zig como orquestrador e cérebro; Vim e fzf como instrumentos.
+- Diferenciais: `:find` recursivo cujo resultado **é** o buffer; plano seguro de
+  operações; área de sessão para rollback; binário único componível.
+- Restrições: sem dependências externas de runtime além de `fzf` e um editor;
+  caminhos como dados (NUL, nunca interpolados em shell); piso de versão do
+  fzf e do Vim; aparência sem ícones como fallback.
+- A regra "nada de plugin" de `lst-f.ctx` deve ser **reescrita** para "nada de
+  plugin externo; plugin próprio é artefato do binário, com fallback sem
+  instalação".
+
+## Decisões em aberto
+
+- Nome/endereço dos buffers de diretório (`lstf://caminho`? caminho real com
+  ftplugin?) e o efeito em `:ls`, `:b`, session restore e no canal vivo.
+- Preview do `:w`: popup, split temporário ou buffer dedicado; e o piso mínimo
+  de Vim para cada opção.
+- O yank de cópia vive em registro do Vim, da sessão, ou ambos (copiar numa
+  sessão, colar em outra).
+- Se o `:find` continua recarregando o buffer corrente ou abre um buffer
+  próprio de resultado (hoje: recarrega; o oil não tem equivalente).
