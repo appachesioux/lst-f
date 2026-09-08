@@ -276,6 +276,21 @@ test "ID duplicado no proprio nome pede copia (sufixo fica para o disco)" {
     try testing.expectEqualStrings("a.txt", p.copies[0].to);
 }
 
+test "destino de copia pode sair do base (painel de destino)" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    // O split escolhe qualquer diretorio da maquina; no buffer o destino
+    // chega relativo ao base, com `../` na frente.
+    const edits = [_]Edit{ edit(1, "a.txt"), edit(1, "../fora/a.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+    try testing.expectEqualStrings("a.txt", p.copies[0].from);
+    try testing.expectEqualStrings("../fora/a.txt", p.copies[0].to);
+    // Renomeacao continua sem poder sair do base.
+    try expectProblem(try build(f.a(), &originals, &.{edit(1, "../fora/a.txt")}, &.{}, .{}), .escapes_base);
+}
+
 test "ID duplicado com as duas linhas editadas e ambiguo" {
     var f = Fixture.init();
     defer f.deinit();

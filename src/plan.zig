@@ -318,14 +318,15 @@ pub fn build(
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
-    // Mesmas regras lexicais para os destinos de copia.
+    // Mesmas regras lexicais para os destinos de copia, exceto o escape do
+    // base: copiar para fora e o que torna o painel de destino util.
     for (copies.items) |*c| {
         const raw = c.to;
         if (raw[0] == '/') {
             try problems.append(arena, .{ .absolute_path = .{ .id = c.id, .path = raw } });
             continue;
         }
-        const norm = normalize(arena, raw) catch |err| switch (err) {
+        const norm = normalizeWithEscape(arena, raw) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Escapes => {
                 try problems.append(arena, .{ .escapes_base = .{ .id = c.id, .path = raw } });
@@ -713,6 +714,30 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
         if (std.mem.eql(u8, comp, "..")) {
             if (comps.items.len == 0) return error.Escapes;
             _ = comps.pop();
+            continue;
+        }
+        try comps.append(arena, comp);
+    }
+    if (comps.items.len == 0) return error.Empty;
+    return std.mem.join(arena, "/", comps.items);
+}
+
+/// Como `normalize`, mas aceita subir alem da raiz com `..` e devolve o
+/// caminho com os componentes `../` na frente. Destinos de copia usam esta
+/// variante: o painel de destino (Ctrl+S) escolhe qualquer diretorio da
+/// maquina e a copia preserva a origem -- escapar do base so materializa
+/// coisa nova la fora, que o `:undo` remove por inteiro.
+pub fn normalizeWithEscape(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
+    var comps: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, path, '/');
+    while (it.next()) |comp| {
+        if (comp.len == 0 or std.mem.eql(u8, comp, ".")) continue;
+        if (std.mem.eql(u8, comp, "..")) {
+            if (comps.items.len == 0 or std.mem.eql(u8, comps.items[comps.items.len - 1], "..")) {
+                try comps.append(arena, "..");
+            } else {
+                _ = comps.pop();
+            }
             continue;
         }
         try comps.append(arena, comp);

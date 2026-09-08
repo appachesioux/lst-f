@@ -601,3 +601,45 @@ test "aplica e desfaz criacao de symlink e hardlink" {
     try testing.expect(h.exists("original.txt"));
     try testing.expectEqualStrings("conteudo do arquivo", try h.read("original.txt"));
 }
+
+test "copia arquivo e diretorio para fora do base com ../ e desfaz" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.dir().createDirPath(io, "base/pasta");
+    try h.dir().createDirPath(io, "fora");
+    try h.touch("base/a.txt", "conteudo A");
+    try h.touch("base/pasta/b.txt", "conteudo B");
+
+    var base_sub = try h.dir().openDir(io, "base", .{ .iterate = true });
+    defer base_sub.close(io);
+
+    const originals = [_]plan.Original{
+        .{ .id = 1, .path = "a.txt", .kind = .file },
+        .{ .id = 2, .path = "pasta", .kind = .dir },
+    };
+    const edits = [_]plan.Edit{
+        .{ .id = 1, .path = "a.txt", .line = 1 },
+        .{ .id = 1, .path = "../fora/a.txt", .line = 2 },
+        .{ .id = 2, .path = "pasta", .line = 3 },
+        .{ .id = 2, .path = "../fora/pasta_copia", .line = 4 },
+    };
+    const p = try planFor(h.a(), &originals, &edits);
+    try testing.expectEqual(@as(usize, 2), p.copies.len);
+
+    const outcome = try apply(h.a(), io, base_sub, p, null);
+    try testing.expect(outcome.failure == null);
+    try testing.expectEqualStrings("conteudo A", try h.read("base/a.txt"));
+    try testing.expectEqualStrings("conteudo A", try h.read("fora/a.txt"));
+    try testing.expectEqualStrings("conteudo B", try h.read("fora/pasta_copia/b.txt"));
+
+    const errors = try revert(h.a(), io, base_sub, outcome.applied, null);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expect(h.exists("base/a.txt"));
+    try testing.expect(h.exists("base/pasta/b.txt"));
+    try testing.expect(!h.exists("fora/a.txt"));
+    try testing.expect(!h.exists("fora/pasta_copia"));
+}
