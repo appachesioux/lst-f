@@ -306,8 +306,11 @@ pub const State = struct {
             \\
             \\function! s:lstf_set_clipboard(text) abort
             \\  let @" = a:text
-            \\  let @+ = a:text
-            \\  let @* = a:text
+            \\  " Vim sem +clipboard nao tem os registros @+ e @*: E354.
+            \\  if has('clipboard')
+            \\    let @+ = a:text
+            \\    let @* = a:text
+            \\  endif
             \\  if executable('wl-copy') && (!empty($WAYLAND_DISPLAY) || !empty($WAYLAND_SOCKET))
             \\    call system('wl-copy', a:text)
             \\  elseif executable('xclip') && !empty($DISPLAY)
@@ -1067,11 +1070,22 @@ pub const State = struct {
             \\    if empty(l:perm) | let l:perm = 'rw-r--r--' | endif
             \\    call add(l:lines, printf('- │ %-9s │ %9s │ %-16s │  %s', l:perm, l:sz_str, l:mtime, l:f))
             \\  endfor
-            \\  setlocal modifiable
+            \\  " O painel e redesenhado inteiro: sem registro de undo, senao
+            \\  " um redo/undo do Vim (C-r / u) num buffer nomodifiable da E21
+            \\  " ou corrompe a listagem.
+            \\  let l:ul = &l:undolevels
+            \\  setlocal modifiable undolevels=-1
             \\  silent %delete _
             \\  call setline(1, l:lines)
+            \\  let &l:undolevels = l:ul
             \\  setlocal nomodified nomodifiable
             \\  execute 'call cursor(5, 1)'
+            \\endfunction
+            \\
+            \\" Atualiza o painel de destino. Wrapper sem argumentos: o rhs
+            \\" de um mapping nao enxerga variaveis s: ao executar (E121).
+            \\function! s:lstf_dest_refresh() abort
+            \\  call s:lstf_render_dest(s:lstf_dest_dir)
             \\endfunction
             \\
             \\function! s:lstf_dest_toggle_hidden() abort
@@ -1079,16 +1093,24 @@ pub const State = struct {
             \\  call s:lstf_render_dest(s:lstf_dest_dir)
             \\endfunction
             \\
-            \\function! s:lstf_dest_open() abort
-            \\  let l:line = getline('.')
-            \\  let l:sep = strridx(l:line, ' │  ')
-            \\  if l:sep < 0
-            \\    let l:sep = strridx(l:line, ' │ ')
-            \\    if l:sep < 0 | return | endif
-            \\    let l:name = substitute(strpart(l:line, l:sep + 3), '^\s*', '', '')
-            \\  else
-            \\    let l:name = strpart(l:line, l:sep + 4)
+            \\" Nome da entrada numa linha do painel de destino. O separador
+            \\" ' │  ' tem 4 caracteres mas 6 bytes em UTF-8, e strpart()
+            \\" conta bytes: dai o +6 (e +5 no separador simples).
+            \\function! s:lstf_dest_name(line) abort
+            \\  let l:sep = strridx(a:line, ' │  ')
+            \\  if l:sep >= 0
+            \\    return strpart(a:line, l:sep + 6)
             \\  endif
+            \\  let l:sep = strridx(a:line, ' │ ')
+            \\  if l:sep >= 0
+            \\    return strpart(a:line, l:sep + 5)
+            \\  endif
+            \\  return ''
+            \\endfunction
+            \\
+            \\function! s:lstf_dest_open() abort
+            \\  let l:name = s:lstf_dest_name(getline('.'))
+            \\  if empty(l:name) | return | endif
             \\  if l:name ==# '../' || l:name ==# '..'
             \\    let l:parent = fnamemodify(s:lstf_dest_dir, ':h:h')
             \\    if empty(l:parent) | let l:parent = '/' | endif
@@ -1117,16 +1139,7 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_dest_yank() abort
-            \\  let l:line = getline('.')
-            \\  let l:sep = strridx(l:line, ' │  ')
-            \\  if l:sep < 0
-            \\    let l:sep = strridx(l:line, ' │ ')
-            \\  endif
-            \\  if l:sep >= 0
-            \\    let l:name = substitute(strpart(l:line, l:sep + 3), '^\s*', '', '')
-            \\  else
-            \\    let l:name = ''
-            \\  endif
+            \\  let l:name = s:lstf_dest_name(getline('.'))
             \\  if !empty(l:name) && l:name !=# '../' && l:name !=# '..'
             \\    let l:path = s:lstf_dest_dir . l:name
             \\  else
@@ -1138,16 +1151,7 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! s:lstf_dest_yank_link() abort
-            \\  let l:line = getline('.')
-            \\  let l:sep = strridx(l:line, ' │  ')
-            \\  if l:sep < 0
-            \\    let l:sep = strridx(l:line, ' │ ')
-            \\  endif
-            \\  if l:sep >= 0
-            \\    let l:name = substitute(strpart(l:line, l:sep + 3), '^\s*', '', '')
-            \\  else
-            \\    let l:name = ''
-            \\  endif
+            \\  let l:name = s:lstf_dest_name(getline('.'))
             \\  if !empty(l:name) && l:name !=# '../' && l:name !=# '..'
             \\    let l:target = s:lstf_dest_dir . l:name
             \\    let l:clean_name = substitute(l:name, '/$', '', '')
@@ -1272,7 +1276,11 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> p :call <SID>lstf_dest_paste()<CR>
             \\  nnoremap <buffer> <silent> P :call <SID>lstf_dest_paste()<CR>
             \\  nnoremap <buffer> <silent> <F4> :call <SID>lstf_dest_shell()<CR>
-            \\  nnoremap <buffer> <silent> r :call <SID>lstf_render_dest(s:lstf_dest_dir)<CR>
+            \\  nnoremap <buffer> <silent> r :call <SID>lstf_dest_refresh()<CR>
+            \\  nnoremap <buffer> <silent> <C-r> :call <SID>lstf_dest_refresh()<CR>
+            \\  " undo/redo num buffer nomodifiable so daria E21: silencia.
+            \\  nnoremap <buffer> <silent> u <Nop>
+            \\  nnoremap <buffer> <silent> U <Nop>
             \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
             \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
             \\  " `q` deve encerrar o lst-f independentemente do painel em foco.
