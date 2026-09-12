@@ -220,6 +220,7 @@ pub const State = struct {
             \\    \ '    dd             Apaga a linha: remove, ou recorta para colar',
             \\    \ '    p              Cola neste diretorio: yy antes = copia,',
             \\    \ '                   dd antes = move (salve a janela onde colou)',
+            \\    \ '                   entre pastas: Ctrl+S e navegue na outra janela',
             \\    \ '                   nome em conflito mostra o desfecho na linha',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
@@ -476,14 +477,30 @@ pub const State = struct {
             \\  return [l:err, substitute(l:out, "\n\\+$", '', '')]
             \\endfunction
             \\
+            \\" Outra janela mostrando este mesmo buffer. Com ela, trocar de pasta
+            \\" nesta nao apaga da tela a edicao pendente: ela continua visivel la, e
+            \\" o Vim mantem o buffer carregado e modificado porque uma janela o
+            \\" exibe -- sem depender de 'hidden', que e default no Neovim e nao no
+            \\" Vim. E a condicao do recorte: o `dd` fica na origem enquanto esta
+            \\" janela vai ao destino colar.
+            \\function! s:lstf_shared_buffer() abort
+            \\  if !exists('*win_findbuf') | return 0 | endif
+            \\  return len(win_findbuf(bufnr('%'))) > 1
+            \\endfunction
+            \\
             \\" Navegacao viva: o pai relista, regrava e responde com o caminho do
             \\" buffer que esta janela deve mostrar. Navegar pode trocar de buffer
             \\" -- e o que permite dois diretorios lado a lado, cada janela no seu,
             \\" sem um "painel de destino" de categoria separada. Com edicao
-            \\" pendente, o caminho e a diretiva antiga: ela passa pela
-            \\" confirmacao antes de qualquer coisa.
+            \\" pendente, o caminho e a diretiva antiga: ela passa pela confirmacao
+            \\" antes de qualquer coisa -- salvo quando outra janela mostra o mesmo
+            \\" buffer, que e o que separa os dois buffers do recorte sem perder o
+            \\" `dd` de vista.
             \\function! s:lstf_nav(cmd, directive) abort
-            \\  if &modified
+            \\  " `hidden` fica de fora da excecao: relista o mesmo View, e recarregar
+            \\  " o proprio buffer descartaria a edicao em vez de leva-la para outra
+            \\  " pasta.
+            \\  if &modified && (a:cmd ==# 'hidden' || !s:lstf_shared_buffer())
             \\    call s:lstf_write_directive(a:directive)
             \\    return
             \\  endif
@@ -546,6 +563,15 @@ pub const State = struct {
             \\  let l:linhas = split(a:reply, "\n")
             \\  let l:target = get(l:linhas, 0, '')
             \\  call s:lstf_reload_others(l:linhas[1:])
+            \\  " Navegacao que nao saiu do lugar (`<` no inicio do trilho, `:cd .`)
+            \\  " responde com este mesmo buffer. Com edicao pendente, o `edit!` abaixo
+            \\  " trocaria o que o usuario tem na tela por um arquivo que descreve a
+            \\  " mesma pasta: perda sem destino nenhum.
+            \\  if &modified && (empty(l:target)
+            \\    \ || fnamemodify(bufname('%'), ':p') ==# fnamemodify(l:target, ':p'))
+            \\    redrawstatus!
+            \\    return
+            \\  endif
             \\  " Depois do reload das outras: a flag e de quem esta sendo aberto
             \\  " agora, e cada reload la dentro mexe nela.
             \\  let s:lstf_opened = 0

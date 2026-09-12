@@ -926,7 +926,13 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     const failure = s.notice;
     // Navegacao sempre produz uma tela nova. O apply ja a escreveu no sucesso
     // e preserva no disco o buffer editado quando precisa devolver um erro.
-    if (!rewrote_buffer and
+    // Pedido recusado nao regrava nada: o helper mostra o recado e deixa o
+    // buffer como esta, sem `edit!`. Regravar o arquivo debaixo de um buffer
+    // modificado (o `<` no inicio do trilho com um `dd` pendente) fazia o
+    // proximo `:w` cair no aviso do Vim de "arquivo mudou desde a leitura",
+    // porque o registro de mtime do buffer so se atualiza num reload.
+    if (ok and
+        !rewrote_buffer and
         !std.mem.eql(u8, cmd, "apply") and
         !std.mem.eql(u8, cmd, "preview") and
         !std.mem.eql(u8, cmd, "theme")) try writeBuffer(s);
