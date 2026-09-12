@@ -678,7 +678,7 @@ pub const State = struct {
             \\      \ 'title_pos': 'center'
             \\    \ })
             \\    call setwinvar(l:win, '&winhighlight',
-            \\      \ 'Normal:LstfConfirm,FloatBorder:LstfConfirmBorder,FloatTitle:LstfConfirmBorder')
+            \\      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
             \\  else
             \\    let l:win = popup_create(l:lines, {
             \\      \ 'title': ' Confirmar alteracoes ',
@@ -692,8 +692,8 @@ pub const State = struct {
             \\      \ 'maxheight': l:height,
             \\      \ 'mapping': 0,
             \\      \ 'close': 'none',
-            \\      \ 'highlight': 'LstfConfirm',
-            \\      \ 'borderhighlight': ['LstfConfirmBorder']
+            \\      \ 'highlight': 'LstfPopup',
+            \\      \ 'borderhighlight': ['LstfPopupBorder']
             \\    \ })
             \\  endif
             \\  " A cor vai por matchadd na janela: um mecanismo so serve o popup do
@@ -1304,12 +1304,14 @@ pub const State = struct {
             \\    let l:height = min([len(l:lines), &lines - 4])
             \\    let l:opts = {'relative': 'editor', 'row': max([1, (&lines - l:height) / 2 - 1]), 'col': max([1, (&columns - l:width) / 2]), 'width': l:width, 'height': l:height, 'style': 'minimal', 'border': 'rounded', 'title': ' Tree ', 'title_pos': 'center'}
             \\    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+            \\    call setwinvar(l:win, '&winhighlight',
+            \\      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
             \\    let l:close = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
             \\    for l:k in ['q', '<Esc>', '<CR>', '<Bslash>']
             \\      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close
             \\    endfor
             \\  elseif exists('*popup_create')
-            \\    let l:win = popup_create(l:lines, {'title': ' Tree ', 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'filter': function('s:lstf_tree_filter'), 'close': 'none'})
+            \\    let l:win = popup_create(l:lines, {'title': ' Tree ', 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'filter': function('s:lstf_tree_filter'), 'close': 'none', 'highlight': 'LstfPopup', 'borderhighlight': ['LstfPopupBorder']})
             \\  else
             \\    echo join(l:lines, "\n")
             \\  endif
@@ -1384,8 +1386,9 @@ pub const State = struct {
             \\    highlight LstfPath cterm=bold ctermfg=166 gui=bold guifg=#bc5215 guibg=NONE
             \\    highlight LstfTitlesSep cterm=NONE ctermfg=248 ctermbg=254 gui=NONE guifg=#9ca0b0 guibg=#dce0e8
             \\    highlight LstfSep ctermfg=250 guifg=#bcc0cc guibg=NONE
-            \\    highlight LstfConfirm ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
-            \\    highlight LstfConfirmBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+            \\    highlight LstfPopup ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
+            \\    highlight LstfPopupBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+            \\    highlight PopupSelected cterm=NONE ctermfg=0 ctermbg=252 gui=NONE guifg=#4c4f69 guibg=#ccd0da
             \\    highlight LstfConfirmRemove cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
             \\    highlight LstfConfirmKey cterm=bold ctermfg=0 ctermbg=254 gui=bold guifg=#4c4f69 guibg=#dce0e8
             \\    highlight CursorLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
@@ -1413,8 +1416,9 @@ pub const State = struct {
             \\    highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
             \\    highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
             \\    highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
-            \\    highlight LstfConfirm ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
-            \\    highlight LstfConfirmBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+            \\    highlight LstfPopup ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
+            \\    highlight LstfPopupBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+            \\    highlight PopupSelected cterm=NONE ctermfg=252 ctermbg=240 gui=NONE guifg=#cdd6f4 guibg=#45475a
             \\    highlight LstfConfirmRemove cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
             \\    highlight LstfConfirmKey cterm=bold ctermfg=252 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
             \\    highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
