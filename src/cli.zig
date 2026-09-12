@@ -366,7 +366,7 @@ const View = struct {
     /// Arquivo em disco que carrega o conteudo do buffer.
     buffer_path: []const u8,
     /// Listagem corrente.
-    entries: []const plan.Original = &.{},
+    entries: []plan.Original = &.{},
     /// Nomes que nao sobrevivem ao round-trip do Vim e por isso sao so leitura.
     unlistable: []const []const u8 = &.{},
     /// Cabecalho do buffer aberto agora. O parser precisa do texto exato para
@@ -381,6 +381,13 @@ const View = struct {
     history: session.History = .{},
     /// Escopo de um `:find` em vigor neste buffer, para o cabecalho.
     scope: ?[]const u8 = null,
+    /// Base dos IDs deste buffer e quantos estao reservados a partir dela.
+    /// IDs sao unicos na sessao inteira, nao por buffer: um `yy` numa janela
+    /// seguido de `p` na outra nao pode casar com uma entrada de outra pasta.
+    /// O numero existiria nos dois buffers e o plano copiaria o arquivo
+    /// errado em silencio.
+    id_base: u32 = 0,
+    id_span: u32 = 0,
 };
 
 /// diretorio -> View. Os Views vivem no arena, entao `*View` e estavel.
@@ -437,6 +444,8 @@ const Session = struct {
     view: *View,
     /// Todos os diretorios abertos na sessao, um View por diretorio.
     views: ViewRegistry = .{},
+    /// Proximo ID livre da sessao. Ver `View.id_base`.
+    next_id: u32 = 0,
 
     /// Aviso de uma operacao concluida, mostrado uma vez no buffer reaberto.
     notice: ?[]const u8 = null,
@@ -1085,9 +1094,13 @@ const Collector = struct {
     session: *Session,
     entries: std.ArrayList(plan.Original) = .empty,
     unlistable: std.ArrayList([]const u8) = .empty,
+    /// Maior indice consumido pela enumeracao. Entra no calculo da reserva de
+    /// IDs porque entrada nao-listavel tambem gasta indice.
+    high: u32 = 0,
 
     fn emit(ctx: *anyopaque, index: u32, e: explorer.Entry) anyerror!void {
         const c: *Collector = @ptrCast(@alignCast(ctx));
+        if (index >= c.high) c.high = index + 1;
         if (e.parent) return; // `..` nao e entrada editavel; para subir existe `:cd ..`
         // O Vim nao preserva bytes invalidos no round-trip: o ID estaria certo e
         // o destino, corrompido. A entrada aparece, mas fora da edicao.
@@ -1117,6 +1130,22 @@ fn loadListing(s: *Session) !void {
     try explorer.enumerate(s.arena, s.io, s.view.dir, options, collector.sink());
     s.view.entries = try collector.entries.toOwnedSlice(s.arena);
     s.view.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
+    reserveIds(s, collector.high);
+}
+
+/// Garante que os IDs deste View nao colidem com os de nenhum outro buffer da
+/// sessao. A reserva existente e reaproveitada enquanto couber, para que um
+/// refresh nao troque os IDs debaixo de um buffer que o usuario esta editando.
+fn reserveIds(s: *Session, high: u32) void {
+    const v = s.view;
+    const need = high + 2;
+    if (v.id_span >= need) return;
+    const old_base = v.id_base;
+    v.id_base = s.next_id;
+    v.id_span = need;
+    s.next_id = s.next_id + need;
+    if (old_base == v.id_base) return;
+    for (v.entries) |*e| e.id = e.id - old_base + v.id_base;
 }
 
 fn writeBuffer(s: *Session) !void {
@@ -1431,9 +1460,12 @@ const Feed = struct {
     options: explorer.Options,
     paths: std.ArrayList(explorer.Entry) = .empty,
     arena: Allocator,
+    /// Maior indice visto; mesma funcao do `Collector.high`.
+    high: u32 = 0,
 
     fn emit(ctx: *anyopaque, index: u32, e: explorer.Entry) anyerror!void {
         const f: *Feed = @ptrCast(@alignCast(ctx));
+        if (index >= f.high) f.high = index + 1;
         if (e.parent) return;
         try f.paths.append(f.arena, e);
         // Campo 1 e o indice, nunca o caminho: nome de arquivo pode conter TAB.
@@ -1519,6 +1551,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
 
     s.view.entries = try entries.toOwnedSlice(s.arena);
     s.view.unlistable = try unlistable.toOwnedSlice(s.arena);
+    reserveIds(s, feed.high);
     s.notice = if (query.len > 0)
         try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s))", .{ query, s.view.entries.len })
     else
