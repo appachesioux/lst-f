@@ -631,21 +631,37 @@ pub const State = struct {
             \\
             \\
             \\function! s:lstf_confirm_plan(plan) abort
-            \\  let l:lines = [''] + a:plan + ['',
-            \\    \ '  y ou Enter  aplica    n ou Esc  cancela    j/k  rolam', '']
-            \\  " Vim/Neovim antigos ou terminais minimos conservam uma saida
-            \\  " textual; a aplicacao nunca depende do popup para ser segura.
+            \\  " Dois desfechos, dois nomes -- a pergunta e sobre o plano inteiro, e
+            \\  " Enter, Esc e q seguem aceitos sem estar escritos. A dica de rolagem
+            \\  " entra so quando a lista nao cabe: num plano curto ela era ruido ao
+            \\  " lado das duas palavras que importam.
+            \\  " Vim/Neovim antigos ou terminais minimos conservam uma saida textual;
+            \\  " a aplicacao nunca depende do popup para ser segura. Sem popup nao ha
+            \\  " o que rolar nem tecla a anunciar -- o input() abaixo e a pergunta.
             \\  if &columns < 30 || &lines < 9 || (!has('nvim') && !exists('*popup_create'))
-            \\    echo join(l:lines, "\n")
+            \\    echo join([''] + a:plan, "\n")
             \\    let l:answer = input('Apply filesystem changes? [y/N] ')
             \\    return tolower(l:answer) ==# 'y' || tolower(l:answer) ==# 'yes'
             \\  endif
+            \\  let l:max_height = &lines - 6
+            \\  let l:keys = len(a:plan) + 2 > l:max_height
+            \\    \ ? '[Y]es    [N]o     j/k rolam' : '[Y]es    [N]o'
+            \\  " As teclas vao no topo, nao no fim. Num plano mais alto que o popup a
+            \\  " ultima linha fica abaixo do corte, e a caixa perguntava sem mostrar
+            \\  " como responder -- e nem rolar resolvia, porque a propria dica de
+            \\  " rolagem estava escondida junto. O plano ja abre com uma linha vazia,
+            \\  " que serve de separador.
+            \\  let l:lines = ['', l:keys] + a:plan
             \\  let l:width = 50
             \\  for l:line in l:lines
             \\    let l:width = max([l:width, strdisplaywidth(l:line) + 4])
             \\  endfor
             \\  let l:width = min([l:width, &columns - 4])
-            \\  let l:height = min([len(l:lines), &lines - 6])
+            \\  " Centrar as teclas na largura final, que so se conhece agora -- e
+            \\  " depois de medir, para o proprio recuo nao alargar o popup.
+            \\  let l:lines[1] = repeat(' ',
+            \\    \ max([2, (l:width - strdisplaywidth(l:keys)) / 2])) . l:keys
+            \\  let l:height = min([len(l:lines), l:max_height])
             \\  let l:buf = -1
             \\  if has('nvim')
             \\    let l:buf = nvim_create_buf(v:false, v:true)
@@ -661,6 +677,8 @@ pub const State = struct {
             \\      \ 'title': ' Confirmar alteracoes ',
             \\      \ 'title_pos': 'center'
             \\    \ })
+            \\    call setwinvar(l:win, '&winhighlight',
+            \\      \ 'Normal:LstfConfirm,FloatBorder:LstfConfirmBorder,FloatTitle:LstfConfirmBorder')
             \\  else
             \\    let l:win = popup_create(l:lines, {
             \\      \ 'title': ' Confirmar alteracoes ',
@@ -673,9 +691,22 @@ pub const State = struct {
             \\      \ 'minheight': l:height,
             \\      \ 'maxheight': l:height,
             \\      \ 'mapping': 0,
-            \\      \ 'close': 'none'
+            \\      \ 'close': 'none',
+            \\      \ 'highlight': 'LstfConfirm',
+            \\      \ 'borderhighlight': ['LstfConfirmBorder']
             \\    \ })
             \\  endif
+            \\  " A cor vai por matchadd na janela: um mecanismo so serve o popup do
+            \\  " Vim e o float do Neovim, sem text property nem extmark, logo sem
+            \\  " feature-detect. Sem isto o popup do Vim cai no Pmenu default, que e
+            \\  " LightMagenta -- fundo rosa atras do texto todo, inclusive das teclas.
+            \\  " A remocao e a unica secao destacada: e onde a cor avisa em vez de
+            \\  " enfeitar. A linha de continuacao dela fica neutra, porque vermelho
+            \\  " numa frase inteira e o problema de leitura que isto vem corrigir.
+            \\  silent! call win_execute(l:win,
+            \\    \ "call matchadd('LstfConfirmRemove', '^Remove (\\d\\+).*')")
+            \\  silent! call win_execute(l:win,
+            \\    \ "call matchadd('LstfConfirmKey', '\\[[YN]\\]')")
             \\  redraw
             \\  let l:approved = 0
             \\  while 1
@@ -1353,6 +1384,10 @@ pub const State = struct {
             \\    highlight LstfPath cterm=bold ctermfg=166 gui=bold guifg=#bc5215 guibg=NONE
             \\    highlight LstfTitlesSep cterm=NONE ctermfg=248 ctermbg=254 gui=NONE guifg=#9ca0b0 guibg=#dce0e8
             \\    highlight LstfSep ctermfg=250 guifg=#bcc0cc guibg=NONE
+            \\    highlight LstfConfirm ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
+            \\    highlight LstfConfirmBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+            \\    highlight LstfConfirmRemove cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
+            \\    highlight LstfConfirmKey cterm=bold ctermfg=0 ctermbg=254 gui=bold guifg=#4c4f69 guibg=#dce0e8
             \\    highlight CursorLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
             \\    highlight Visual cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
             \\    highlight LstfVisualLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
@@ -1378,6 +1413,10 @@ pub const State = struct {
             \\    highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
             \\    highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
             \\    highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
+            \\    highlight LstfConfirm ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
+            \\    highlight LstfConfirmBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+            \\    highlight LstfConfirmRemove cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
+            \\    highlight LstfConfirmKey cterm=bold ctermfg=252 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
             \\    highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\    highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\    highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
