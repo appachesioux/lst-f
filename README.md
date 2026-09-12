@@ -59,12 +59,9 @@ que você acabou de entrar por SSH.
 | `Ctrl+A`                              | seleciona todo o buffer do `lst-f`         |
 | `yr` ou `yp`                          | copia caminho relativo do arquivo/diretório para o clipboard |
 | `ya`                                  | copia caminho absoluto do arquivo/diretório para o clipboard |
-| `Ctrl+S`                              | abre/fecha o painel dividido de destino    |
-| `Tab`                                 | alterna o foco entre painel principal e split |
-| `Y` ou `yy` no split                  | copia caminho do destino para colar (`p`)  |
-| `S` ou `s` no split                   | copia formato de symlink (`nome -> caminho`) para colar (`p`) |
-| `p` ou `P` no split                   | cola linhas yankadas da lista (`yy`) como cópia no destino |
-| `F4` no split                         | abre terminal no diretório de destino      |
+| `Ctrl+S`                              | abre esta pasta numa segunda janela (`:vsplit`) |
+| `Tab`                                 | percorre as janelas abertas                |
+| `yy` + `p`                            | duplica a linha: o ID repetido é pedido de cópia |
 | `nome -> alvo` em linha nova          | cria symlink apontando para o alvo         |
 | `nome => alvo` em linha nova          | cria hardlink apontando para o alvo        |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
@@ -141,6 +138,28 @@ Opções: `-a`, `--all`, `--hidden`, `--light`, `--dark`, `--theme <modo>`, `--e
 
 Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
 
+## Duas pastas lado a lado
+
+Cada diretório visitado é um buffer de verdade, com arquivo próprio. Então dois
+diretórios lado a lado não são uma feature: são `Ctrl+S` (ou `:vsplit`) e
+navegar numa das janelas. A que navegar troca para o buffer da outra pasta; a
+outra continua exatamente onde estava, com as edições que você já tinha feito.
+
+```
+╭─ ~/projetos ────────────────────╮╭─ ~/projetos/relatorios ─────╮
+```
+
+Cada janela tem a sua própria âncora: o caminho que você edita é relativo à
+pasta daquela janela, o `cwd` dela (`gf`, completação de `:e`) é aquela pasta, e
+a moldura no topo descreve a janela em foco. Não existe "o diretório corrente"
+da sessão — existe o de cada buffer.
+
+Os IDs são únicos na sessão inteira, não por buffer. Uma linha yankada numa
+janela e colada na outra não casa por acaso com uma entrada de outra pasta: o
+plano recusa com `ID não pertence à seleção` em vez de copiar o arquivo errado.
+
+Fechar uma janela é o de sempre no Vim (`:close`, `Ctrl+W c`).
+
 ## Criação
 
 Uma linha que não começa por ID é um nome novo: `notas.md` cria o arquivo vazio,
@@ -151,12 +170,12 @@ Para criar **links**:
 - `meu-link -> /caminho/do/alvo` cria um **symlink** apontando para o alvo (relativo ou absoluto).
 - `meu-link => /caminho/do/alvo` cria um **hardlink** apontando para o alvo.
 - Ou use as diretivas `:ln <alvo> [nome]` (`:link`, `:symlink`) e `:hardlink <alvo> [nome]`.
-- No painel dividido (`Ctrl+S`), pressione `S` ou `s` sobre qualquer entrada para copiar no formato `nome -> /caminho/completo` e colar (`p`) direto no buffer principal.
-- Com linhas yankadas da lista (`yy` ou visual+`y`), `p` no painel de destino as
-  cola no buffer principal como pedidos de cópia para o diretório do painel
-  (fora do diretório-base o caminho sobe com `../`). Nada toca o disco até o
-  `:w`, que mostra a confirmação de sempre; colisão no destino ganha sufixo
-  `-01` a `-99`, e `:undo` remove a cópia materializada.
+
+Para **copiar**, o gesto é o do Vim: `yy` na linha (ou visual + `y` em várias) e
+`p` para colar. A linha colada repete o ID da original, e é o ID repetido que o
+plano lê como cópia — a origem fica, o destino materializa uma cópia. Nada toca
+o disco até o `:w`, que mostra a confirmação de sempre; colisão no destino ganha
+sufixo `-01` a `-99`, e `:undo` remove a cópia materializada.
 
 As criações acontecem depois das renomeações, então um nome
 liberado no mesmo `:w` pode ser reocupado — arquivar `log.txt` como `log.1.txt`

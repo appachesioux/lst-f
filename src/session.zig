@@ -216,12 +216,10 @@ pub const State = struct {
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
             \\    \ '    F4             Abre terminal / shell no diretorio atual',
-            \\    \ '    Ctrl+S         Abre / fecha painel de destino (split)',
-            \\    \ '    Tab            Alterna foco entre painel principal e destino',
-            \\    \ '    Y ou yy (dest) Copia caminho do destino para colar (p)',
-            \\    \ '    S ou s (dest)  Copia como symlink (nome -> caminho) para colar (p)',
-            \\    \ '    p ou P (dest)  Cola linhas yankadas da lista (yy) como copia aqui',
-            \\    \ '    F4 (dest)      Abre terminal no diretorio de destino',
+            \\    \ '    Ctrl+S         Abre esta pasta numa segunda janela (:vsplit)',
+            \\    \ '    Tab            Percorre as janelas abertas',
+            \\    \ '    yy / y         Copia a linha (o ID vai junto, oculto)',
+            \\    \ '    p              Cola a linha copiada neste diretorio',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
             \\    \ '',
@@ -864,13 +862,12 @@ pub const State = struct {
             \\" Barra de topo: os titulos das colunas sao linha de tela, nao de
             \\" buffer. Nao rolam com a lista, nao dao para apagar e se redesenham
             \\" sozinhos quando o terminal muda de tamanho.
-            \\" A barra e da tela inteira, mas descreve a janela da lista: a posicao
-            \\" fica guardada aqui, atualizada so de dentro dela, para que o foco no
-            \\" painel de destino nao a faca seguir a janela errada.
+            \\" A barra e da tela inteira, mas descreve a janela da lista em foco:
+            \\" a posicao fica guardada aqui e so e atualizada de dentro dela.
             \\function! s:lstf_follow_scroll() abort
             \\  " A moldura e texto de buffer, entao nao se reajusta sozinha quando a
-            \\  " largura muda. A janela de cabecalho tem sempre a largura da lista:
-            \\  " o painel de destino e um vsplit de altura inteira, ao lado das duas.
+            \\  " largura muda. A janela de cabecalho tem a largura da tela inteira,
+            \\  " acima de todas as janelas de lista.
             \\  if s:lstf_frame && winwidth(0) != get(s:, 'lstf_frame_width', -1)
             \\    call s:lstf_draw_frame()
             \\  endif
@@ -1023,14 +1020,6 @@ pub const State = struct {
             \\  if winnr('$') > 1 | wincmd j | endif
             \\endfunction
             \\
-            \\function! s:lstf_focus_list() abort
-            \\  if exists('s:lstf_list_win') && win_id2win(s:lstf_list_win) > 0
-            \\    call win_gotoid(s:lstf_list_win)
-            \\  else
-            \\    wincmd p
-            \\  endif
-            \\endfunction
-            \\
             \\function! LstfStatusline() abort
             \\  let l:start = s:lstf_content_start()
             \\  let l:total = l:start > 0 ? len(filter(getline(l:start, '$'), 'v:val =~# ''^/\d\+\s\+''')) : 0
@@ -1077,6 +1066,30 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
+            \\" Dois diretorios lado a lado e mecanica pura do Vim: um `:vsplit`
+            \\" desta mesma pasta e navegar numa das janelas. A que navegar troca
+            \\" para o buffer da outra pasta; a outra continua onde estava. Nao ha
+            \\" painel de categoria separada, nem renderizacao propria, nem tecla
+            \\" silenciada: e uma janela com um buffer de diretorio, como qualquer
+            \\" outra. Fechar e o de sempre (`:close`, `<C-w>c`).
+            \\function! LstfSplit() abort
+            \\  let l:onde = win_getid()
+            \\  " `rightbelow`: a segunda janela abre a direita, como o usuario
+            \\  " espera de um explorador. `noautocmd` porque o BufReadPost nao
+            \\  " tem nada a montar aqui -- o buffer ja esta pronto.
+            \\  noautocmd rightbelow vsplit
+            \\  let l:nova = win_getid()
+            \\  " O cabecalho ocupa o topo da tela inteira e as duas janelas de
+            \\  " lista mudaram de largura sem o foco passar por nenhuma delas:
+            \\  " a moldura so se reajusta se passarmos explicitamente.
+            \\  call win_gotoid(l:onde)
+            \\  call s:lstf_follow_scroll()
+            \\  call s:lstf_draw_frame()
+            \\  call win_gotoid(l:nova)
+            \\  call s:lstf_follow_scroll()
+            \\  call s:lstf_draw_frame()
+            \\endfunction
+            \\
             \\function! LstfRefresh() abort
             \\  let [l:err, l:out] = s:lstf_live('reload')
             \\  if l:err == 0
@@ -1101,295 +1114,6 @@ pub const State = struct {
             \\    return printf('%.1fM', a:bytes / 1048576.0)
             \\  else
             \\    return printf('%.1fG', a:bytes / 1073741824.0)
-            \\  endif
-            \\endfunction
-            \\
-            \\let s:lstf_dest_dir = ''
-            \\
-            \\function! s:lstf_render_dest(dir) abort
-            \\  let s:lstf_dest_dir = simplify(fnamemodify(a:dir, ':p'))
-            \\  if s:lstf_dest_dir !~# '/$'
-            \\    let s:lstf_dest_dir .= '/'
-            \\  endif
-            \\  let l:raw_entries = globpath(s:lstf_dest_dir, '*', 0, 1)
-            \\  if get(s:, 'lstf_dest_hidden', 0)
-            \\    let l:raw_entries += globpath(s:lstf_dest_dir, '.*', 0, 1)
-            \\  endif
-            \\  let l:dirs = []
-            \\  let l:files = []
-            \\  for l:item in l:raw_entries
-            \\    let l:tail = fnamemodify(l:item, ':t')
-            \\    if l:tail ==# '.' || l:tail ==# '..' || l:tail =~# '^\.lst-f-'
-            \\      continue
-            \\    endif
-            \\    if isdirectory(l:item)
-            \\      call add(l:dirs, l:tail . '/')
-            \\    else
-            \\      call add(l:files, l:tail)
-            \\    endif
-            \\  endfor
-            \\  call sort(l:dirs)
-            \\  call sort(l:files)
-            \\  let l:lines = [
-            \\    \ 'DESTINATION: ' . s:lstf_dest_dir,
-            \\    \ '──┬───────────┬───────────┬──────────────────┬──────────────────────────',
-            \\    \ 'T │ PERMS     │ SIZE      │ MODIFIED         │ NAME [Y=copy S=link p=paste .=hidden]',
-            \\    \ '──┼───────────┼───────────┼──────────────────┼──────────────────────────',
-            \\    \ 'd │ rwxr-xr-x │         - │                - │  ../'
-            \\    \ ]
-            \\  for l:d in l:dirs
-            \\    let l:full = s:lstf_dest_dir . l:d
-            \\    let l:mtime = strftime('%Y-%m-%d %H:%M', getftime(l:full))
-            \\    let l:perm = getfperm(l:full)
-            \\    if empty(l:perm) | let l:perm = 'rwxr-xr-x' | endif
-            \\    call add(l:lines, printf('d │ %-9s │ %9s │ %-16s │  %s', l:perm, '-', l:mtime, l:d))
-            \\  endfor
-            \\  for l:f in l:files
-            \\    let l:full = s:lstf_dest_dir . l:f
-            \\    let l:sz = getfsize(l:full)
-            \\    let l:sz_str = s:lstf_format_size(l:sz)
-            \\    let l:mtime = strftime('%Y-%m-%d %H:%M', getftime(l:full))
-            \\    let l:perm = getfperm(l:full)
-            \\    if empty(l:perm) | let l:perm = 'rw-r--r--' | endif
-            \\    call add(l:lines, printf('- │ %-9s │ %9s │ %-16s │  %s', l:perm, l:sz_str, l:mtime, l:f))
-            \\  endfor
-            \\  " O painel e redesenhado inteiro: sem registro de undo, senao
-            \\  " um redo/undo do Vim (C-r / u) num buffer nomodifiable da E21
-            \\  " ou corrompe a listagem.
-            \\  let l:ul = &l:undolevels
-            \\  setlocal modifiable undolevels=-1
-            \\  silent %delete _
-            \\  call setline(1, l:lines)
-            \\  let &l:undolevels = l:ul
-            \\  setlocal nomodified nomodifiable
-            \\  execute 'call cursor(5, 1)'
-            \\endfunction
-            \\
-            \\" Atualiza o painel de destino. Wrapper sem argumentos: o rhs
-            \\" de um mapping nao enxerga variaveis s: ao executar (E121).
-            \\function! s:lstf_dest_refresh() abort
-            \\  call s:lstf_render_dest(s:lstf_dest_dir)
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_toggle_hidden() abort
-            \\  let s:lstf_dest_hidden = !get(s:, 'lstf_dest_hidden', 0)
-            \\  call s:lstf_render_dest(s:lstf_dest_dir)
-            \\endfunction
-            \\
-            \\" Nome da entrada numa linha do painel de destino. O separador
-            \\" ' │  ' tem 4 caracteres mas 6 bytes em UTF-8, e strpart()
-            \\" conta bytes: dai o +6 (e +5 no separador simples).
-            \\function! s:lstf_dest_name(line) abort
-            \\  let l:sep = strridx(a:line, ' │  ')
-            \\  if l:sep >= 0
-            \\    return strpart(a:line, l:sep + 6)
-            \\  endif
-            \\  let l:sep = strridx(a:line, ' │ ')
-            \\  if l:sep >= 0
-            \\    return strpart(a:line, l:sep + 5)
-            \\  endif
-            \\  return ''
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_open() abort
-            \\  let l:name = s:lstf_dest_name(getline('.'))
-            \\  if empty(l:name) | return | endif
-            \\  if l:name ==# '../' || l:name ==# '..'
-            \\    let l:parent = fnamemodify(s:lstf_dest_dir, ':h:h')
-            \\    if empty(l:parent) | let l:parent = '/' | endif
-            \\    call s:lstf_render_dest(l:parent)
-            \\    return
-            \\  endif
-            \\  let l:target = s:lstf_dest_dir . l:name
-            \\  if isdirectory(l:target)
-            \\    call s:lstf_render_dest(l:target)
-            \\  else
-            \\    call s:lstf_set_clipboard(l:target)
-            \\    let s:lstf_notice = 'destino copiado: ' . l:target
-            \\    redrawstatus!
-            \\  endif
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_up() abort
-            \\  let l:parent = fnamemodify(s:lstf_dest_dir, ':h:h')
-            \\  if empty(l:parent) | let l:parent = '/' | endif
-            \\  call s:lstf_render_dest(l:parent)
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_home() abort
-            \\  let l:home = empty($HOME) ? expand('~') : $HOME
-            \\  call s:lstf_render_dest(l:home)
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_yank() abort
-            \\  let l:name = s:lstf_dest_name(getline('.'))
-            \\  if !empty(l:name) && l:name !=# '../' && l:name !=# '..'
-            \\    let l:path = s:lstf_dest_dir . l:name
-            \\  else
-            \\    let l:path = s:lstf_dest_dir
-            \\  endif
-            \\  call s:lstf_set_clipboard(l:path)
-            \\  let s:lstf_notice = 'caminho copiado: ' . l:path
-            \\  redrawstatus!
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_yank_link() abort
-            \\  let l:name = s:lstf_dest_name(getline('.'))
-            \\  if !empty(l:name) && l:name !=# '../' && l:name !=# '..'
-            \\    let l:target = s:lstf_dest_dir . l:name
-            \\    let l:clean_name = substitute(l:name, '/$', '', '')
-            \\    let l:link_entry = l:clean_name . ' -> ' . l:target
-            \\  else
-            \\    let l:target = s:lstf_dest_dir
-            \\    let l:clean_name = fnamemodify(simplify(s:lstf_dest_dir), ':t')
-            \\    if empty(l:clean_name) | let l:clean_name = 'link' | endif
-            \\    let l:link_entry = l:clean_name . ' -> ' . l:target
-            \\  endif
-            \\  call s:lstf_set_clipboard(l:link_entry)
-            \\  let s:lstf_notice = 'link copiado: ' . l:link_entry
-            \\  redrawstatus!
-            \\endfunction
-            \\
-            \\" Caminho relativo de a:from (diretorio absoluto) ate a:to. O
-            \\" destino das copias no buffer e relativo ao base, entao sair do
-            \\" base vira uma sequencia de `../`.
-            \\function! s:lstf_relpath(from, to) abort
-            \\  let l:a = split(a:from, '/')
-            \\  let l:b = split(a:to, '/')
-            \\  let l:i = 0
-            \\  while l:i < len(l:a) && l:i < len(l:b) && l:a[l:i] ==# l:b[l:i]
-            \\    let l:i += 1
-            \\  endwhile
-            \\  let l:comps = repeat(['..'], len(l:a) - l:i) + l:b[l:i:]
-            \\  return join(l:comps, '/')
-            \\endfunction
-            \\
-            \\" Colar no painel de destino: as linhas yankadas da lista (yy ou
-            \\" visual+y) viram linhas de copia no buffer principal, com o nome
-            \\" apontando para o diretorio deste painel. Nada toca o disco ate
-            \\" o :w, que passa pela confirmacao de sempre.
-            \\function! s:lstf_dest_paste() abort
-            \\  let l:reg = getreg('0')
-            \\  if l:reg !~# '^/\d\+\s' && getreg('"') =~# '^/\d\+\s'
-            \\    let l:reg = getreg('"')
-            \\  elseif l:reg !~# '^/\d\+\s' && getreg('+') =~# '^/\d\+\s'
-            \\    let l:reg = getreg('+')
-            \\  elseif l:reg !~# '^/\d\+\s' && getreg('*') =~# '^/\d\+\s'
-            \\    let l:reg = getreg('*')
-            \\  endif
-            \\  let l:ids = []
-            \\  for l:line in split(l:reg, "\n")
-            \\    let l:m = matchlist(l:line, '^/\(\d\+\)\s')
-            \\    if !empty(l:m) && index(l:ids, str2nr(l:m[1])) < 0
-            \\      call add(l:ids, str2nr(l:m[1]))
-            \\    endif
-            \\  endfor
-            \\  if empty(l:ids)
-            \\    let s:lstf_notice = 'nada para colar: yanke linhas da lista antes (yy ou visual+y)'
-            \\    redrawstatus!
-            \\    return
-            \\  endif
-            \\  let l:base = ''
-            \\  if exists('$LST_F_STATE') && filereadable($LST_F_STATE . '/base')
-            \\    let l:base = get(readfile($LST_F_STATE . '/base'), 0, '')
-            \\  endif
-            \\  if empty(l:base)
-            \\    let s:lstf_notice = 'sem o diretorio-base da sessao para calcular o destino'
-            \\    redrawstatus!
-            \\    return
-            \\  endif
-            \\  let l:rel = s:lstf_relpath(l:base, s:lstf_dest_dir)
-            \\  call s:lstf_focus_list()
-            \\  let l:lines = []
-            \\  for l:id in l:ids
-            \\    let l:ln = search('^/' . printf('%04d', l:id) . '\%(\s\|$\)', 'nw')
-            \\    if l:ln == 0 | continue | endif
-            \\    let l:name = s:lstf_entry_path(getline(l:ln))
-            \\    if empty(l:name) | continue | endif
-            \\    call add(l:lines, '/' . printf('%04d', l:id) . '  ' . (empty(l:rel) ? l:name : l:rel . '/' . l:name))
-            \\  endfor
-            \\  if empty(l:lines)
-            \\    let s:lstf_notice = 'as linhas yankadas nao estao na lista atual'
-            \\    redrawstatus!
-            \\    return
-            \\  endif
-            \\  call append(line('$'), l:lines)
-            \\  call cursor(line('$') - len(l:lines) + 1, 1)
-            \\  let s:lstf_notice = printf('%d copia(s) pronta(s) para %s: revise e :w', len(l:lines), s:lstf_dest_dir)
-            \\  redrawstatus!
-            \\endfunction
-            \\
-            \\function! s:lstf_dest_shell() abort
-            \\  call s:lstf_focus_list()
-            \\  call LstfShell(s:lstf_dest_dir)
-            \\endfunction
-            \\
-            \\function! LstfToggleSplit() abort
-            \\  if exists('t:lstf_dest_win') && win_id2win(t:lstf_dest_win) > 0
-            \\    let l:w = win_id2win(t:lstf_dest_win)
-            \\    execute l:w . 'close'
-            \\    unlet! t:lstf_dest_win
-            \\    call s:lstf_draw_frame()
-            \\    return
-            \\  endif
-            \\  " Pelo nome, nao por `buftype`: a janela de cabecalho tambem e
-            \\  " nofile e seria fechada no lugar do painel.
-            \\  for l:w in range(1, winnr('$'))
-            \\    if bufname(winbufnr(l:w)) ==# '__lstf_dest_panel__'
-            \\      execute l:w . 'close'
-            \\      call s:lstf_draw_frame()
-            \\      return
-            \\    endif
-            \\  endfor
-            \\  botright vsplit __lstf_dest_panel__
-            \\  let t:lstf_dest_win = win_getid()
-            \\  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
-            \\  setlocal nonumber norelativenumber cursorline
-            \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
-            \\  nnoremap <buffer> <silent> <CR> :call <SID>lstf_dest_open()<CR>
-            \\  nnoremap <buffer> <silent> - :call <SID>lstf_dest_up()<CR>
-            \\  nnoremap <buffer> <silent> ~ :call <SID>lstf_dest_home()<CR>
-            \\  nnoremap <buffer> <silent> gh :call <SID>lstf_dest_home()<CR>
-            \\  nnoremap <buffer> <silent> . :call <SID>lstf_dest_toggle_hidden()<CR>
-            \\  nnoremap <buffer> <silent> Y :call <SID>lstf_dest_yank()<CR>
-            \\  nnoremap <buffer> <silent> yy :call <SID>lstf_dest_yank()<CR>
-            \\  nnoremap <buffer> <silent> S :call <SID>lstf_dest_yank_link()<CR>
-            \\  nnoremap <buffer> <silent> s :call <SID>lstf_dest_yank_link()<CR>
-            \\  nnoremap <buffer> <silent> L :call <SID>lstf_dest_yank_link()<CR>
-            \\  nnoremap <buffer> <silent> p :call <SID>lstf_dest_paste()<CR>
-            \\  nnoremap <buffer> <silent> P :call <SID>lstf_dest_paste()<CR>
-            \\  nnoremap <buffer> <silent> <F4> :call <SID>lstf_dest_shell()<CR>
-            \\  nnoremap <buffer> <silent> r :call <SID>lstf_dest_refresh()<CR>
-            \\  nnoremap <buffer> <silent> <C-r> :call <SID>lstf_dest_refresh()<CR>
-            \\  " undo/redo num buffer nomodifiable so daria E21: silencia.
-            \\  nnoremap <buffer> <silent> u <Nop>
-            \\  nnoremap <buffer> <silent> U <Nop>
-            \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
-            \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
-            \\  " `q` deve encerrar o lst-f independentemente do painel em foco.
-            \\  " Esc e Ctrl+S continuam sendo as formas de fechar so este painel.
-            \\  nnoremap <buffer> <silent> q :call <SID>lstf_focus_list()<Bar>call LstfQuit()<CR>
-            \\  nnoremap <buffer> <silent> <Esc> :close<Bar>call <SID>lstf_draw_frame()<CR>
-            \\  nnoremap <buffer> <silent> <Tab> :call <SID>lstf_focus_list()<CR>
-            \\  nnoremap <buffer> <silent> <F1> :call LstfHelp()<CR>
-            \\  nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
-            \\  nnoremap <buffer> <silent> <F2> :call LstfToggleTheme()<CR>
-            \\  nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>
-            \\  call s:lstf_render_dest(getcwd())
-            \\  " O split estreitou a janela da lista sem passar por ela, entao a
-            \\  " barra de topo ficaria descrevendo a largura antiga.
-            \\  let l:dest = win_getid()
-            \\  call s:lstf_focus_list()
-            \\  call s:lstf_follow_scroll()
-            \\  call s:lstf_draw_frame()
-            \\  call win_gotoid(l:dest)
-            \\endfunction
-            \\
-            \\function! s:lstf_tab_jump() abort
-            \\  if exists('t:lstf_dest_win') && win_id2win(t:lstf_dest_win) > 0
-            \\    call win_gotoid(t:lstf_dest_win)
-            \\  else
-            \\    call LstfToggleSplit()
             \\  endif
             \\endfunction
             \\
@@ -1544,9 +1268,9 @@ pub const State = struct {
             \\augroup lstf_statusline
             \\  autocmd!
             \\  autocmd ModeChanged * redrawstatus | if exists('b:lstf_header') | call s:lstf_highlight_visual_lines() | endif
-            \\  " Abrir o painel de destino estreita a janela da lista sem passar
-            \\  " por ela: sem isto a barra de topo so voltaria a sincronizar no
-            \\  " proximo Tab. Vim antigo nao tem o evento; ai sincroniza no Tab.
+            \\  " Abrir ou fechar um split estreita a janela da lista sem passar por
+            \\  " ela: sem isto a barra de topo so voltaria a sincronizar no proximo
+            \\  " Tab. Vim antigo nao tem o evento; ai sincroniza no Tab.
             \\  if exists('##WinScrolled')
             \\    autocmd WinScrolled * if exists('b:lstf_id_width') | call s:lstf_follow_scroll() | endif
             \\  endif
@@ -1724,8 +1448,8 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> <C-a> ggVG
             \\  nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
             \\  nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
-            \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
-            \\  nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
+            \\  nnoremap <buffer> <silent> <C-s> :call LstfSplit()<CR>
+            \\  nnoremap <buffer> <silent> <Tab> :<C-u>wincmd w<CR>
             \\  nnoremap <buffer> <silent> yr :call LstfYank(0)<CR>
             \\  nnoremap <buffer> <silent> yp :call LstfYank(0)<CR>
             \\  nnoremap <buffer> <silent> ya :call LstfYank(1)<CR>
@@ -1799,8 +1523,9 @@ pub const State = struct {
             \\
             \\let s:lstf_opened = 0
             \\call s:lstf_open_buffer()
-            \\" Por ultimo: abrir o split antes daqui faria os `setlocal` e os
-            \\" mapeamentos `<buffer>` acima cairem no buffer errado.
+            \\" Por ultimo: abrir o cabecalho antes daqui faria os `setlocal` e os
+            \\" mapeamentos `<buffer>` acima cairem no buffer errado, porque o
+            \\" buffer corrente passaria a ser o da janela de topo.
             \\call s:lstf_open_header()
             \\redrawstatus | echo ''
             \\
