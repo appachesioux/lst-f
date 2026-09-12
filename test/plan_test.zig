@@ -277,12 +277,48 @@ test "ID duplicado no proprio nome pede copia (sufixo fica para o disco)" {
 }
 
 
-test "ID duplicado com as duas linhas editadas e ambiguo" {
+test "mesmo ID em N linhas vira N-1 copias" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    // `yy` e `p` quatro vezes na mesma janela: a primeira linha fica na
+    // origem e as outras copiam. O sufixo `-NN` sai da checagem de disco.
+    const edits = [_]Edit{ edit(1, "a.txt"), edit(1, "a.txt"), edit(1, "a.txt"), edit(1, "a.txt"), edit(1, "a.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 4), p.copies.len);
+    for (p.copies) |c| {
+        try testing.expectEqualStrings("a.txt", c.from);
+        try testing.expectEqualStrings("a.txt", c.to);
+    }
+    try testing.expectEqual(@as(usize, 0), p.renames.len);
+    try testing.expectEqual(@as(usize, 0), p.removes.len);
+    try testing.expectEqual(@as(u32, 1), p.unchanged);
+}
+
+test "a origem e a primeira linha do nome original, o resto copia" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    // Nomes distintos nas copias: cada linha editada e um destino proprio.
+    const edits = [_]Edit{ edit(1, "b.txt"), edit(1, "a.txt"), edit(1, "c.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 2), p.copies.len);
+    try testing.expectEqualStrings("b.txt", p.copies[0].to);
+    try testing.expectEqualStrings("c.txt", p.copies[1].to);
+    try testing.expectEqual(@as(usize, 0), p.renames.len);
+    try testing.expectEqual(@as(u32, 1), p.unchanged);
+}
+
+test "ID duplicado com todas as linhas editadas e ambiguo" {
     var f = Fixture.init();
     defer f.deinit();
     const originals = [_]Original{orig(1, "a.txt", .file)};
     try expectProblem(
         try build(f.a(), &originals, &.{ edit(1, "x.txt"), edit(1, "y.txt") }, &.{}, .{}),
+        .duplicate_id,
+    );
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "x.txt"), edit(1, "y.txt"), edit(1, "z.txt") }, &.{}, .{}),
         .duplicate_id,
     );
 }

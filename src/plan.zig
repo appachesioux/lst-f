@@ -107,6 +107,8 @@ pub const Problem = union(enum) {
     claimed_elsewhere: struct { id: u32, path: []const u8, dir: []const u8 },
     id_without_path: struct { line: u32 },
     unknown_id: struct { line: u32, id: u32 },
+    /// Todas as linhas de um ID repetido foram renomeadas: repetir e copiar,
+    /// mas alguma tem de ser a origem, e nao ha como adivinhar qual.
     duplicate_id: struct { line: u32, id: u32 },
     empty_path: struct { id: u32 },
     absolute_path: struct { id: u32, path: []const u8 },
@@ -161,7 +163,7 @@ pub const Problem = union(enum) {
             ),
             .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
             .unknown_id => |v| try w.print("linha {d}: ID {d} nao pertence a selecao", .{ v.line, v.id }),
-            .duplicate_id => |v| try w.print("linha {d}: ID {d} aparece mais de uma vez", .{ v.line, v.id }),
+            .duplicate_id => |v| try w.print("linha {d}: ID {d} repetido com todas as linhas renomeadas; uma precisa manter o nome original", .{ v.line, v.id }),
             .empty_path => |v| try w.print("ID {d}: caminho vazio", .{v.id}),
             .absolute_path => |v| try w.print("ID {d}: caminho absoluto nao e aceito ({s})", .{ v.id, v.path }),
             .escapes_base => |v| try w.print("ID {d}: caminho sai do diretorio-base ({s})", .{ v.id, v.path }),
@@ -269,11 +271,13 @@ pub fn build(
     const dests = try arena.alloc(?[]const u8, originals.len);
     @memset(dests, null);
     const dest_line = try arena.alloc(u32, originals.len);
-    // Segundo caminho para o mesmo ID: a marca de uma copia. A origem fica,
-    // o outro nome vira o destino da copia.
-    const copy_dests = try arena.alloc(?[]const u8, originals.len);
-    @memset(copy_dests, null);
-    const copy_line = try arena.alloc(u32, originals.len);
+    // Caminho repetido para o mesmo ID: a marca de uma copia. Uma das linhas
+    // fica na origem e as outras sao destinos -- `yy` e `p` repetido produz
+    // quantas quiser, como colar de outra janela ja fazia.
+    const Repeat = struct { idx: usize, path: []const u8, line: u32 };
+    var repeats: std.ArrayList(Repeat) = .empty;
+    const repeated = try arena.alloc(bool, originals.len);
+    @memset(repeated, false);
 
     var foreign_copies: std.ArrayList(Copy) = .empty;
     for (edits) |e| {
@@ -307,35 +311,44 @@ pub fn build(
         if (dests[idx] == null) {
             dests[idx] = e.path;
             dest_line[idx] = e.line;
-        } else if (copy_dests[idx] == null) {
-            copy_dests[idx] = e.path;
-            copy_line[idx] = e.line;
         } else {
-            try problems.append(arena, .{ .duplicate_id = .{ .line = e.line, .id = e.id } });
+            try repeats.append(arena, .{ .idx = idx, .path = e.path, .line = e.line });
+            repeated[idx] = true;
         }
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
     // --- 1b. Classificacao das copias ----------------------------------------
-    // ID duplicado: uma das linhas precisa casar com o caminho original (a
-    // origem); a outra e o destino. As duas editadas e ambiguo.
+    // ID repetido: uma das linhas precisa casar com o caminho original (a
+    // origem, que fica) e as outras sao destinos. Todas editadas e ambiguo --
+    // nao ha como saber qual das N e a que ficou no lugar.
     var copies: std.ArrayList(Copy) = .empty;
     for (originals, 0..) |o, i| {
-        const cd = copy_dests[i] orelse continue;
-        const first = dests[i].?; // sempre presente quando copy_dests != null
+        if (!repeated[i]) continue;
+        // Linhas deste ID em ordem de buffer: a primeira esta em `dests`.
+        var lines: std.ArrayList(Repeat) = .empty;
+        try lines.append(arena, .{ .idx = i, .path = dests[i].?, .line = dest_line[i] });
+        for (repeats.items) |r| {
+            if (r.idx == i) try lines.append(arena, r);
+        }
+        // A origem e a primeira que ainda mostra o caminho original.
         // Diretorios ganham `/` apenas na representacao editavel do buffer.
         // A listagem interna guarda `dir`, enquanto o round-trip produz
         // `dir/`; ambos precisam identificar a linha que permaneceu na origem.
-        const first_orig = matchesOriginalPath(o, first);
-        const second_orig = matchesOriginalPath(o, cd);
-        if (first_orig) {
-            try copies.append(arena, .{ .id = o.id, .from = o.path, .to = cd, .kind = o.kind });
-            dests[i] = o.path;
-        } else if (second_orig) {
-            try copies.append(arena, .{ .id = o.id, .from = o.path, .to = first, .kind = o.kind });
-            dests[i] = o.path;
-        } else {
-            try problems.append(arena, .{ .duplicate_id = .{ .line = copy_line[i], .id = o.id } });
+        var origin: ?usize = null;
+        for (lines.items, 0..) |l, k| {
+            if (!matchesOriginalPath(o, l.path)) continue;
+            origin = k;
+            break;
+        }
+        if (origin == null) {
+            try problems.append(arena, .{ .duplicate_id = .{ .line = lines.items[1].line, .id = o.id } });
+            continue;
+        }
+        dests[i] = o.path;
+        for (lines.items, 0..) |l, k| {
+            if (k == origin.?) continue;
+            try copies.append(arena, .{ .id = o.id, .from = o.path, .to = l.path, .kind = o.kind });
         }
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };

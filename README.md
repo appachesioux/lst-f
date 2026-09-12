@@ -61,7 +61,7 @@ que você acabou de entrar por SSH.
 | `ya`                                  | copia caminho absoluto do arquivo/diretório para o clipboard |
 | `Ctrl+S`                              | abre esta pasta numa segunda janela (`:vsplit`) |
 | `Tab`                                 | percorre as janelas abertas                |
-| `yy` + `p`                            | duplica a linha: o ID repetido é pedido de cópia |
+| `yy` + `p` (ou `Np`)                  | duplica a linha: o ID repetido é pedido de cópia |
 | `yy` aqui + `p` na outra janela       | copia para a pasta da outra janela          |
 | `dd` aqui + `p` na outra janela       | move para a pasta da outra janela           |
 | `nome -> alvo` em linha nova          | cria symlink apontando para o alvo         |
@@ -239,12 +239,14 @@ Para criar **links**:
 
 Para **copiar**, o gesto é o do Vim: `yy` na linha (ou visual + `y` em várias) e
 `p` para colar. A linha colada repete o ID da original, e é o ID repetido que o
-plano lê como cópia — a origem fica, o destino materializa uma cópia. Nada toca
-o disco até o `:w`, que mostra a confirmação de sempre; colisão no destino ganha
-sufixo `-01` a `-99`, e `:undo` remove a cópia materializada. O destino é sempre
-a pasta daquele buffer: `../` no caminho é recusado, como em qualquer edição de
-nome. Para copiar para outra pasta, use a outra janela (ver *Duas pastas lado a
-lado*).
+plano lê como cópia — a origem fica, o destino materializa uma cópia. Colar N
+vezes (`4p`) dá N cópias: a origem é a primeira linha que ainda mostra o nome
+original, e cada uma das outras é um destino. Nada toca o disco até o `:w`, que
+mostra a confirmação de sempre; colisão no destino ganha sufixo `-01` a `-99` —
+um por linha, sempre o próximo livre — e `:undo` remove a cópia materializada.
+O destino é sempre a pasta daquele buffer: `../` no caminho é recusado, como em
+qualquer edição de nome. Para copiar para outra pasta, use a outra janela (ver
+*Duas pastas lado a lado*).
 
 As criações acontecem depois das renomeações, então um nome
 liberado no mesmo `:w` pode ser reocupado — arquivar `log.txt` como `log.1.txt`
