@@ -186,6 +186,8 @@ moldura, visível na tela. Detalhes que valem saber:
   ganha sufixo `-01` a `-99` (duplicar é o gesto), e um movimento é recusado,
   porque escolher entre os dois arquivos perderia um deles. Para substituir o
   arquivo do destino, apague a linha dele também: `dd` nos dois lados e `p`.
+- **Colar a mesma linha cortada várias vezes** dá N-1 cópias e um movimento, na
+  última — uma origem só não sai do lugar duas vezes.
 - **Salve a janela onde você colou.** Salvar a janela de origem antes disso é
   recusado com o recado de qual janela concluir — o movimento pertence ao buffer
   onde o destino está visível.
