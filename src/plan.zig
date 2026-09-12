@@ -57,9 +57,9 @@ pub const Copy = struct {
     /// rename comum, escrito como edicao do caminho.
     cut: bool = false,
     /// Movimento cuja origem esta em outro filesystem: `rename` nao atravessa
-    /// ponto de montagem, entao quem aplica copia e remove a origem para a
-    /// area de sessao da pasta dela. Quem preenche e a camada que conhece o
-    /// disco; o plano so carrega o veredito.
+    /// ponto de montagem, entao quem aplica copia no destino e apaga a origem.
+    /// Quem preenche e a camada que conhece o disco; o plano so carrega o
+    /// veredito.
     cross_device: bool = false,
 };
 
@@ -102,8 +102,8 @@ pub const Problem = union(enum) {
     move_dest_occupied: struct { id: u32, from: []const u8, to: []const u8 },
     /// A linha deste ID foi apagada aqui e colada no buffer de outra pasta: o
     /// movimento pertence aquele buffer, e e la que o `:w` o conclui. Aplicar
-    /// a remocao aqui levaria o arquivo para a area de sessao e o outro `:w`
-    /// nao teria mais de onde mover.
+    /// a remocao aqui levaria o arquivo para a lixeira e o outro `:w` nao
+    /// teria mais de onde mover.
     claimed_elsewhere: struct { id: u32, path: []const u8, dir: []const u8 },
     id_without_path: struct { line: u32 },
     unknown_id: struct { line: u32, id: u32 },
@@ -251,8 +251,12 @@ pub const Options = struct {
     foreign: ?*const ForeignMap = null,
 };
 
-/// Prefixo da area de sessao; nenhum destino pode cair dentro dela.
+/// Prefixo reservado: nenhum destino pode cair num caminho que o use. Cobre o
+/// nome temporario dos ciclos de rename e o da copia para a lixeira.
 pub const area_prefix = ".lst-f-";
+
+/// Prefixo do nome temporario; o PID de quem esta escrevendo vem depois.
+pub const temp_prefix = area_prefix ++ "tmp-";
 
 /// Monta o plano. Toda a memoria sai de `arena`.
 pub fn build(

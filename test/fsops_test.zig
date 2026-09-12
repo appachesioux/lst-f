@@ -6,14 +6,11 @@ const testing = std.testing;
 const plan = @import("lst_f").plan;
 const fsops = @import("lst_f").fsops;
 const Applied = fsops.Applied;
-const Area = fsops.Area;
-const areaName = fsops.areaName;
-const openArea = fsops.openArea;
+const openTrash = fsops.openTrash;
+const pruneTrash = fsops.pruneTrash;
 const apply = fsops.apply;
 const revert = fsops.revert;
 const subtreeCount = fsops.subtreeCount;
-const scanOrphans = fsops.scanOrphans;
-const processAlive = fsops.processAlive;
 
 const Harness = struct {
     tmp: testing.TmpDir,
@@ -46,6 +43,11 @@ const Harness = struct {
     }
     fn read(h: *Harness, path: []const u8) ![]u8 {
         return h.dir().readFileAlloc(h.io, path, h.a(), .limited(4096));
+    }
+    /// Lixeira dentro do proprio temporario: mesmo filesystem, entao a remocao
+    /// passa pelo `rename`, que e o caminho normal.
+    fn trash(h: *Harness, pid: std.posix.pid_t) !fsops.Trash {
+        return openTrash(h.a(), h.io, h.dir(), "lixeira", pid);
     }
 };
 
@@ -80,7 +82,7 @@ test "aplica renomeacao e troca ciclica no disco" {
         .{ .id = 2, .path = "a.txt", .line = 2 },
     };
     const p = try planFor(h.a(), &originals, &edits);
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure == null);
 
     try testing.expectEqualStrings("conteudo B", try h.read("a.txt"));
@@ -99,7 +101,7 @@ test "cria diretorio pai e desfaz no undo" {
     const edits = [_]plan.Edit{.{ .id = 1, .path = "docs/sub/doc.txt", .line = 1 }};
     const p = try planFor(h.a(), &originals, &edits);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure == null);
     try testing.expect(h.exists("docs/sub/doc.txt"));
 
@@ -109,7 +111,7 @@ test "cria diretorio pai e desfaz no undo" {
     try testing.expect(!h.exists("docs"));
 }
 
-test "remocao vai para a area e volta no undo" {
+test "remocao vai para a lixeira com o nome original e volta no undo" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -120,20 +122,16 @@ test "remocao vai para a area e volta no undo" {
     const originals = [_]plan.Original{.{ .id = 7, .path = "some.txt", .kind = .file }};
     const p = try planFor(h.a(), &originals, &.{});
 
-    const name = try areaName(h.a(), 4242);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
+    var t = try h.trash(4242);
+    defer t.close(io);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure == null);
     try testing.expect(!h.exists("some.txt"));
-    try testing.expect(h.exists(".lst-f-4242/0007"));
+    // Nome original na lixeira: e o que faz achar o arquivo depois, sem indice.
+    try testing.expectEqualStrings("adeus", try h.read("lixeira/some.txt"));
 
-    // O manifesto casa ID e caminho original, separado por NUL.
-    const manifest = try h.read(".lst-f-4242/manifest");
-    try testing.expectEqualStrings("0007\x00some.txt\x00", manifest);
-
-    const errors = try revert(h.a(), io, h.dir(), outcome.applied, area.dir);
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, t.dir);
     try testing.expectEqual(@as(usize, 0), errors.len);
     try testing.expectEqualStrings("adeus", try h.read("some.txt"));
 }
@@ -159,18 +157,17 @@ test "remover e renomear para o nome liberado na mesma rodada" {
     try testing.expectEqual(@as(usize, 1), p.removes.len);
     try testing.expectEqual(@as(usize, 1), p.renames.len);
 
-    const name = try areaName(h.a(), 4247);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
+    var t = try h.trash(4247);
+    defer t.close(io);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("novo", try h.read("a.txt"));
     try testing.expect(!h.exists("b.txt"));
-    try testing.expect(h.exists(".lst-f-4247/0001"));
+    try testing.expectEqualStrings("antigo", try h.read("lixeira/a.txt"));
 
     // O undo restaura a remocao depois de desfazer o rename.
-    const errors = try revert(h.a(), io, h.dir(), outcome.applied, area.dir);
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, t.dir);
     try testing.expectEqual(@as(usize, 0), errors.len);
     try testing.expectEqualStrings("antigo", try h.read("a.txt"));
     try testing.expectEqualStrings("novo", try h.read("b.txt"));
@@ -187,11 +184,11 @@ test "rollback restaura a remocao antecipada depois do rename" {
     try h.touch("b", "B");
     try h.touch("c", "C");
 
-    const name = try areaName(h.a(), 4248);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
-    // Colisao plantada na area: a remocao de "c", que vem por ultimo, falha.
-    try h.touch(".lst-f-4248/0003", "impostor");
+    var t = try h.trash(4248);
+    defer t.close(io);
+    // "c" sai do disco depois do plano montado: a remocao dele, que vem por
+    // ultimo, falha em FileNotFound e leva o rollback.
+    try h.dir().deleteFile(io, "c");
 
     const originals = [_]plan.Original{
         .{ .id = 1, .path = "a", .kind = .file },
@@ -204,12 +201,12 @@ test "rollback restaura a remocao antecipada depois do rename" {
     try testing.expectEqual(@as(usize, 1), p.removes_before);
     try testing.expectEqual(@as(usize, 2), p.removes.len);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expectEqualStrings("A", try h.read("a"));
     try testing.expectEqualStrings("B", try h.read("b"));
-    try testing.expectEqualStrings("C", try h.read("c"));
+    try testing.expect(!h.exists("c"));
 }
 
 test "copia arquivo e desfaz no undo" {
@@ -228,7 +225,7 @@ test "copia arquivo e desfaz no undo" {
     const p = try planFor(h.a(), &originals, &edits);
     try testing.expectEqual(@as(usize, 1), p.copies.len);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("conteudo A", try h.read("a.txt"));
     try testing.expectEqualStrings("conteudo A", try h.read("b.txt"));
@@ -258,7 +255,7 @@ test "copia diretorio recursivo e desfaz" {
     const p = try planFor(h.a(), &originals, &edits);
     try testing.expectEqual(@as(usize, 1), p.copies.len);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("1", try h.read("dst/a.txt"));
     try testing.expectEqualStrings("2", try h.read("dst/sub/b.txt"));
@@ -279,11 +276,10 @@ test "falha na remocao desfaz a copia ja feita" {
     try h.touch("a.txt", "A");
     try h.touch("um", "1");
 
-    const name = try areaName(h.a(), 4249);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
-    // Colisao plantada na area: a remocao, que vem depois da copia, falha.
-    try h.touch(".lst-f-4249/0002", "impostor");
+    var t = try h.trash(4249);
+    defer t.close(io);
+    // "um" sai do disco: a remocao, que vem depois da copia, falha.
+    try h.dir().deleteFile(io, "um");
 
     const p: plan.Plan = .{
         .mkdirs = &.{},
@@ -294,15 +290,14 @@ test "falha na remocao desfaz a copia ja feita" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expect(!h.exists("copia.txt"));
     try testing.expect(h.exists("a.txt"));
-    try testing.expect(h.exists("um"));
 }
 
-test "mesmo basename de subdiretorios diferentes nao colide na area" {
+test "mesmo basename de subdiretorios diferentes ganha sufixo na lixeira" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -320,13 +315,13 @@ test "mesmo basename de subdiretorios diferentes nao colide na area" {
     };
     const p = try planFor(h.a(), &originals, &.{});
 
-    const name = try areaName(h.a(), 4243);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    var t = try h.trash(4243);
+    defer t.close(io);
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure == null);
-    try testing.expectEqualStrings("de x", try h.read(".lst-f-4243/0001"));
-    try testing.expectEqualStrings("de y", try h.read(".lst-f-4243/0002"));
+    // O segundo leva o sufixo da copia -- uma convencao de nome no projeto.
+    try testing.expectEqualStrings("de x", try h.read("lixeira/nota.txt"));
+    try testing.expectEqualStrings("de y", try h.read("lixeira/nota-01.txt"));
 }
 
 test "diretorio nao-vazio vai inteiro em um rename" {
@@ -343,13 +338,12 @@ test "diretorio nao-vazio vai inteiro em um rename" {
 
     const originals = [_]plan.Original{.{ .id = 3, .path = "dir", .kind = .dir }};
     const p = try planFor(h.a(), &originals, &.{});
-    const name = try areaName(h.a(), 4244);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    var t = try h.trash(4244);
+    defer t.close(io);
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure == null);
     try testing.expect(!h.exists("dir"));
-    try testing.expectEqualStrings("2", try h.read(".lst-f-4244/0003/sub/b"));
+    try testing.expectEqualStrings("2", try h.read("lixeira/dir/sub/b"));
 }
 
 test "falha no meio da fase de rename faz rollback completo" {
@@ -375,7 +369,7 @@ test "falha no meio da fase de rename faz rollback completo" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expect(outcome.applied.isEmpty());
@@ -394,11 +388,10 @@ test "falha na fase de remocao devolve os arquivos ja movidos" {
     try h.touch("um", "1");
     try h.touch("dois", "2");
 
-    const name = try areaName(h.a(), 4245);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
-    // Planta uma colisao dentro da area para forcar a falha no segundo remove.
-    try h.touch(".lst-f-4245/0002", "impostor");
+    var t = try h.trash(4245);
+    defer t.close(io);
+    // "dois" sai do disco para o segundo remove falhar.
+    try h.dir().deleteFile(io, "dois");
 
     const p: plan.Plan = .{
         .mkdirs = &.{},
@@ -410,30 +403,95 @@ test "falha na fase de remocao devolve os arquivos ja movidos" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expectEqualStrings("1", try h.read("um"));
-    try testing.expectEqualStrings("2", try h.read("dois"));
+    try testing.expect(!h.exists("dois"));
 }
 
-test "area orfa de PID morto e detectada" {
+test "remocao dentro da propria lixeira e definitiva" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     var h = Harness.init(io);
     defer h.deinit();
 
-    // PID improvavel de existir; se existir, o teste apenas nao encontra a orfa.
-    try h.dir().createDirPath(io, ".lst-f-999999");
-    try h.touch(".lst-f-999999/0001", "restos");
-    try h.touch(".lst-f-999999/manifest", "0001\x00antigo.txt\x00");
+    try h.touch("velho.txt", "restos");
+    try h.dir().createDirPath(io, "pasta/sub");
+    try h.touch("pasta/sub/dentro", "mais restos");
 
-    const orphans = try scanOrphans(h.a(), io, h.dir(), 1);
-    if (processAlive(999999)) return error.SkipZigTest;
-    try testing.expectEqual(@as(usize, 1), orphans.len);
-    try testing.expectEqualStrings(".lst-f-999999", orphans[0].name);
-    try testing.expectEqual(@as(u32, 1), orphans[0].items);
+    const originals = [_]plan.Original{
+        .{ .id = 1, .path = "velho.txt", .kind = .file },
+        .{ .id = 2, .path = "pasta", .kind = .dir },
+    };
+    const p = try planFor(h.a(), &originals, &.{});
+
+    // `.permanent` e o que a CLI passa quando o diretorio-base e a lixeira:
+    // e o que permite esvaziar com o gesto de sempre, sem comando novo.
+    const outcome = try apply(h.a(), io, h.dir(), p, .permanent);
+    try testing.expect(outcome.failure == null);
+    try testing.expect(!h.exists("velho.txt"));
+    try testing.expect(!h.exists("pasta"));
+
+    // Definitiva nao volta, e o relatorio diz isso em vez de mentir.
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, null);
+    try testing.expectEqual(@as(usize, 2), errors.len);
+    try testing.expect(!h.exists("velho.txt"));
+}
+
+test "poda apaga o que passou da idade e o temporario de sessao morta" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    var t = try h.trash(4250);
+    defer t.close(io);
+    try h.touch("lixeira/antigo.txt", "1");
+    try h.dir().createDirPath(io, "lixeira/pasta");
+    try h.touch("lixeira/pasta/dentro", "2");
+    // Temporario de PID improvavel de existir: copia interrompida.
+    try h.touch("lixeira/.lst-f-tmp-999999-parcial.txt", "3");
+
+    const ns: i96 = std.Io.Clock.now(.real, io).toNanoseconds();
+    const now: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+
+    // Nada passou da idade ainda: a poda nao toca no que esta no prazo, mas
+    // varre o temporario orfao na mesma passada.
+    const fresh = pruneTrash(io, t.dir, now, fsops.max_age_s, 4250);
+    try testing.expectEqual(@as(usize, 0), fresh.expired);
+    try testing.expectEqual(@as(usize, 1), fresh.temps);
+    try testing.expect(h.exists("lixeira/antigo.txt"));
+    try testing.expect(!h.exists("lixeira/.lst-f-tmp-999999-parcial.txt"));
+
+    // Trinta dias e um segundo depois: sai tudo, arquivo e arvore.
+    const aged = pruneTrash(io, t.dir, now + fsops.max_age_s + 1, fsops.max_age_s, 4250);
+    try testing.expectEqual(@as(usize, 2), aged.expired);
+    try testing.expect(!h.exists("lixeira/antigo.txt"));
+    try testing.expect(!h.exists("lixeira/pasta"));
+}
+
+test "temporario de sessao viva nao e varrido pela poda" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    var t = try h.trash(4251);
+    defer t.close(io);
+    const mine = try std.fmt.allocPrint(h.a(), "lixeira/{s}em-curso.txt", .{t.temp_prefix});
+    try h.touch(mine, "copia em andamento");
+
+    const ns: i96 = std.Io.Clock.now(.real, io).toNanoseconds();
+    const now: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+    // Mesmo velho, o temporario de uma sessao que esta rodando fica: pode ser
+    // uma copia em curso.
+    const pruned = pruneTrash(io, t.dir, now + fsops.max_age_s + 1, fsops.max_age_s, 4251);
+    try testing.expectEqual(@as(usize, 0), pruned.temps);
+    try testing.expect(h.exists(mine));
 }
 
 test "symlink no caminho do pai bloqueia a criacao" {
@@ -453,7 +511,7 @@ test "symlink no caminho do pai bloqueia a criacao" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(error.SymlinkInPath, outcome.failure.?.err);
     try testing.expect(h.exists("f.txt"));
@@ -478,7 +536,7 @@ test "cria arquivo e diretorio no disco" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure == null);
     try testing.expectEqual(@as(usize, 3), outcome.applied.created.len);
     try testing.expect(h.exists("docs/nota.md"));
@@ -503,7 +561,7 @@ test "criacao nunca sobrescreve o que ja esta la" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure != null);
     try testing.expectEqualStrings("nao me trunque", try h.read("ocupado.txt"));
 }
@@ -517,11 +575,10 @@ test "falha depois da criacao desfaz o que foi criado" {
 
     try h.touch("um", "1");
 
-    const name = try areaName(h.a(), 4246);
-    var area = try openArea(h.a(), io, h.dir(), name);
-    defer area.close(io);
-    // Colisao plantada na area: a remocao, que vem por ultimo, vai falhar.
-    try h.touch(".lst-f-4246/0001", "impostor");
+    var t = try h.trash(4246);
+    defer t.close(io);
+    // "um" sai do disco: a remocao, que vem por ultimo, vai falhar.
+    try h.dir().deleteFile(io, "um");
 
     const p: plan.Plan = .{
         .mkdirs = &.{},
@@ -534,12 +591,11 @@ test "falha depois da criacao desfaz o que foi criado" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, .{ .trash = &t });
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expect(!h.exists("novo/x.txt"));
     try testing.expect(!h.exists("novo"));
-    try testing.expect(h.exists("um"));
 }
 
 test "desfazer mantem o arquivo criado que deixou de estar vazio" {
@@ -586,7 +642,7 @@ test "aplica e desfaz criacao de symlink e hardlink" {
         .unchanged = 0,
     };
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
     try testing.expect(outcome.failure == null);
     try testing.expect(h.exists("meu_symlink"));
     try testing.expect(h.exists("meu_hardlink"));
@@ -639,7 +695,7 @@ test "movimento vindo de outra pasta sai por rename e o undo devolve" {
         }},
     };
 
-    const outcome = try apply(h.a(), io, destino, p, null, &.{});
+    const outcome = try apply(h.a(), io, destino, p, null);
     try testing.expect(outcome.failure == null);
     // Movimento: chegou aqui e saiu de la.
     try testing.expectEqualStrings("conteudo A", try h.read("destino/a.txt"));
@@ -652,7 +708,7 @@ test "movimento vindo de outra pasta sai por rename e o undo devolve" {
     try testing.expectEqualStrings("conteudo A", try h.read("origem/a.txt"));
 }
 
-test "movimento entre filesystems copia e leva a origem para a area dela" {
+test "movimento entre filesystems copia e apaga a origem, e o undo devolve" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -660,8 +716,9 @@ test "movimento entre filesystems copia e leva a origem para a area dela" {
     defer h.deinit();
 
     // Sem dois filesystems de verdade no teste: o que se verifica e o caminho
-    // de codigo do fallback, que nao depende do mount -- copia, depois remove
-    // a origem para a area de sessao da pasta dela.
+    // de codigo do fallback, que nao depende do mount -- copia no destino,
+    // depois apaga a origem. Movimento nao passa pela lixeira: o arquivo esta
+    // no destino, nao foi perdido.
     try h.dir().createDirPath(io, "origem");
     try h.dir().createDirPath(io, "destino");
     try h.touch("origem/a.txt", "conteudo A");
@@ -675,10 +732,6 @@ test "movimento entre filesystems copia e leva a origem para a area dela" {
     const n = try origem.realPath(io, &buf);
     const origem_abs = try h.a().dupe(u8, buf[0..n]);
     const from_abs = try std.fmt.allocPrint(h.a(), "{s}/a.txt", .{origem_abs});
-
-    var area = try openArea(h.a(), io, origem, ".lst-f-4242");
-    defer area.close(io);
-    const sources = [_]fsops.Source{.{ .dir = origem_abs, .handle = origem, .area = &area }};
 
     const p: plan.Plan = .{
         .mkdirs = &.{},
@@ -697,13 +750,12 @@ test "movimento entre filesystems copia e leva a origem para a area dela" {
         }},
     };
 
-    const outcome = try apply(h.a(), io, destino, p, null, &sources);
+    const outcome = try apply(h.a(), io, destino, p, null);
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("conteudo A", try h.read("destino/a.txt"));
     try testing.expect(!h.exists("origem/a.txt"));
-    // Nao foi apagada: esta na area, de onde o undo a tira.
-    try testing.expectEqualStrings("conteudo A", try h.read("origem/.lst-f-4242/0007"));
 
+    // O undo reconstroi a origem a partir da copia, que e a unica instancia.
     const errors = try revert(h.a(), io, destino, outcome.applied, null);
     try testing.expectEqual(@as(usize, 0), errors.len);
     try testing.expect(!h.exists("destino/a.txt"));

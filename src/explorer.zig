@@ -1,8 +1,8 @@
 //! Enumeracao, ordenacao e apresentacao de entradas.
 //!
-//! Regras estruturais: a area de sessao nunca aparece na lista, e a recursao
-//! nao atravessa ponto de montagem nem symlink de diretorio -- e isso que
-//! garante filesystem unico para a area de sessao e para os temporarios.
+//! Regras estruturais: caminho reservado (`.lst-f-*`) nunca aparece na lista, e
+//! a recursao nao atravessa ponto de montagem nem symlink de diretorio -- e
+//! isso que garante filesystem unico para os temporarios.
 
 const std = @import("std");
 const Io = std.Io;
@@ -359,18 +359,22 @@ pub fn writeSize(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
         return;
     }
     var buf: [16]u8 = undefined;
-    const units = [_][]const u8{ "B", "K", "M", "G", "T", "P" };
-    var value: f64 = @floatFromInt(e.size);
-    var unit: usize = 0;
-    while (value >= 1024 and unit + 1 < units.len) : (unit += 1) value /= 1024;
-    const text = if (unit == 0)
-        std.fmt.bufPrint(&buf, "{d}B", .{e.size}) catch "?"
-    else if (value < 10)
-        std.fmt.bufPrint(&buf, "{d:.1}{s}", .{ value, units[unit] }) catch "?"
-    else
-        std.fmt.bufPrint(&buf, "{d:.0}{s}", .{ value, units[unit] }) catch "?";
+    const text = sizeText(&buf, e.size);
     try w.splatByteAll(' ', 9 -| text.len);
     try w.writeAll(text);
+}
+
+/// Tamanho legivel, na forma da coluna SIZE. Publico porque a confirmacao
+/// mostra o volume da copia para a lixeira, e dois formatos de tamanho no
+/// mesmo programa seriam duas convencoes.
+pub fn sizeText(buf: []u8, size: u64) []const u8 {
+    const units = [_][]const u8{ "B", "K", "M", "G", "T", "P" };
+    var value: f64 = @floatFromInt(size);
+    var unit: usize = 0;
+    while (value >= 1024 and unit + 1 < units.len) : (unit += 1) value /= 1024;
+    if (unit == 0) return std.fmt.bufPrint(buf, "{d}B", .{size}) catch "?";
+    if (value < 10) return std.fmt.bufPrint(buf, "{d:.1}{s}", .{ value, units[unit] }) catch "?";
+    return std.fmt.bufPrint(buf, "{d:.0}{s}", .{ value, units[unit] }) catch "?";
 }
 
 pub var tz_offset_seconds: i32 = 0;

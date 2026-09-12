@@ -41,7 +41,7 @@ que você acabou de entrar por SSH.
 | você escreve / digita               | acontece                                  |
 | ----------------------------------- | ----------------------------------------- |
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
-| apaga a linha                        | remove, via área de sessão                 |
+| apaga a linha                        | manda para a lixeira (recuperável por 30 dias) |
 | escreve um nome em linha nova        | cria o arquivo (com `/` no fim, o diretório) |
 | `q` no buffer                        | sai do `lst-f`                            |
 | `ZZ`                                  | sai do `lst-f`                            |
@@ -73,6 +73,7 @@ que você acabou de entrar por SSH.
 | `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor (:copy) |
 | `:abspath` / `:realpath`             | copia o caminho absoluto do arquivo sob o cursor |
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
+| `:trash`                             | abre a lixeira (remoção lá dentro é definitiva) |
 | `:theme [light|dark]`                | alterna ou define tema claro/escuro (`:light`, `:dark`) |
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
@@ -198,8 +199,9 @@ moldura, visível na tela. Detalhes que valem saber:
   recusado com o recado de qual janela concluir — o movimento pertence ao buffer
   onde o destino está visível.
 - **Mesmo filesystem**: o movimento é um `rename`, atômico. **Filesystems
-  diferentes**: vira cópia + remoção, e a origem vai para a área de sessão da
-  pasta dela, não para o nada — `:undo` devolve nos dois casos.
+  diferentes**: vira cópia no destino e remoção da origem — que não passa pela
+  lixeira, porque o arquivo está no destino, não foi perdido. `:undo` devolve
+  nos dois casos: no segundo, reconstruindo a origem a partir da cópia.
 
 Fechar uma janela é o de sempre no Vim (`:close`, `Ctrl+W c`).
 
@@ -271,20 +273,36 @@ buffer inteiro —, então isso é feito pelo helper, sem plugin. O plano nunca
 dependeu dessas colunas: elas são descartadas na leitura do buffer, então nem
 uma edição que escape delas muda o que acontece no disco.
 
-## Remoção
+## Remoção e lixeira
 
-Apagar a linha remove a entrada, mas nada é apagado durante a aplicação: o que
-sai vai por `rename()` para `.lst-f-<pid>/` no diretório-base, no mesmo modelo
-de arquivo de swap do Vim. Enquanto a sessão estiver aberta, `:undo` traz tudo
-de volta.
+Apagar a linha remove a entrada, mas nada é apagado na aplicação: o que sai vai
+para a lixeira, em `$XDG_DATA_HOME/lst-f/trash` (por padrão
+`~/.local/share/lst-f/trash`), com o **nome original** — é o que faz achar o
+arquivo depois, sem índice nenhum. Um nome que já exista lá ganha sufixo
+(`nota.txt`, `nota-01.txt`), a mesma convenção da cópia. Enquanto a sessão
+estiver aberta, `:undo` traz de volta ao caminho exato; depois dela, a
+recuperação é manual — e é o gesto de sempre, `dd` na linha da lixeira e `p` na
+pasta de destino.
 
-**Ao sair, a área é apagada e a remoção passa a ser definitiva.** O `lst-f` não
-é uma lixeira: a garantia é sobre erro durante a operação e arrependimento
-durante a sessão, não sobre recuperação amanhã.
+**Mesmo filesystem** é um `rename`: instantâneo, do mesmo custo para 1K e para
+4G. **Outro filesystem** (pendrive, `/tmp`, uma partição separada) é cópia, e a
+confirmação mostra o volume antes de você responder — a proteção não depende da
+tabela de montagem, então apagar por acidente num pendrive é tão recuperável
+quanto apagar em casa. Se a lixeira não puder receber (sem `HOME`, sem
+permissão, disco cheio), a remoção é **recusada**: apagar sem retenção faria a
+segurança depender de circunstância.
 
-Se a sessão morrer (crash, kill, queda de SSH), a área fica para trás e o
-`lst-f` avisa no cabeçalho do buffer na abertura seguinte daquele diretório, sem
-restaurar nem apagar sozinho.
+`:trash` abre a lixeira — é uma pasta como qualquer outra, então listar,
+navegar e limpar são os gestos que você já usa: `Ctrl+A`, `d`, `:w`. Remoção
+**dentro** da lixeira é definitiva, e a confirmação diz isso; é o que permite
+esvaziar sem comando próprio.
+
+A poda acontece na abertura da sessão: o que está lá há mais de **30 dias** é
+apagado, e o recado vai para a barra. Na abertura, e não na saída — na saída
+ninguém lê a barra.
+
+Movimento entre pastas não passa pela lixeira: o arquivo está no destino, não
+foi perdido.
 
 ## Nomes que não são UTF-8
 

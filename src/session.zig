@@ -1,9 +1,9 @@
 //! Estado compartilhado entre o processo principal e o self-exec de preview
 //! que o fzf dispara (`--preview-index`).
 //!
-//! Nao confundir com a **area de sessao** do `fsops`: aquela e `.lst-f-<pid>/`
-//! no diretorio-base, no mesmo filesystem, e existe para o rollback da
-//! remocao. Esta aqui e um diretorio de trabalho volatil, e existe so para que
+//! Nao confundir com a **lixeira** do `fsops`: aquela e `~/.local/share/lst-f/`
+//! `trash`, sobrevive a sessao e existe para a remocao ser recuperavel. Esta
+//! aqui e um diretorio de trabalho volatil, e existe so para que
 //! nenhum caminho precise ser interpolado em linha de comando de shell: os
 //! filhos recebem o caminho deste diretorio pela variavel `LST_F_STATE`.
 
@@ -15,6 +15,9 @@ const Allocator = std.mem.Allocator;
 pub const env_state = "LST_F_STATE";
 pub const env_self = "LST_F_SELF";
 pub const env_location = "LST_F_LOCATION";
+/// Caminho da lixeira, para o `:trash` do helper. Fixo na sessao, entao vai por
+/// ambiente e nao por arquivo de estado.
+pub const env_trash = "LST_F_TRASH";
 
 /// Diretorios visitados na sessao, no modelo de navegador: `back` e `forward`
 /// andam sobre o que ja foi visitado, e entrar em um diretorio novo depois de
@@ -182,7 +185,7 @@ pub const State = struct {
             \\    \ '  • Edite o caminho e use :w: renomeia ou move (cria os pais que faltarem)',
             \\    \ '  • Antes de aplicar, um popup mostra a lista completa de alteracoes',
             \\    \ '  • :w sem edicao apenas atualiza a lista e mantem a sessao aberta',
-            \\    \ '  • Apague a linha  : remove a entrada (area de sessao temporaria)',
+            \\    \ '  • Apague a linha  : manda para a lixeira (:trash abre, 30 dias)',
             \\    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretorio)',
             \\    \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
             \\    \ '  • So o nome e editavel: cabecalho e colunas voltam sozinhos',
@@ -191,6 +194,7 @@ pub const State = struct {
             \\    \ '  Diretivas (escreva no buffer e salve):',
             \\    \ '    :cd [dir]      Entra no diretorio (.. sobe, sem arg ou ~ vai para HOME)',
             \\    \ '    :home          Vai direto para o diretorio HOME (~)',
+            \\    \ '    :trash         Abre a lixeira (remocao la dentro e definitiva)',
             \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
             \\    \ '    :sh [dir]      Abre terminal / shell no diretorio (:shell, :terminal)',
             \\    \ '    :ln <alvo> [n] Cria symlink para o alvo (:link, :symlink, :hardlink)',
@@ -217,7 +221,7 @@ pub const State = struct {
             \\    \ '    Ctrl+S         Abre a segunda janela; de novo, fecha (:vsplit)',
             \\    \ '    Tab            Percorre as janelas abertas',
             \\    \ '    yy / y         Copia a linha (o ID vai junto, oculto)',
-            \\    \ '    dd             Apaga a linha: remove, ou recorta para colar',
+            \\    \ '    dd             Apaga a linha: manda para a lixeira, ou recorta',
             \\    \ '    p              Cola neste diretorio: yy antes = copia,',
             \\    \ '                   dd antes = move (salve a janela onde colou)',
             \\    \ '                   entre pastas: Ctrl+S e navegue na outra janela',
@@ -624,6 +628,18 @@ pub const State = struct {
             \\
             \\function! LstfHome() abort
             \\  call s:lstf_nav('home', ':home')
+            \\endfunction
+            \\
+            \\" A lixeira e uma pasta como qualquer outra, entao `:trash` e o `:cd`
+            \\" nela -- e limpar e o gesto de sempre (`<C-a>`, `d`, `:w`), que la
+            \\" dentro apaga em definitivo. Sem comando de esvaziar, sem tela propria.
+            \\function! LstfTrash() abort
+            \\  if empty($LST_F_TRASH)
+            \\    let b:lstf_notice = 'sem HOME: nao ha lixeira'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  call LstfCd($LST_F_TRASH)
             \\endfunction
             \\
             \\function! s:lstf_cmd_find(query) abort
@@ -1802,6 +1818,8 @@ pub const State = struct {
             \\      return "\x15Yank\r"
             \\    elseif l:cmd =~# '^\%(abspath\|realpath\)\%(\s.*\|\)$'
             \\      return "\x15YankAbs\r"
+            \\    elseif l:cmd ==# 'trash' || l:cmd ==# 'lixeira'
+            \\      return "\x15call LstfTrash()\r"
             \\    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
             \\      return "\x15call LstfQuit()\r"
             \\    elseif l:cmd =~# '^\%(bd\%[elete]\|bw\%[ipeout]\|bun\%[load]\)!\=\%(\s.*\|\)$'
@@ -1858,6 +1876,8 @@ pub const State = struct {
             \\  cnoreabbrev <expr> <buffer> cd getcmdtype() ==# ':' && getcmdline() =~# '^cd\%(\s.*\|\)$' ? 'Cd' : 'cd'
             \\  command! -buffer -nargs=0 Home call LstfHome()
             \\  cnoreabbrev <expr> <buffer> home getcmdtype() ==# ':' && getcmdline() ==# 'home' ? 'call LstfHome()' : 'home'
+            \\  command! -buffer -nargs=0 Trash call LstfTrash()
+            \\  cnoreabbrev <expr> <buffer> trash getcmdtype() ==# ':' && getcmdline() ==# 'trash' ? 'Trash' : 'trash'
             \\  command! -buffer -nargs=0 Back call LstfBack()
             \\  cnoreabbrev <expr> <buffer> back getcmdtype() ==# ':' && getcmdline() ==# 'back' ? 'Back' : 'back'
             \\  command! -buffer -nargs=0 Forward call LstfForward()

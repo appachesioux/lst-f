@@ -344,14 +344,8 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
 // Sessao
 // ---------------------------------------------------------------------------
 
-const AreaRef = struct {
-    base: []const u8,
-    name: []const u8,
-};
-
 const Undo = struct {
     base: []const u8,
-    area: ?[]const u8,
     applied: fsops.Applied,
 };
 
@@ -374,9 +368,6 @@ const View = struct {
     header_lines: []const []const u8 = &.{},
     /// O buffer no disco ja serve; nao regerar (o usuario tem correcoes a fazer).
     keep_buffer: bool = false,
-    /// Area de sessao deste diretorio (remocao e rollback).
-    area: ?fsops.Area = null,
-    area_name: []const u8 = "",
     /// Diretorios visitados a partir deste buffer, para `:back` e `:forward`.
     history: session.History = .{},
     /// Escopo de um `:find` em vigor neste buffer, para o cabecalho.
@@ -465,8 +456,11 @@ const Session = struct {
     /// onde saiu um movimento). Vao na resposta do canal vivo para o helper
     /// recarregar aquelas janelas; so a janela que pediu se recarrega sozinha.
     reload_others: []const []const u8 = &.{},
-    /// Areas de sessao abertas, para limpeza no fim e deteccao de orfas.
-    areas: std.ArrayList(AreaRef) = .empty,
+    /// Onde a remocao guarda o que sai, uma so para a sessao e para o usuario.
+    /// O caminho e sempre conhecido; a pasta abre na primeira remocao, para nao
+    /// criar nada em `~` numa sessao que so navega.
+    trash_path: []const u8,
+    trash: ?fsops.Trash = null,
 };
 
 fn runSession(
@@ -512,6 +506,8 @@ fn runSession(
 
     try environ.put(session.env_state, state.path);
     try environ.put(session.env_self, try editor_mod.selfPath(arena, io, environ));
+    const trash = try trashPath(arena, environ);
+    try environ.put(session.env_trash, trash);
     // O contrato com o fzf depende de flags exatas, e `FZF_DEFAULT_OPTS` entra
     // antes delas. Uma configuracao pessoal comum como `--preview-window hidden`
     // ja desliga o preview, e um `--bind ...execute(rm -i {})` receberia o
@@ -559,8 +555,11 @@ fn runSession(
         .helper_path = helper_path,
         .view = initial_view,
         .views = views,
+        .trash_path = trash,
     };
-    defer cleanupAreas(&s);
+    defer if (s.trash) |*t| t.close(io);
+
+    pruneTrash(&s);
 
     if (opts.find) |query| {
         if (!try runFind(&s, query)) try loadListing(&s);
@@ -1091,6 +1090,7 @@ fn formatFsError(err: anyerror) []const u8 {
         error.SymlinkInPath => "symlink no caminho",
         error.PathAlreadyExists => "caminho ja existe",
         error.DirNotEmpty => "diretorio nao esta vazio",
+        error.TrashUnavailable => "nao consegui abrir a lixeira",
         else => @errorName(err),
     };
 }
@@ -1102,19 +1102,16 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     var effective = p;
     effective.mkdirs = try missingDirs(s, base_dir, p.mkdirs);
 
-    var area_ptr: ?*fsops.Area = null;
+    var retention: ?fsops.Retention = null;
     if (p.removes.len > 0) {
-        area_ptr = ensureArea(s) catch |err| return try std.fmt.allocPrint(
+        retention = retentionFor(s) catch |err| return try std.fmt.allocPrint(
             s.arena,
-            "nao foi possivel abrir a area de sessao ({s})",
+            "a lixeira nao pode receber ({s}): remocao recusada",
             .{formatFsError(err)},
         );
     }
 
-    const sources = try moveSources(s, effective);
-    defer closeSources(s, sources);
-
-    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr, sources);
+    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, retention);
     if (outcome.failure) |failure| {
         return try std.fmt.allocPrint(s.arena, "falha em {s} {s}: {s}; rollback {s}", .{
             failure.phase,
@@ -1125,11 +1122,7 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     }
 
     if (!outcome.applied.isEmpty()) {
-        s.view.undo = .{
-            .base = s.view.dir,
-            .area = if (area_ptr) |a| a.name else null,
-            .applied = outcome.applied,
-        };
+        s.view.undo = .{ .base = s.view.dir, .applied = outcome.applied };
     }
     s.notice = try appliedNotice(s, outcome.applied);
     return null;
@@ -1251,8 +1244,8 @@ fn crossBuffers(s: *Session) !CrossBuffers {
 /// Monta o plano deste buffer depois de ouvir os outros. Uma linha apagada aqui
 /// e colada la nao vira remocao: o movimento inteiro pertence ao buffer de
 /// destino, que e onde ele esta visivel, e e o `:w` de la que o conclui.
-/// Aplicar a remocao aqui mandaria o arquivo para a area de sessao e o outro
-/// `:w` nao teria mais de onde mover.
+/// Aplicar a remocao aqui mandaria o arquivo para a lixeira e o outro `:w` nao
+/// teria mais de onde mover.
 fn buildPlan(s: *Session, document: plan.Document) !plan.Result {
     const cross = try crossBuffers(s);
 
@@ -1305,15 +1298,6 @@ fn writeBuffer(s: *Session) !void {
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
 
-    var notes: std.ArrayList([]const u8) = .empty;
-    const orphans = fsops.scanOrphans(s.arena, s.io, base_dir, s.pid) catch &.{};
-    for (orphans) |o| {
-        try notes.append(s.arena, try std.fmt.allocPrint(
-            s.arena,
-            "area orfa {s} ({d} item(ns)) do PID {d}, que nao esta mais rodando",
-            .{ o.name, o.items, o.pid },
-        ));
-    }
     try s.state.writeNotice(s.io, s.notice orelse "");
 
     var file = try Io.Dir.cwd().createFile(s.io, s.view.buffer_path, .{ .truncate = true });
@@ -1334,7 +1318,7 @@ fn writeBuffer(s: *Session) !void {
     const header: plan.BufferHeader = .{
         .scope = null,
         .unlistable = s.view.unlistable,
-        .notes = notes.items,
+        .notes = &.{},
     };
     s.view.header_lines = try plan.headerLines(s.arena, header);
     try s.state.writeHeader(s.io, s.arena, s.view.header_lines);
@@ -1472,6 +1456,13 @@ fn enterDirQuiet(s: *Session, raw_target: []const u8) bool {
         target
     else
         std.fs.path.join(s.arena, &.{ s.view.dir, target }) catch return false;
+
+    // Entrar na lixeira e o `:trash`: se ela ainda nao existe, nasce aqui, para
+    // a lista abrir vazia em vez de dar erro. Em qualquer outro caminho esta
+    // linha nao faz nada.
+    if (s.trash_path.len > 0 and std.mem.eql(u8, joined, s.trash_path)) {
+        _ = ensureTrash(s) catch {};
+    }
 
     const resolved = Io.Dir.cwd().realPathFileAlloc(s.io, joined, s.arena) catch {
         s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{raw_target}) catch null;
@@ -1961,23 +1952,24 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
         }
     }
 
-    var area_ptr: ?*fsops.Area = null;
+    var retention: ?fsops.Retention = null;
     if (p.removes.len > 0) {
         if (approved_in_editor or try confirm(s, "Confirm removals?")) {
-            area_ptr = ensureArea(s) catch |err| blk: {
-                if (err == error.AreaUnavailable) {
-                    try s.out.writeAll(
-                        "lst-f: sem permissao de escrita no diretorio-base: nao da para criar a\n" ++
-                            "       area de sessao, logo nao ha como garantir o rollback. As remocoes\n" ++
-                            "       foram recusadas; as renomeacoes seguem.\n",
+            retention = retentionFor(s) catch |err| blk: {
+                if (err == error.TrashUnavailable) {
+                    try s.out.print(
+                        "lst-f: a lixeira ({s}) nao pode receber. As remocoes foram recusadas;\n" ++
+                            "       as renomeacoes seguem. Apagar sem retencao faria a seguranca\n" ++
+                            "       depender de circunstancia.\n",
+                        .{if (s.trash_path.len > 0) s.trash_path else "sem HOME"},
                     );
                 } else {
-                    try s.out.print("lst-f: nao foi possivel abrir a area de sessao: {s}\n", .{@errorName(err)});
+                    try s.out.print("lst-f: nao foi possivel abrir a lixeira: {s}\n", .{@errorName(err)});
                 }
                 break :blk null;
             };
         }
-        if (area_ptr == null) {
+        if (retention == null) {
             effective.removes = &.{};
             effective.removes_before = 0;
         }
@@ -1988,10 +1980,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
         return false;
     }
 
-    const sources = try moveSources(s, effective);
-    defer closeSources(s, sources);
-
-    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr, sources);
+    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, retention);
     if (outcome.failure) |failure| {
         // Em falha, o relatorio precisa permanecer visivel antes de voltar ao
         // editor para que o estado e a recuperacao manual fiquem claros.
@@ -2002,11 +1991,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     }
 
     if (!outcome.applied.isEmpty()) {
-        s.view.undo = .{
-            .base = s.view.dir,
-            .area = if (area_ptr) |a| a.name else null,
-            .applied = outcome.applied,
-        };
+        s.view.undo = .{ .base = s.view.dir, .applied = outcome.applied };
     }
     s.notice = try appliedNotice(s, outcome.applied);
     return true;
@@ -2163,11 +2148,27 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
     }
 
     if (p.removes.len > 0) {
-        try w.print(
-            "Remove ({d})  ->  session area .lst-f-{d}/, deleted on exit: after that\n" ++
-                "              removal is permanent; this is not a trash bin.\n",
-            .{ p.removes.len, s.pid },
-        );
+        if (inTrash(s, s.view.dir)) {
+            // Aqui a remocao nao tem para onde ir -- isto ja e a lixeira.
+            try w.print("Remove ({d})  ->  definitivo: isto e a lixeira\n", .{p.removes.len});
+        } else if (trashIsElsewhere(s)) {
+            // Outro filesystem: `rename` nao atravessa, entao a lixeira recebe
+            // uma copia. O volume aparece porque "apagar" deixa de ser
+            // instantaneo e passa a ocupar disco em `~`.
+            var total: u64 = 0;
+            for (p.removes) |rm| total += fsops.entrySize(s.io, base_dir, rm.path, rm.kind);
+            var size_buf: [16]u8 = undefined;
+            try w.print(
+                "Remove ({d})  ->  lixeira {s}, apagada apos 30 dias\n" ++
+                    "              copia de {s}: a lixeira esta em outro filesystem\n",
+                .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path), explorer.sizeText(&size_buf, total) },
+            );
+        } else {
+            try w.print(
+                "Remove ({d})  ->  lixeira {s}, apagada apos 30 dias\n",
+                .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path) },
+            );
+        }
         for (p.removes) |rm| {
             if (rm.kind == .dir) {
                 const count = fsops.subtreeCount(s.io, base_dir, rm.path);
@@ -2198,7 +2199,11 @@ fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
             for (outcome.applied.renames) |r| try w.print("  {s} -> {s}\n", .{ r.from, r.to });
             for (outcome.applied.copied) |c| try w.print("  {s} -> {s} copiado\n", .{ c.from, c.to });
             for (outcome.applied.removed) |rm| {
-                try w.print("  {s} esta em {s}/{s}\n", .{ rm.path, outcome.applied.area orelse "?", rm.stored });
+                if (rm.permanent) {
+                    try w.print("  {s} foi removido em definitivo\n", .{rm.path});
+                } else {
+                    try w.print("  {s} esta na lixeira, como {s}\n", .{ rm.path, rm.stored });
+                }
             }
         }
         return;
@@ -2231,52 +2236,76 @@ fn reportProblems(s: *Session, problems: []const plan.Problem) !void {
 }
 
 // ---------------------------------------------------------------------------
-// Area de sessao e undo
+// Lixeira e undo
 // ---------------------------------------------------------------------------
 
-/// Area de sessao do diretorio em foco. Cada View tem a sua, aberta uma vez:
-/// nao ha mais reabertura a cada navegacao, porque navegar troca de View.
-fn ensureArea(s: *Session) !*fsops.Area {
-    return ensureAreaFor(s, s.view);
-}
-
-/// A mesma area, para um View qualquer: um movimento entre filesystems remove
-/// a origem, e a origem mora na pasta de outro buffer.
-fn ensureAreaFor(s: *Session, v: *View) !*fsops.Area {
-    if (v.area != null) return &v.area.?;
-
-    var dir = try Io.Dir.cwd().openDir(s.io, v.dir, .{ .iterate = true });
-    defer dir.close(s.io);
-
-    const name = try fsops.areaName(s.arena, s.pid);
-    v.area = try fsops.openArea(s.arena, s.io, dir, name);
-    v.area_name = name;
-    try s.areas.append(s.arena, .{ .base = v.dir, .name = name });
-    return &v.area.?;
-}
-
-/// Pastas de origem dos movimentos entre filesystems, com a area de sessao de
-/// cada uma aberta. As areas entram no registro da sessao como as demais, para
-/// que a saida limpa as apague -- senao o lst-f deixaria um `.lst-f-<pid>/` na
-/// pasta alheia. Quem chama fecha os descritores.
-fn moveSources(s: *Session, p: plan.Plan) ![]fsops.Source {
-    var out: std.ArrayList(fsops.Source) = .empty;
-    var seen: std.StringHashMapUnmanaged(void) = .empty;
-    for (p.copies) |c| {
-        if (!c.cut or !c.cross_device) continue;
-        const abs = c.from_abs orelse continue;
-        const dir = std.fs.path.dirname(abs) orelse continue;
-        if ((try seen.getOrPut(s.arena, dir)).found_existing) continue;
-        const v = s.views.get(dir) orelse continue;
-        const area = try ensureAreaFor(s, v);
-        const handle = try Io.Dir.cwd().openDir(s.io, dir, .{ .iterate = true });
-        try out.append(s.arena, .{ .dir = dir, .handle = handle, .area = area });
+/// Caminho da lixeira: `$XDG_DATA_HOME/lst-f/trash`, com o default do XDG
+/// quando a variavel nao vem. Sem `HOME` nao ha lixeira possivel, e a string
+/// vazia e o que faz a remocao ser recusada mais adiante.
+fn trashPath(arena: Allocator, environ: *std.process.Environ.Map) ![]const u8 {
+    if (environ.get("XDG_DATA_HOME")) |x| {
+        if (x.len > 0 and std.fs.path.isAbsolute(x)) {
+            return std.fs.path.join(arena, &.{ x, "lst-f", "trash" });
+        }
     }
-    return out.toOwnedSlice(s.arena);
+    const home = environ.get("HOME") orelse return "";
+    if (home.len == 0) return "";
+    return std.fs.path.join(arena, &.{ home, ".local", "share", "lst-f", "trash" });
 }
 
-fn closeSources(s: *Session, sources: []fsops.Source) void {
-    for (sources) |*src| src.handle.close(s.io);
+/// A lixeira, aberta na primeira remocao da sessao.
+fn ensureTrash(s: *Session) !*fsops.Trash {
+    if (s.trash != null) return &s.trash.?;
+    if (s.trash_path.len == 0) return error.TrashUnavailable;
+    s.trash = try fsops.openTrash(s.arena, s.io, Io.Dir.cwd(), s.trash_path, s.pid);
+    return &s.trash.?;
+}
+
+/// Este diretorio e a lixeira, ou esta dentro dela.
+fn inTrash(s: *Session, dir: []const u8) bool {
+    if (s.trash_path.len == 0) return false;
+    return std.mem.eql(u8, dir, s.trash_path) or plan.isUnder(s.trash_path, dir);
+}
+
+/// Para onde vai o que o plano remover. Dentro da propria lixeira a remocao e
+/// definitiva -- e o que permite esvaziar com o gesto de sempre; fora dela, vai
+/// para a lixeira, e se ela nao puder receber a remocao e recusada.
+fn retentionFor(s: *Session) !fsops.Retention {
+    if (inTrash(s, s.view.dir)) return .permanent;
+    return .{ .trash = try ensureTrash(s) };
+}
+
+/// A lixeira esta em outro filesystem que nao o do diretorio em foco: a
+/// remocao vai ter de copiar. Isto e consulta, nao efeito: se a lixeira ainda
+/// nao existe, quem responde e o primeiro diretorio existente acima dela, que
+/// e o filesystem onde ela vai nascer -- criar a pasta so para medir mexeria no
+/// `~` de uma sessao que talvez cancele a remocao.
+fn trashIsElsewhere(s: *Session) bool {
+    if (s.trash_path.len == 0) return false;
+    const here = fsops.deviceOf(s.io, s.view.dir) orelse return false;
+    var path = s.trash_path;
+    while (true) {
+        if (fsops.deviceOf(s.io, path)) |there| return here != there;
+        path = std.fs.path.dirname(path) orelse return false;
+        if (path.len <= 1) return false;
+    }
+}
+
+/// Poda na abertura da sessao: idade passada e temporario de sessao morta. Na
+/// abertura, e nao na saida -- na saida ninguem le a barra. Nao cria a lixeira:
+/// se ela ainda nao existe, nao ha o que podar.
+fn pruneTrash(s: *Session) void {
+    if (s.trash_path.len == 0) return;
+    var dir = Io.Dir.cwd().openDir(s.io, s.trash_path, .{ .iterate = true }) catch return;
+    defer dir.close(s.io);
+    const ns: i96 = std.Io.Clock.now(.real, s.io).toNanoseconds();
+    const now: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
+    const pruned = fsops.pruneTrash(s.io, dir, now, fsops.max_age_s, s.pid);
+    if (pruned.isEmpty()) return;
+    s.notice = std.fmt.allocPrint(s.arena, "lixeira: {d} item(ns) com mais de 30 dias apagado(s){s}", .{
+        pruned.expired,
+        if (pruned.temps > 0) ", mais copia interrompida de sessao antiga" else "",
+    }) catch null;
 }
 
 fn undoLast(s: *Session) !void {
@@ -2291,13 +2320,12 @@ fn undoLast(s: *Session) !void {
     };
     defer base_dir.close(s.io);
 
-    var area_dir: ?Io.Dir = null;
-    if (u.area) |name| {
-        area_dir = base_dir.openDir(s.io, name, .{ .iterate = true }) catch null;
-    }
-    defer if (area_dir) |d| d.close(s.io);
+    // A lixeira e de onde as remocoes voltam. Ja esta aberta se a operacao que
+    // se desfaz removeu algo; a remocao definitiva (dentro da lixeira) nao
+    // volta, e o proprio `revert` diz isso no relatorio.
+    const trash_dir: ?Io.Dir = if (s.trash) |t| t.dir else null;
 
-    const errors = try fsops.revert(s.arena, s.io, base_dir, u.applied, area_dir);
+    const errors = try fsops.revert(s.arena, s.io, base_dir, u.applied, trash_dir);
     if (errors.len == 0) {
         // O movimento vindo de outra pasta voltou para la: aquele buffer
         // tambem mudou, e nao e o que esta em foco.
@@ -2310,23 +2338,6 @@ fn undoLast(s: *Session) !void {
     }
     if (errors.len > 0) try pause(s);
     try loadListing(s);
-}
-
-/// Saida limpa apaga as areas. A partir daqui a remocao e definitiva.
-fn cleanupAreas(s: *Session) void {
-    var it = s.views.iterator();
-    while (it.next()) |entry| {
-        const v = entry.value_ptr.*;
-        if (v.area) |*a| {
-            a.close(s.io);
-            v.area = null;
-        }
-    }
-    for (s.areas.items) |a| {
-        var base_dir = Io.Dir.cwd().openDir(s.io, a.base, .{ .iterate = true }) catch continue;
-        defer base_dir.close(s.io);
-        base_dir.deleteTree(s.io, a.name) catch {};
-    }
 }
 
 // ---------------------------------------------------------------------------
