@@ -214,7 +214,7 @@ pub const State = struct {
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
             \\    \ '    F4             Abre terminal / shell no diretorio atual',
-            \\    \ '    Ctrl+S         Abre esta pasta numa segunda janela (:vsplit)',
+            \\    \ '    Ctrl+S         Abre a segunda janela; de novo, fecha (:vsplit)',
             \\    \ '    Tab            Percorre as janelas abertas',
             \\    \ '    yy / y         Copia a linha (o ID vai junto, oculto)',
             \\    \ '    dd             Apaga a linha: remove, ou recorta para colar',
@@ -1349,7 +1349,74 @@ pub const State = struct {
             \\" painel de categoria separada, nem renderizacao propria, nem tecla
             \\" silenciada: e uma janela com um buffer de diretorio, como qualquer
             \\" outra. Fechar e o de sempre (`:close`, `<C-w>c`).
+            \\" Janelas de lista da tela. O cabecalho nao entra: nao e buffer de
+            \\" diretorio, logo nao tem `b:lstf_dir`.
+            \\function! s:lstf_list_wins() abort
+            \\  let l:out = []
+            \\  for l:nr in range(1, winnr('$'))
+            \\    if !empty(getbufvar(winbufnr(l:nr), 'lstf_dir', ''))
+            \\      call add(l:out, win_getid(l:nr))
+            \\    endif
+            \\  endfor
+            \\  return l:out
+            \\endfunction
+            \\
+            \\" Colapsa para a janela em foco: e a outra metade do toggle. Janela cujo
+            \\" buffer tem edicao pendente e nao aparece na que fica nao e fechada --
+            \\" a edicao viraria pendencia invisivel na sessao, que e o mesmo que o
+            \\" guard de `s:lstf_nav` evita ao navegar.
+            \\function! s:lstf_collapse_panels(wins) abort
+            \\  let l:cur = win_getid()
+            \\  let l:fica = winbufnr(win_id2win(l:cur))
+            \\  let l:presa = ''
+            \\  for l:w in a:wins
+            \\    if l:w == l:cur | continue | endif
+            \\    let l:b = winbufnr(win_id2win(l:w))
+            \\    if l:b != l:fica && getbufvar(l:b, '&modified')
+            \\      let l:presa = fnamemodify(getbufvar(l:b, 'lstf_dir', ''), ':t')
+            \\      continue
+            \\    endif
+            \\    noautocmd call win_gotoid(l:w)
+            \\    silent! close
+            \\  endfor
+            \\  noautocmd call win_gotoid(l:cur)
+            \\  if !empty(l:presa)
+            \\    let b:lstf_notice = 'edicao pendente em ' . l:presa . ': janela mantida'
+            \\  endif
+            \\  call s:lstf_follow_scroll()
+            \\  call s:lstf_draw_frame()
+            \\  redrawstatus!
+            \\endfunction
+            \\
+            \\" `:bd` aqui nao e apagar um arquivo aberto: o buffer e a pasta que a
+            \\" janela mostra. Apagando, sobrava so a janela de cabecalho na tela --
+            \\" sem lista, sem nenhum mapeamento (todos sao `<buffer>`) e com o laco do
+            \\" pai esperando; so saia por `:q!`. Vira fechar o painel, e sendo o unico
+            \\" recusa dizendo o que usar.
+            \\function! LstfClosePanel() abort
+            \\  let l:wins = s:lstf_list_wins()
+            \\  if len(l:wins) <= 1
+            \\    let b:lstf_notice = 'painel unico: :q sai do lst-f, Ctrl+S abre o segundo'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  let l:cur = win_getid()
+            \\  let l:fica = l:wins[0] == l:cur ? l:wins[1] : l:wins[0]
+            \\  silent! close
+            \\  call win_gotoid(l:fica)
+            \\  call s:lstf_follow_scroll()
+            \\  call s:lstf_draw_frame()
+            \\  redrawstatus!
+            \\endfunction
+            \\
             \\function! LstfSplit() abort
+            \\  " Com o segundo painel aberto, Ctrl+S e o caminho de volta: toggle, como
+            \\  " era no painel de destino que saiu em 11/09.
+            \\  let l:wins = s:lstf_list_wins()
+            \\  if len(l:wins) > 1
+            \\    call s:lstf_collapse_panels(l:wins)
+            \\    return
+            \\  endif
             \\  let l:onde = win_getid()
             \\  " `rightbelow`: a segunda janela abre a direita, como o usuario
             \\  " espera de um explorador. `noautocmd` porque o BufReadPost nao
@@ -1710,6 +1777,8 @@ pub const State = struct {
             \\      return "\x15YankAbs\r"
             \\    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
             \\      return "\x15call LstfQuit()\r"
+            \\    elseif l:cmd =~# '^\%(bd\%[elete]\|bw\%[ipeout]\|bun\%[load]\)!\=\%(\s.*\|\)$'
+            \\      return "\x15call LstfClosePanel()\r"
             \\    endif
             \\  endif
             \\  return "\r"
