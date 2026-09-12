@@ -220,6 +220,7 @@ pub const State = struct {
             \\    \ '    dd             Apaga a linha: remove, ou recorta para colar',
             \\    \ '    p              Cola neste diretorio: yy antes = copia,',
             \\    \ '                   dd antes = move (salve a janela onde colou)',
+            \\    \ '                   nome em conflito mostra o desfecho na linha',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
             \\    \ '',
@@ -869,13 +870,120 @@ pub const State = struct {
             \\" Identifica destinos colidentes no buffer sem mutar o texto nem fazer
             \\" I/O de disco. Marca visualmente todas as linhas em conflito e exibe a
             \\" contagem na barra de status para feedback instantaneo enquanto o usuario edita.
+            \\" Anotacao virtual: texto que aparece ao lado da linha sem estar no
+            \\" buffer. E o que permite mostrar o desfecho previsto de uma colisao
+            \\" sem que a previsao vire entrada do plano -- `getline()` nao a ve,
+            \\" o `:w` nao a grava e ela nem marca o buffer como modificado. Quando
+            \\" a previsao erra (arquivo oculto, outra janela colando ao mesmo
+            \\" tempo), quem corrige e o preview da confirmacao, antes do disco.
+            \\" Neovim usa extmark; Vim 9 usa text property com `text`. Piso mais
+            \\" antigo fica so com o destaque colorido, como antes.
+            \\" Detectado na primeira anotacao, nao na carga: `prop_type_add` exige
+            \\" que o grupo de destaque ja exista, e as cores sao aplicadas depois
+            \\" daqui. -1 e "ainda nao testado".
+            \\let s:lstf_props = -1
+            \\function! s:lstf_props_ok() abort
+            \\  if s:lstf_props >= 0 | return s:lstf_props | endif
+            \\  let s:lstf_props = 0
+            \\  if !has('nvim') && exists('*prop_type_add')
+            \\    try
+            \\      if empty(prop_type_get('lstfPredict'))
+            \\        call prop_type_add('lstfPredict', {'highlight': 'LstfPredict'})
+            \\      endif
+            \\      let s:lstf_props = 1
+            \\    catch
+            \\    endtry
+            \\  endif
+            \\  return s:lstf_props
+            \\endfunction
+            \\
+            \\function! s:lstf_annotations_clear() abort
+            \\  if has('nvim')
+            \\    if exists('s:lstf_ns')
+            \\      call nvim_buf_clear_namespace(0, s:lstf_ns, 0, -1)
+            \\    endif
+            \\  elseif s:lstf_props_ok()
+            \\    silent! call prop_remove({'type': 'lstfPredict', 'all': 1})
+            \\  endif
+            \\endfunction
+            \\
+            \\function! s:lstf_annotate(lnum, text) abort
+            \\  if has('nvim')
+            \\    if !exists('s:lstf_ns')
+            \\      let s:lstf_ns = nvim_create_namespace('lstf_predict')
+            \\    endif
+            \\    call nvim_buf_set_extmark(0, s:lstf_ns, a:lnum - 1, 0,
+            \\      \ {'virt_text': [[a:text, 'LstfPredict']], 'virt_text_pos': 'eol'})
+            \\  elseif s:lstf_props_ok()
+            \\    " `text` em text property so existe a partir do Vim 9.0; em vez de
+            \\    " cravar um numero de patch, desliga na primeira recusa.
+            \\    try
+            \\      call prop_add(a:lnum, 0, {'type': 'lstfPredict', 'text': a:text})
+            \\    catch
+            \\      let s:lstf_props = 0
+            \\    endtry
+            \\  endif
+            \\endfunction
+            \\
+            \\" Mesma forma do sufixo que o lado Zig aplica (`plan.suffixed`):
+            \\" radical e extensao do basename, diretorio preservado, barra final
+            \\" para diretorio.
+            \\function! s:lstf_suffixed(path, n) abort
+            \\  let l:dir = a:path =~# '/$'
+            \\  let l:body = l:dir ? substitute(a:path, '/\+$', '', '') : a:path
+            \\  let l:slash = strridx(l:body, '/')
+            \\  let l:head = l:slash >= 0 ? strpart(l:body, 0, l:slash + 1) : ''
+            \\  let l:base = l:slash >= 0 ? strpart(l:body, l:slash + 1) : l:body
+            \\  let l:dot = l:dir ? -1 : strridx(l:base, '.')
+            \\  let l:stem = l:dot > 0 ? strpart(l:base, 0, l:dot) : l:base
+            \\  let l:ext = l:dot > 0 ? strpart(l:base, l:dot) : ''
+            \\  return printf('%s%s-%02d%s%s', l:head, l:stem, a:n, l:ext, l:dir ? '/' : '')
+            \\endfunction
+            \\
+            \\" Um ID que nao e deste buffer veio colado de outra janela. Se a linha
+            \\" dele ainda existe la, o gesto foi `yy` (copia, resolvida por sufixo);
+            \\" se sumiu, foi `dd` (movimento, que recusa nome ocupado). Le os outros
+            \\" buffers -- a mesma fonte que o laco consulta no `:w`, so que em
+            \\" memoria: nao e um estado paralelo, e o mesmo estado lido aqui.
+            \\function! s:lstf_id_ficou_na_origem(id, cache) abort
+            \\  " Uma varredura por rodada, e so quando ha colisao com ID de fora:
+            \\  " o `TextChanged` dispara a cada tecla e os outros buffers podem ser
+            \\  " listagens grandes.
+            \\  if !has_key(a:cache, 'ids')
+            \\    let a:cache.ids = {}
+            \\    for l:info in getbufinfo({'bufloaded': 1})
+            \\      if l:info.bufnr == bufnr('%') | continue | endif
+            \\      if l:info.name !~# '\.lstf$' | continue | endif
+            \\      for l:linha in getbufline(l:info.bufnr, 1, '$')
+            \\        let l:oid = matchstr(l:linha, '^/\d\+')
+            \\        if !empty(l:oid) | let a:cache.ids[l:oid] = 1 | endif
+            \\      endfor
+            \\    endfor
+            \\  endif
+            \\  return has_key(a:cache.ids, a:id)
+            \\endfunction
+            \\
             \\function! s:lstf_update_collisions() abort
             \\  for l:match in get(w:, 'lstf_collision_matches', [])
             \\    silent! call matchdelete(l:match)
             \\  endfor
+            \\  call s:lstf_annotations_clear()
             \\  let w:lstf_collision_matches = []
             \\  let b:lstf_collision_count = 0
             \\  let l:paths = {}
+            \\  " Nomes ja ocupados por qualquer linha, para o sufixo previsto nao
+            \\  " cair em cima de outro; IDs vistos, para saber qual linha e a
+            \\  " primeira de um ID repetido (essa e a que fica).
+            \\  let l:tomado = {}
+            \\  let l:vistos = {}
+            \\  let l:cache = {}
+            \\  " IDs que vieram da listagem deste buffer. Um ID fora daqui e linha
+            \\  " colada de outra janela.
+            \\  let l:proprios = {}
+            \\  for l:orig in get(b:, 'lstf_entry_lines', [])
+            \\    let l:oid = matchstr(l:orig, '^/\d\+')
+            \\    if !empty(l:oid) | let l:proprios[l:oid] = 1 | endif
+            \\  endfor
             \\  let l:start = s:lstf_content_start()
             \\  if l:start <= 0 | redrawstatus | return | endif
             \\  for l:lnum in range(l:start, line('$'))
@@ -892,8 +1000,12 @@ pub const State = struct {
             \\      let l:col = match(l:line, '\S') + 1
             \\    endif
             \\    if empty(l:path) || l:col <= 0 | continue | endif
+            \\    let l:tomado[l:path] = 1
+            \\    let l:primeiro = !has_key(l:vistos, l:id)
+            \\    if !empty(l:id) | let l:vistos[l:id] = 1 | endif
             \\    if !has_key(l:paths, l:path) | let l:paths[l:path] = [] | endif
-            \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path)})
+            \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path),
+            \\      \ 'id': l:id, 'primeiro': l:primeiro})
             \\  endfor
             \\  for l:path in keys(l:paths)
             \\    let l:uses = l:paths[l:path]
@@ -902,9 +1014,42 @@ pub const State = struct {
             \\    for l:use in l:uses
             \\      call add(w:lstf_collision_matches,
             \\        \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
+            \\      call s:lstf_prever(l:use, l:path, l:proprios, l:tomado, l:cache)
             \\    endfor
             \\  endfor
             \\  redrawstatus
+            \\endfunction
+            \\
+            \\" O desfecho previsto de uma das linhas de uma colisao, anotado ao lado
+            \\" dela. A linha que fica e a entrada da listagem: ID deste buffer, na
+            \\" primeira aparicao. As outras sao destino, e e nelas que o desfecho
+            \\" muda -- copia ganha sufixo, movimento e recusado, nome novo tambem.
+            \\" Mesma regra que o lado Zig aplica; o que o helper nao enxerga (nome
+            \\" ocupado por arquivo oculto, outra janela colando agora) tambem nao
+            \\" acende o destaque, entao a anotacao nao promete mais do que ja se via.
+            \\function! s:lstf_prever(use, path, proprios, tomado, cache) abort
+            \\  if a:use.primeiro && !empty(a:use.id) && has_key(a:proprios, a:use.id)
+            \\    return
+            \\  endif
+            \\  if empty(a:use.id)
+            \\    call s:lstf_annotate(a:use.line, '  ✗ nome ja ocupado')
+            \\    return
+            \\  endif
+            \\  if !has_key(a:proprios, a:use.id) && !s:lstf_id_ficou_na_origem(a:use.id, a:cache)
+            \\    call s:lstf_annotate(a:use.line, '  ✗ ocupado: apague a linha dele ou renomeie')
+            \\    return
+            \\  endif
+            \\  let l:n = 1
+            \\  while l:n < 100
+            \\    let l:cand = s:lstf_suffixed(a:path, l:n)
+            \\    if !has_key(a:tomado, l:cand)
+            \\      let a:tomado[l:cand] = 1
+            \\      call s:lstf_annotate(a:use.line, '  → ' . l:cand)
+            \\      return
+            \\    endif
+            \\    let l:n += 1
+            \\  endwhile
+            \\  call s:lstf_annotate(a:use.line, '  ✗ sem nome livre com sufixo')
             \\endfunction
             \\
             \\" Barra de topo: os titulos das colunas sao linha de tela, nao de
@@ -1201,6 +1346,7 @@ pub const State = struct {
             \\    highlight LstfLinkCreate ctermfg=6 gui=italic guifg=#179299
             \\    highlight LstfArrow cterm=bold ctermfg=6 gui=bold guifg=#179299
             \\    highlight LstfCollision cterm=bold,underline ctermfg=1 gui=bold,underline guifg=#d20f39
+            \\    highlight LstfPredict cterm=italic ctermfg=1 gui=italic guifg=#d20f39
             \\    highlight LstfDateRecent cterm=NONE ctermfg=130 gui=NONE guifg=#df8e1d
             \\    highlight LstfDateDay cterm=NONE ctermfg=28 gui=NONE guifg=#40a02b
         );
@@ -1225,6 +1371,7 @@ pub const State = struct {
             \\    highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
             \\    highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
             \\    highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
+            \\    highlight LstfPredict cterm=italic ctermfg=9 gui=italic guifg=#f38ba8
             \\    highlight LstfDateRecent cterm=NONE ctermfg=11 gui=NONE guifg=#f9e2af
             \\    highlight LstfDateDay cterm=NONE ctermfg=10 gui=NONE guifg=#a6d189
         );

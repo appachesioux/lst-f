@@ -207,6 +207,24 @@ ele conhece os dois caminhos absolutos. Copiar sobre o próprio nome **não** en
 nessa recusa — é o `yy`+`p` normal, e quem resolve é o sufixo `-01` da checagem de
 colisão no disco.
 
+**O desfecho previsto é anotação de tela, não texto.** Quando dois nomes colidem,
+a linha que vai mudar recebe ao lado o desfecho (`→ a-01.txt`, ou a recusa do
+movimento). Vale por linha, então escala para vários arquivos, e não é etapa nova:
+aparece junto com o destaque que já existia. O ponto estrutural é não estar no
+buffer — `getline()` não a vê, o `:w` não a grava, o `&modified` não muda — porque
+uma previsão escrita na linha viraria **entrada** do plano na rodada seguinte:
+`plan.suffixed` separa radical e extensão do que está na linha, então um `-01`
+obsoleto no texto produziria `a-01-01.txt`. Como anotação, errar é inofensivo.
+
+Quem prevê é o helper, com o mesmo conhecimento do detector de colisão (os nomes
+do buffer) — onde ele não enxerga o conflito também não acende o destaque, então a
+anotação não promete mais do que já se via. A palavra final continua sendo o
+preview da confirmação, que consulta o disco. Renderização: `nvim_buf_set_extmark`
+no Neovim, `prop_add` com `text` no Vim 9; a detecção é preguiçosa (o
+`prop_type_add` exige o grupo de destaque, que só existe depois) e desliga na
+primeira recusa, em vez de cravar número de patch. Piso mais antigo fica só com o
+destaque.
+
 **Montagem por buffer.** Tudo que é local a um buffer de listagem (opções,
 sintaxe, autocmds, mapas, comandos, abreviaturas) vive numa função só, rodada de
 novo a cada `BufReadPost` de `*.lstf`. Sem isso o buffer que a navegação abre não
