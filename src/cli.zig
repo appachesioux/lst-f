@@ -381,6 +381,11 @@ const View = struct {
     history: session.History = .{},
     /// Escopo de um `:find` em vigor neste buffer, para o cabecalho.
     scope: ?[]const u8 = null,
+    /// Mostrar dotfiles neste diretorio. E do buffer, como a pasta e o
+    /// historico: com duas janelas abertas, `.` numa delas mudando a listagem
+    /// da outra e efeito invisivel. Um buffer novo herda de quem o abriu, para
+    /// que ligar `.` e navegar continue valendo o caminho todo.
+    show_hidden: bool = false,
     /// Ultima operacao aplicada a partir deste buffer, para o `:undo`. E do
     /// buffer, nao da sessao: com duas janelas abertas, `:undo` numa delas
     /// desfazendo o que aconteceu na outra seria um efeito invisivel.
@@ -410,12 +415,15 @@ const ViewRegistry = struct {
         io: Io,
         state_path: []const u8,
         dir: []const u8,
+        /// `show_hidden` de um buffer novo. Um que ja existe mantem o seu: cada
+        /// pasta lembra como foi deixada.
+        seed_hidden: bool,
     ) !*View {
         if (self.views.get(dir)) |v| return v;
         const buffer_path = try std.fmt.allocPrint(arena, "{s}/buffers/{d:0>4}.lstf", .{ state_path, self.counter });
         self.counter += 1;
         const v = try arena.create(View);
-        v.* = .{ .dir = dir, .buffer_path = buffer_path };
+        v.* = .{ .dir = dir, .buffer_path = buffer_path, .show_hidden = seed_hidden };
         try self.views.put(arena, dir, v);
         _ = io;
         return v;
@@ -532,7 +540,7 @@ fn runSession(
     }
 
     var views: ViewRegistry = .{};
-    const initial_view = try views.getOrCreate(arena, io, state.path, base);
+    const initial_view = try views.getOrCreate(arena, io, state.path, base, opts.options.show_hidden);
     try initial_view.history.push(arena, base);
 
     var s: Session = .{
@@ -707,9 +715,9 @@ fn loop(s: *Session) !void {
             .shell => |target| try openShell(s, target),
             .hidden => |opt| {
                 if (opt) |val| {
-                    s.options.show_hidden = val;
+                    s.view.show_hidden = val;
                 } else {
-                    s.options.show_hidden = !s.options.show_hidden;
+                    s.view.show_hidden = !s.view.show_hidden;
                 }
                 try loadListing(s);
             },
@@ -841,7 +849,7 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         if (s.views.get(req_dir)) |v| {
             s.view = v;
         } else if (std.fs.path.isAbsolute(req_dir)) {
-            s.view = try s.views.getOrCreate(s.arena, s.io, s.state.path, req_dir);
+            s.view = try s.views.getOrCreate(s.arena, s.io, s.state.path, req_dir, s.view.show_hidden);
         }
     }
 
@@ -863,7 +871,7 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         try goForward(s);
         ok = !std.mem.eql(u8, before, s.view.dir) or s.notice == null;
     } else if (std.mem.eql(u8, cmd, "hidden")) {
-        s.options.show_hidden = !s.options.show_hidden;
+        s.view.show_hidden = !s.view.show_hidden;
         loadListing(s) catch {
             s.notice = "nao consegui listar o diretorio";
         };
@@ -1263,6 +1271,7 @@ fn loadListing(s: *Session) !void {
     var collector: Collector = .{ .session = s };
     var options = s.options;
     options.recursive = false;
+    options.show_hidden = s.view.show_hidden;
     try explorer.enumerate(s.arena, s.io, s.view.dir, options, collector.sink());
     s.view.entries = try collector.entries.toOwnedSlice(s.arena);
     s.view.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
@@ -1307,7 +1316,7 @@ fn writeBuffer(s: *Session) !void {
     var writer: Io.File.Writer = .init(file, s.io, &buffer);
     const location = try std.fmt.allocPrint(s.arena, "{s}{s}", .{
         abbreviateHome(s.arena, s.environ, s.view.dir),
-        if (s.options.show_hidden) "  [all]" else "",
+        if (s.view.show_hidden) "  [all]" else "",
     });
     // A sessao viva recarrega o buffer sem reabrir o editor: o lado do Vim
     // le daqui o diretorio corrente para sincronizar cwd e moldura. Global
@@ -1394,6 +1403,7 @@ fn writeTree(s: *Session) !void {
     try w.print("{s}\n", .{abbreviateHome(s.arena, s.environ, s.view.dir)});
     var options = s.options;
     options.recursive = true;
+    options.show_hidden = s.view.show_hidden;
     var out: TreeWriter = .{ .writer = w };
     explorer.enumerate(s.arena, s.io, s.view.dir, options, out.sink()) catch |err| {
         if (err != TreeWriter.LimitReached.TreeLimitReached) return err;
@@ -1421,7 +1431,7 @@ fn expandHome(s: *Session, target: []const u8) []const u8 {
 /// duas janelas com dois diretorios sem que uma pise na outra.
 fn switchView(s: *Session, dir: []const u8) bool {
     const from = s.view;
-    const v = s.views.getOrCreate(s.arena, s.io, s.state.path, dir) catch {
+    const v = s.views.getOrCreate(s.arena, s.io, s.state.path, dir, from.show_hidden) catch {
         s.notice = "nao consegui abrir o buffer deste diretorio";
         return false;
     };
@@ -1635,6 +1645,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
 
     var options = s.options;
     options.recursive = true;
+    options.show_hidden = s.view.show_hidden;
 
     var runner = try fzf.start(s.arena, s.io, .{
         .features = s.features,
@@ -1709,7 +1720,7 @@ fn findHeader(s: *Session) ![]const u8 {
 
     const location = try std.fmt.allocPrint(s.arena, "{s}  [arvore]{s}", .{
         abbreviateHome(s.arena, s.environ, s.view.dir),
-        if (s.options.show_hidden) " [all]" else "",
+        if (s.view.show_hidden) " [all]" else "",
     });
     const badge = try std.fmt.allocPrint(s.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
         fzf.Keys.help_label,

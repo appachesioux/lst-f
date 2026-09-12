@@ -236,6 +236,17 @@ títulos das colunas). Aquele é linha de tela, não buffer de diretório: não 
 editável por definição. Buffers de diretório são modificáveis como qualquer
 buffer, e `u`/`<C-r>` são undo/redo de texto normais até o `:w`.
 
+**Ocultos (`.`) são por buffer, com herança.** `show_hidden` mora no *View*, não na
+sessão: com duas janelas, `.` numa delas mudando a listagem da outra é o efeito
+invisível que a âncora única existe para eliminar. Um buffer **novo** herda o valor
+de quem o abriu — assim ligar `.` e navegar continua valendo o caminho todo, que
+era o comportamento útil de quando o flag era global. Um buffer que **já existe**
+mantém o seu: cada pasta lembra como foi deixada, do mesmo jeito que lembra o
+histórico. Consequência a conhecer: voltar a uma pasta visitada antes restaura o
+`.` dela, não o da pasta de onde se veio. `-a`/`--all` continua sendo a semente do
+primeiro buffer. A listagem, a árvore (`\`) e o `:find` de cada janela seguem o
+valor daquela janela.
+
 **Aviso, `:undo` e moldura são por buffer.** `b:lstf_notice` vem do sidecar
 `.notice` que o laço grava ao lado do conteúdo; o `Undo` mora no *View*, então
 `:undo` numa janela não desfaz o que aconteceu na outra. A moldura é uma só (a
