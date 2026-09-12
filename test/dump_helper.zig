@@ -2,7 +2,7 @@
 //! escreveria no diretorio de estado. Usado para validar o script contra
 //! Vim/Neovim de outras versoes sem abrir uma sessao.
 const std = @import("std");
-const session = @import("../src/session.zig");
+const session = @import("lst_f").session;
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -10,7 +10,7 @@ pub fn main(init: std.process.Init) !void {
     const environ = init.environ_map;
 
     try environ.put("TMPDIR", "/tmp");
-    const fake_pid: std.posix.pid_t = @intCast(std.crypto.random.int(u31));
+    const fake_pid: std.posix.pid_t = std.os.linux.getpid();
 
     var state = try session.State.create(arena, io, environ, fake_pid);
     defer state.destroy(io);

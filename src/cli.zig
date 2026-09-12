@@ -24,6 +24,11 @@ const linux = std.os.linux;
 /// nao por argv: caminho de arquivo e dado hostil para interpolar em shell.
 pub const live_env_arg = "LST_F_LIVE_ARG";
 
+/// Diretorio do buffer que faz o pedido. Mesmo motivo de `live_env_arg`: e um
+/// caminho, entao nao passa por argv. E o que permite ao pai saber em qual
+/// janela a navegacao aconteceu quando ha mais de um buffer de diretorio.
+pub const live_env_dir = "LST_F_LIVE_DIR";
+
 pub const Command = union(enum) {
     browse: Browse,
     preview_index: u32,
@@ -257,15 +262,20 @@ fn runPreview(
 }
 
 /// Pedido de navegacao de uma sessao viva. Conecta ao socket do processo pai,
-/// envia `cmd\0arg` e espera o veredito. O argumento opcional (caminho a
-/// entrar) chega pela variavel `LST_F_LIVE_ARG`, nunca por argv: caminho de
-/// arquivo e dado hostil para interpolar em linha de comando.
+/// envia `cmd\0arg\0dir` e espera o veredito. O argumento opcional (caminho a
+/// entrar) e o diretorio do buffer que pede chegam por variavel de ambiente,
+/// nunca por argv: caminho de arquivo e dado hostil para interpolar em linha
+/// de comando.
+///
+/// `dir` e o que permite mais de um buffer de diretorio aberto ao mesmo tempo:
+/// sem ele o pai nao saberia em qual janela a navegacao aconteceu.
 fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8) !u8 {
     const state_path = environ.get(session.env_state) orelse {
         try out.writeAll("lst-f: sem sessao viva\n");
         return 2;
     };
     const arg = environ.get(live_env_arg) orelse "";
+    const dir = environ.get(live_env_dir) orelse "";
 
     var addr: linux.sockaddr.un = .{ .path = undefined };
     @memset(&addr.path, 0);
@@ -287,11 +297,18 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
     }
 
     var payload: [4096]u8 = undefined;
-    if (cmd.len + 1 + arg.len > payload.len - 1) return 2;
+    if (cmd.len + 1 + arg.len + 1 + dir.len > payload.len) return 2;
+    var total: usize = 0;
     @memcpy(payload[0..cmd.len], cmd);
-    payload[cmd.len] = 0;
-    @memcpy(payload[cmd.len + 1 ..][0..arg.len], arg);
-    const total = cmd.len + 1 + arg.len;
+    total += cmd.len;
+    payload[total] = 0;
+    total += 1;
+    @memcpy(payload[total..][0..arg.len], arg);
+    total += arg.len;
+    payload[total] = 0;
+    total += 1;
+    @memcpy(payload[total..][0..dir.len], dir);
+    total += dir.len;
     var sent: usize = 0;
     while (sent < total) {
         const w = linux.write(sock, payload[sent..].ptr, total - sent);
@@ -315,6 +332,11 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
         try out.print("lst-f: {s}\n", .{reply[1..got]});
         return 1;
     }
+    // Sucesso: devolve o caminho do buffer que a janela deve exibir agora. O
+    // helper captura pela saida do `system()`; vazio quando o pedido nao
+    // trocou de tela (tema, preview).
+    const body = std.mem.trim(u8, reply[1..got], "\n");
+    if (body.len > 0) try out.print("{s}\n", .{body});
     return 0;
 }
 
@@ -333,6 +355,66 @@ const Undo = struct {
     applied: fsops.Applied,
 };
 
+/// Um diretorio aberto como buffer. Cada janela do Vim aponta para um View,
+/// e o CLI guarda um por diretorio visitado na sessao. E isso que permite
+/// dois diretorios lado a lado como mecanica pura do Vim (`:vsplit` +
+/// navegar), no modelo do oil.nvim, sem "painel de destino" separado.
+const View = struct {
+    /// Diretorio absoluto deste buffer. E a ancora de todo caminho relativo
+    /// que o usuario ve e edita aqui dentro.
+    dir: []const u8,
+    /// Arquivo em disco que carrega o conteudo do buffer.
+    buffer_path: []const u8,
+    /// Listagem corrente.
+    entries: []const plan.Original = &.{},
+    /// Nomes que nao sobrevivem ao round-trip do Vim e por isso sao so leitura.
+    unlistable: []const []const u8 = &.{},
+    /// Cabecalho do buffer aberto agora. O parser precisa do texto exato para
+    /// nao confundir cabecalho com nome de arquivo.
+    header_lines: []const []const u8 = &.{},
+    /// O buffer no disco ja serve; nao regerar (o usuario tem correcoes a fazer).
+    keep_buffer: bool = false,
+    /// Area de sessao deste diretorio (remocao e rollback).
+    area: ?fsops.Area = null,
+    area_name: []const u8 = "",
+    /// Diretorios visitados a partir deste buffer, para `:back` e `:forward`.
+    history: session.History = .{},
+    /// Escopo de um `:find` em vigor neste buffer, para o cabecalho.
+    scope: ?[]const u8 = null,
+};
+
+/// diretorio -> View. Os Views vivem no arena, entao `*View` e estavel.
+const ViewRegistry = struct {
+    views: std.StringHashMapUnmanaged(*View) = .empty,
+    counter: usize = 0,
+
+    pub fn get(self: *const ViewRegistry, dir: []const u8) ?*View {
+        return self.views.get(dir);
+    }
+
+    /// View de `dir`, criando buffer e registro na primeira vez.
+    pub fn getOrCreate(
+        self: *ViewRegistry,
+        arena: Allocator,
+        io: Io,
+        state_path: []const u8,
+        dir: []const u8,
+    ) !*View {
+        if (self.views.get(dir)) |v| return v;
+        const buffer_path = try std.fmt.allocPrint(arena, "{s}/buffers/{d:0>4}.lstf", .{ state_path, self.counter });
+        self.counter += 1;
+        const v = try arena.create(View);
+        v.* = .{ .dir = dir, .buffer_path = buffer_path };
+        try self.views.put(arena, dir, v);
+        _ = io;
+        return v;
+    }
+
+    pub fn iterator(self: *const ViewRegistry) std.StringHashMapUnmanaged(*View).Iterator {
+        return self.views.iterator();
+    }
+};
+
 const Session = struct {
     arena: Allocator,
     io: Io,
@@ -344,28 +426,21 @@ const Session = struct {
     features: fzf.Features,
     state: session.State,
     pid: std.posix.pid_t,
-    buffer_path: []const u8,
     helper_path: []const u8,
     /// Identidade exibida na barra permanente do buffer.
     editor_name: []const u8,
     background: ?editor_mod.Background = null,
 
-    base: []const u8,
-    /// Conteudo corrente do buffer.
-    entries: []const plan.Original = &.{},
-    unlistable: []const []const u8 = &.{},
+    /// Buffer em foco: o da janela que fez o ultimo pedido, ou o principal
+    /// na volta externa do editor. Todo caminho relativo se resolve contra
+    /// `view.dir` — nao existe mais ancora concorrente.
+    view: *View,
+    /// Todos os diretorios abertos na sessao, um View por diretorio.
+    views: ViewRegistry = .{},
+
     /// Aviso de uma operacao concluida, mostrado uma vez no buffer reaberto.
     notice: ?[]const u8 = null,
-    /// O buffer no disco ja serve; nao regerar (o usuario tem correcoes a fazer).
-    keep_buffer: bool = false,
-    /// Cabecalho do buffer que esta aberto agora. O parser precisa do texto
-    /// exato para nao confundir cabecalho com nome de arquivo.
-    header_lines: []const []const u8 = &.{},
-    /// Diretorios visitados, para `:back` e `:forward`.
-    history: session.History = .{},
-
-    area: ?fsops.Area = null,
-    area_base: []const u8 = "",
+    /// Areas de sessao abertas, para limpeza no fim e deteccao de orfas.
     areas: std.ArrayList(AreaRef) = .empty,
     undo: ?Undo = null,
 };
@@ -423,6 +498,13 @@ fn runSession(
     const helper_path = try std.fmt.allocPrint(arena, "{s}/helper.vim", .{state.path});
     try state.writeHelperScript(io, build_options.app_name, build_options.version);
 
+    // Um arquivo de buffer por diretorio aberto: e o que permite duas
+    // janelas com dois diretorios diferentes (Fase 1 da revisao de UX).
+    state.dir.createDir(io, "buffers", .default_dir) catch |err| switch (err) {
+        error.PathAlreadyExists => {},
+        else => return err,
+    };
+
     if (bg) |b| {
         state.dir.writeFile(io, .{
             .sub_path = "theme",
@@ -432,6 +514,10 @@ fn runSession(
             },
         }) catch {};
     }
+
+    var views: ViewRegistry = .{};
+    const initial_view = try views.getOrCreate(arena, io, state.path, base);
+    try initial_view.history.push(arena, base);
 
     var s: Session = .{
         .arena = arena,
@@ -446,12 +532,11 @@ fn runSession(
         .features = features,
         .state = state,
         .pid = pid,
-        .buffer_path = try std.fmt.allocPrint(arena, "{s}/lst-f.lstf", .{state.path}),
         .helper_path = helper_path,
-        .base = base,
+        .view = initial_view,
+        .views = views,
     };
     defer cleanupAreas(&s);
-    try s.history.push(arena, s.base);
 
     if (opts.find) |query| {
         if (!try runFind(&s, query)) try loadListing(&s);
@@ -474,11 +559,11 @@ fn loop(s: *Session) !void {
             }
         } else |_| {}
 
-        if (!s.keep_buffer) {
+        if (!s.view.keep_buffer) {
             s.state.clearApproval(s.io);
             try writeBuffer(s);
         }
-        s.keep_buffer = false;
+        s.view.keep_buffer = false;
 
         const editor = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
             try explainEditor(s.out, err);
@@ -489,8 +574,8 @@ fn loop(s: *Session) !void {
             s.io,
             editor,
             s.environ,
-            s.buffer_path,
-            s.base,
+            s.view.buffer_path,
+            s.view.dir,
             s.helper_path,
             s.background,
         ) catch |err| {
@@ -522,28 +607,28 @@ fn loop(s: *Session) !void {
 
         const text = try Io.Dir.cwd().readFileAlloc(
             s.io,
-            s.buffer_path,
+            s.view.buffer_path,
             s.arena,
             .limited(64 * 1024 * 1024),
         );
-        const parsed = try plan.parseBuffer(s.arena, text, s.header_lines);
+        const parsed = try plan.parseBuffer(s.arena, text, s.view.header_lines);
         switch (parsed) {
             .invalid => |problems| {
                 try reportProblems(s, problems);
-                s.keep_buffer = true;
+                s.view.keep_buffer = true;
                 continue;
             },
             .ok => {},
         }
         const document = parsed.ok;
 
-        const built = try plan.build(s.arena, s.entries, document.edits, document.creates, .{
+        const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
             .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
         });
         switch (built) {
             .invalid => |problems| {
                 try reportProblems(s, problems);
-                s.keep_buffer = true;
+                s.view.keep_buffer = true;
                 continue;
             },
             .ok => {},
@@ -552,7 +637,7 @@ fn loop(s: *Session) !void {
         const collisions = try checkCreatesOnDisk(s, built.ok);
         if (collisions.len > 0) {
             try reportProblems(s, collisions);
-            s.keep_buffer = true;
+            s.view.keep_buffer = true;
             continue;
         }
 
@@ -561,7 +646,7 @@ fn loop(s: *Session) !void {
         plan_ok = copy_resolved.plan;
         if (copy_resolved.problems.len > 0) {
             try reportProblems(s, copy_resolved.problems);
-            s.keep_buffer = true;
+            s.view.keep_buffer = true;
             continue;
         }
 
@@ -731,9 +816,20 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         got += r;
     }
     const payload = req[0..got];
-    const sep = std.mem.indexOfScalar(u8, payload, 0) orelse payload.len;
-    const cmd = payload[0..sep];
-    const arg = if (sep < payload.len) payload[sep + 1 ..] else "";
+    var fields = std.mem.splitScalar(u8, payload, 0);
+    const cmd = fields.next() orelse payload;
+    const arg = fields.next() orelse "";
+    const req_dir = fields.next() orelse "";
+
+    // O pedido vem de uma janela especifica: o foco passa a ser o View dela.
+    // Sem isso, navegar numa janela reescreveria o buffer da outra.
+    if (req_dir.len > 0) {
+        if (s.views.get(req_dir)) |v| {
+            s.view = v;
+        } else if (std.fs.path.isAbsolute(req_dir)) {
+            s.view = try s.views.getOrCreate(s.arena, s.io, s.state.path, req_dir);
+        }
+    }
 
     var ok = false;
     var rewrote_buffer = false;
@@ -744,13 +840,13 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     } else if (std.mem.eql(u8, cmd, "home")) {
         ok = enterDirQuiet(s, "~");
     } else if (std.mem.eql(u8, cmd, "back")) {
-        const before = s.base;
+        const before = s.view.dir;
         try goBack(s);
-        ok = !std.mem.eql(u8, before, s.base) or s.notice == null;
+        ok = !std.mem.eql(u8, before, s.view.dir) or s.notice == null;
     } else if (std.mem.eql(u8, cmd, "forward")) {
-        const before = s.base;
+        const before = s.view.dir;
         try goForward(s);
-        ok = !std.mem.eql(u8, before, s.base) or s.notice == null;
+        ok = !std.mem.eql(u8, before, s.view.dir) or s.notice == null;
     } else if (std.mem.eql(u8, cmd, "hidden")) {
         s.options.show_hidden = !s.options.show_hidden;
         loadListing(s) catch {
@@ -813,7 +909,14 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         !std.mem.eql(u8, cmd, "theme")) try writeBuffer(s);
 
     if (ok) {
-        _ = linux.write(conn, "K", 1);
+        // Sucesso devolve o caminho do buffer desta janela: navegacao pode ter
+        // trocado de View, e o helper precisa saber qual arquivo `:edit`ar.
+        var reply_buf: [4224]u8 = undefined;
+        reply_buf[0] = 'K';
+        const p = s.view.buffer_path;
+        const n = @min(p.len, reply_buf.len - 1);
+        @memcpy(reply_buf[1 .. 1 + n], p[0..n]);
+        _ = linux.write(conn, reply_buf[0 .. 1 + n].ptr, 1 + n);
     } else {
         var reply_buf: [512]u8 = undefined;
         const msg = response orelse failure orelse "nao foi possivel";
@@ -831,18 +934,18 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
 fn applySavedBufferLive(s: *Session) !?[]const u8 {
     const text = try Io.Dir.cwd().readFileAlloc(
         s.io,
-        s.buffer_path,
+        s.view.buffer_path,
         s.arena,
         .limited(64 * 1024 * 1024),
     );
-    const parsed = try plan.parseBuffer(s.arena, text, s.header_lines);
+    const parsed = try plan.parseBuffer(s.arena, text, s.view.header_lines);
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
     if (document.directive == null or document.directive.? != .refresh) {
         return "diretiva requer a volta completa da sessao";
     }
 
-    const built = try plan.build(s.arena, s.entries, document.edits, document.creates, .{
+    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
         .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
     });
     if (built == .invalid) return try describeProblems(s, built.invalid);
@@ -874,11 +977,11 @@ fn previewProposedBuffer(s: *Session) !?[]const u8 {
         s.arena,
         .limited(64 * 1024 * 1024),
     ) catch return "nao foi possivel ler a proposta do buffer";
-    const parsed = try plan.parseBuffer(s.arena, text, s.header_lines);
+    const parsed = try plan.parseBuffer(s.arena, text, s.view.header_lines);
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
 
-    const built = try plan.build(s.arena, s.entries, document.edits, document.creates, .{
+    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
         .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
     });
     if (built == .invalid) return try describeProblems(s, built.invalid);
@@ -956,7 +1059,7 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
 
     if (!outcome.applied.isEmpty()) {
         s.undo = .{
-            .base = s.base,
+            .base = s.view.dir,
             .area = if (area_ptr) |a| a.name else null,
             .applied = outcome.applied,
         };
@@ -970,7 +1073,7 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
 fn writeCursorNameHint(s: *Session) void {
     s.state.dir.writeFile(s.io, .{
         .sub_path = "cursor_name",
-        .data = std.fs.path.basename(s.base),
+        .data = std.fs.path.basename(s.view.dir),
     }) catch {};
 }
 
@@ -1011,9 +1114,9 @@ fn loadListing(s: *Session) !void {
     var collector: Collector = .{ .session = s };
     var options = s.options;
     options.recursive = false;
-    try explorer.enumerate(s.arena, s.io, s.base, options, collector.sink());
-    s.entries = try collector.entries.toOwnedSlice(s.arena);
-    s.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
+    try explorer.enumerate(s.arena, s.io, s.view.dir, options, collector.sink());
+    s.view.entries = try collector.entries.toOwnedSlice(s.arena);
+    s.view.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
 }
 
 fn writeBuffer(s: *Session) !void {
@@ -1031,33 +1134,50 @@ fn writeBuffer(s: *Session) !void {
     }
     try s.state.writeNotice(s.io, s.notice orelse "");
 
-    var file = try Io.Dir.cwd().createFile(s.io, s.buffer_path, .{ .truncate = true });
+    var file = try Io.Dir.cwd().createFile(s.io, s.view.buffer_path, .{ .truncate = true });
     defer file.close(s.io);
     var buffer: [64 * 1024]u8 = undefined;
     var writer: Io.File.Writer = .init(file, s.io, &buffer);
     const location = try std.fmt.allocPrint(s.arena, "{s}{s}", .{
-        abbreviateHome(s.arena, s.environ, s.base),
+        abbreviateHome(s.arena, s.environ, s.view.dir),
         if (s.options.show_hidden) "  [all]" else "",
     });
     // A sessao viva recarrega o buffer sem reabrir o editor: o lado do Vim
-    // le daqui o diretorio corrente para sincronizar cwd e moldura.
-    try s.state.writeBase(s.io, s.base);
+    // le daqui o diretorio corrente para sincronizar cwd e moldura. Global
+    // para o self-exec de preview do fzf; os sidecars por buffer sao o que o
+    // helper usa, porque com duas janelas nao ha "corrente" unico.
+    try s.state.writeBase(s.io, s.view.dir);
     try s.state.dir.writeFile(s.io, .{ .sub_path = "location", .data = location });
     try s.environ.put(session.env_location, location);
     const header: plan.BufferHeader = .{
         .scope = null,
-        .unlistable = s.unlistable,
+        .unlistable = s.view.unlistable,
         .notes = notes.items,
     };
-    s.header_lines = try plan.headerLines(s.arena, header);
-    try s.state.writeHeader(s.io, s.arena, s.header_lines);
+    s.view.header_lines = try plan.headerLines(s.arena, header);
+    try s.state.writeHeader(s.io, s.arena, s.view.header_lines);
     try s.state.writeTitles(s.io, explorer.table_titles);
-    try plan.writeBuffer(s.arena, &writer.interface, header, s.entries);
+    try plan.writeBuffer(s.arena, &writer.interface, header, s.view.entries);
     try writer.interface.flush();
+    try writeViewSidecars(s, location);
     // O aviso ja esta no arquivo que sera aberto agora; a proxima navegacao
     // parte de uma tela limpa.
     s.notice = null;
     try writeTree(s);
+}
+
+/// Sidecars de um buffer de diretorio: o que o helper precisa para desenhar
+/// aquela janela sem depender de estado global. Vivem ao lado do arquivo de
+/// conteudo (`NNNN.lstf.dir`, `.location`, `.header`).
+fn writeViewSidecars(s: *Session, location: []const u8) !void {
+    const cwd = Io.Dir.cwd();
+    const dir_path = try std.fmt.allocPrint(s.arena, "{s}.dir", .{s.view.buffer_path});
+    try cwd.writeFile(s.io, .{ .sub_path = dir_path, .data = s.view.dir });
+    const loc_path = try std.fmt.allocPrint(s.arena, "{s}.location", .{s.view.buffer_path});
+    try cwd.writeFile(s.io, .{ .sub_path = loc_path, .data = location });
+    const hdr_joined = try std.mem.join(s.arena, "\n", s.view.header_lines);
+    const hdr_path = try std.fmt.allocPrint(s.arena, "{s}.header", .{s.view.buffer_path});
+    try cwd.writeFile(s.io, .{ .sub_path = hdr_path, .data = hdr_joined });
 }
 
 fn editorLabel(editor: editor_mod.Editor) []const u8 {
@@ -1099,11 +1219,11 @@ fn writeTree(s: *Session) !void {
     var buffer: [64 * 1024]u8 = undefined;
     var writer: Io.File.Writer = .init(tree, s.io, &buffer);
     const w = &writer.interface;
-    try w.print("{s}\n", .{abbreviateHome(s.arena, s.environ, s.base)});
+    try w.print("{s}\n", .{abbreviateHome(s.arena, s.environ, s.view.dir)});
     var options = s.options;
     options.recursive = true;
     var out: TreeWriter = .{ .writer = w };
-    explorer.enumerate(s.arena, s.io, s.base, options, out.sink()) catch |err| {
+    explorer.enumerate(s.arena, s.io, s.view.dir, options, out.sink()) catch |err| {
         if (err != TreeWriter.LimitReached.TreeLimitReached) return err;
         try w.print("… arvore truncada em {d} entradas\n", .{TreeWriter.limit});
     };
@@ -1124,16 +1244,46 @@ fn expandHome(s: *Session, target: []const u8) []const u8 {
     return target;
 }
 
-/// Entra em `target`, relativo a base quando o caminho nao e absoluto.
-/// Silencioso: falha vai para `s.notice` (chip da proxima tela), nunca para
-/// o terminal -- durante a sessao viva a tela e do editor. `true` quando
-/// entrou.
+/// Troca o foco para o View de `dir` e recarrega a listagem. Navegar nao
+/// reescreve o View de origem: cada diretorio tem o seu, e e isso que permite
+/// duas janelas com dois diretorios sem que uma pise na outra.
+fn switchView(s: *Session, dir: []const u8) bool {
+    const from = s.view;
+    const v = s.views.getOrCreate(s.arena, s.io, s.state.path, dir) catch {
+        s.notice = "nao consegui abrir o buffer deste diretorio";
+        return false;
+    };
+    if (v == from) {
+        loadListing(s) catch {
+            s.notice = "nao consegui listar o diretorio";
+            return false;
+        };
+        return true;
+    }
+    // View novo herda o trilho de quem o abriu: `<` e `>` continuam fazendo
+    // sentido dentro daquela janela.
+    if (v.history.items.items.len == 0) {
+        v.history = from.history.clone(s.arena) catch .{};
+        v.history.push(s.arena, dir) catch {};
+    }
+    s.view = v;
+    loadListing(s) catch {
+        s.notice = "nao consegui listar o diretorio";
+        return false;
+    };
+    return true;
+}
+
+/// Entra em `target`, relativo ao diretorio do buffer em foco quando o caminho
+/// nao e absoluto. Silencioso: falha vai para `s.notice` (chip da proxima
+/// tela), nunca para o terminal -- durante a sessao viva a tela e do editor.
+/// `true` quando entrou.
 fn enterDirQuiet(s: *Session, raw_target: []const u8) bool {
     const target = expandHome(s, raw_target);
     const joined = if (std.fs.path.isAbsolute(target))
         target
     else
-        std.fs.path.join(s.arena, &.{ s.base, target }) catch return false;
+        std.fs.path.join(s.arena, &.{ s.view.dir, target }) catch return false;
 
     const resolved = Io.Dir.cwd().realPathFileAlloc(s.io, joined, s.arena) catch {
         s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{raw_target}) catch null;
@@ -1147,29 +1297,38 @@ fn enterDirQuiet(s: *Session, raw_target: []const u8) bool {
         s.notice = std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{raw_target}) catch null;
         return false;
     }
-    s.base = resolved;
-    s.history.push(s.arena, resolved) catch {};
-    loadListing(s) catch {
-        s.notice = "nao consegui listar o diretorio";
-        return false;
-    };
-    return true;
+    return switchView(s, resolved);
 }
 
+/// `<` e `>` andam sobre o trilho de quem navegou, e o trilho viaja junto:
+/// o View de destino adota a posicao corrente, senao o `forward` se perderia
+/// ao voltar para um View cujo trilho proprio e mais curto.
 fn goBack(s: *Session) !void {
-    const target = s.history.back() orelse {
+    const target = s.view.history.back() orelse {
         s.notice = "nao ha para onde voltar nesta sessao";
         return;
     };
-    if (!try enterVisited(s, target)) _ = s.history.forward();
+    const trail = s.view.history;
+    if (!try enterVisited(s, target)) {
+        s.view.history = trail;
+        _ = s.view.history.forward();
+        return;
+    }
+    s.view.history = trail;
 }
 
 fn goForward(s: *Session) !void {
-    const target = s.history.forward() orelse {
+    const target = s.view.history.forward() orelse {
         s.notice = "nao ha para onde avancar nesta sessao";
         return;
     };
-    if (!try enterVisited(s, target)) _ = s.history.back();
+    const trail = s.view.history;
+    if (!try enterVisited(s, target)) {
+        s.view.history = trail;
+        _ = s.view.history.back();
+        return;
+    }
+    s.view.history = trail;
 }
 
 /// Volta a um diretorio ja visitado. `false` quando ele sumiu no meio da
@@ -1183,8 +1342,7 @@ fn enterVisited(s: *Session, target: []const u8) !bool {
         s.notice = try std.fmt.allocPrint(s.arena, "{s} nao e mais um diretorio", .{target});
         return false;
     }
-    s.base = target;
-    try loadListing(s);
+    if (!switchView(s, target)) return false;
     return true;
 }
 
@@ -1203,7 +1361,7 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
             fallback,
             s.environ,
             target,
-            s.base,
+            s.view.dir,
             null,
         ) catch |err| {
             try s.out.print("lst-f: falha ao abrir arquivo no editor: {s}\n", .{@errorName(err)});
@@ -1217,7 +1375,7 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
         editor,
         s.environ,
         target,
-        s.base,
+        s.view.dir,
         null,
     ) catch |err| {
         try s.out.print("lst-f: falha ao abrir arquivo no editor: {s}\n", .{@errorName(err)});
@@ -1227,7 +1385,7 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
 
 fn openShell(s: *Session, target: ?[]const u8) !void {
     const shell = s.environ.get("SHELL") orelse "/bin/sh";
-    var dir_to_open = s.base;
+    var dir_to_open = s.view.dir;
     if (target) |t| {
         const trimmed = std.mem.trim(u8, t, " \t");
         if (trimmed.len > 0) {
@@ -1242,7 +1400,7 @@ fn openShell(s: *Session, target: ?[]const u8) !void {
             } else if (trimmed[0] == '/') {
                 dir_to_open = trimmed;
             } else {
-                dir_to_open = try std.fmt.allocPrint(s.arena, "{s}/{s}", .{ s.base, trimmed });
+                dir_to_open = try std.fmt.allocPrint(s.arena, "{s}/{s}", .{ s.view.dir, trimmed });
             }
         }
     }
@@ -1298,7 +1456,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
         return false;
     }
 
-    try s.state.writeBase(s.io, s.base);
+    try s.state.writeBase(s.io, s.view.dir);
 
     var options = s.options;
     options.recursive = true;
@@ -1325,7 +1483,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
     };
     // Streaming: o fzf ja mostra as primeiras entradas enquanto a arvore ainda
     // esta sendo percorrida.
-    explorer.enumerate(s.arena, s.io, s.base, options, feed.sink()) catch {};
+    explorer.enumerate(s.arena, s.io, s.view.dir, options, feed.sink()) catch {};
     list_writer.interface.flush() catch {};
     list_file.close(s.io);
 
@@ -1359,12 +1517,12 @@ fn runFind(s: *Session, query: []const u8) !bool {
     }
     if (entries.items.len == 0 and unlistable.items.len == 0) return false;
 
-    s.entries = try entries.toOwnedSlice(s.arena);
-    s.unlistable = try unlistable.toOwnedSlice(s.arena);
+    s.view.entries = try entries.toOwnedSlice(s.arena);
+    s.view.unlistable = try unlistable.toOwnedSlice(s.arena);
     s.notice = if (query.len > 0)
-        try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s))", .{ query, s.entries.len })
+        try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s))", .{ query, s.view.entries.len })
     else
-        try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s))", .{s.entries.len});
+        try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s))", .{s.view.entries.len});
     return true;
 }
 
@@ -1374,7 +1532,7 @@ fn findHeader(s: *Session) ![]const u8 {
     const width: usize = @max(40, terminalWidth() -| gutter);
 
     const location = try std.fmt.allocPrint(s.arena, "{s}  [arvore]{s}", .{
-        abbreviateHome(s.arena, s.environ, s.base),
+        abbreviateHome(s.arena, s.environ, s.view.dir),
         if (s.options.show_hidden) " [all]" else "",
     });
     const badge = try std.fmt.allocPrint(s.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
@@ -1427,7 +1585,7 @@ fn abbreviateHome(_: Allocator, _: *const std.process.Environ.Map, path: []const
 // ---------------------------------------------------------------------------
 
 fn openBase(s: *Session) !Io.Dir {
-    return Io.Dir.cwd().openDir(s.io, s.base, .{ .iterate = true });
+    return Io.Dir.cwd().openDir(s.io, s.view.dir, .{ .iterate = true });
 }
 
 /// Criacao que colide com o que ja esta no disco sem estar na listagem
@@ -1595,7 +1753,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
 
     if (!outcome.applied.isEmpty()) {
         s.undo = .{
-            .base = s.base,
+            .base = s.view.dir,
             .area = if (area_ptr) |a| a.name else null,
             .applied = outcome.applied,
         };
@@ -1792,25 +1950,19 @@ fn reportProblems(s: *Session, problems: []const plan.Problem) !void {
 // Area de sessao e undo
 // ---------------------------------------------------------------------------
 
+/// Area de sessao do diretorio em foco. Cada View tem a sua, aberta uma vez:
+/// nao ha mais reabertura a cada navegacao, porque navegar troca de View.
 fn ensureArea(s: *Session) !*fsops.Area {
-    if (s.area != null and std.mem.eql(u8, s.area_base, s.base)) return &s.area.?;
-    if (s.area) |*a| {
-        a.close(s.io);
-        s.area = null;
-    }
+    if (s.view.area != null) return &s.view.area.?;
 
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
 
     const name = try fsops.areaName(s.arena, s.pid);
-    s.area = try fsops.openArea(s.arena, s.io, base_dir, name);
-    s.area_base = s.base;
-
-    for (s.areas.items) |a| {
-        if (std.mem.eql(u8, a.base, s.base)) return &s.area.?;
-    }
-    try s.areas.append(s.arena, .{ .base = s.base, .name = name });
-    return &s.area.?;
+    s.view.area = try fsops.openArea(s.arena, s.io, base_dir, name);
+    s.view.area_name = name;
+    try s.areas.append(s.arena, .{ .base = s.view.dir, .name = name });
+    return &s.view.area.?;
 }
 
 fn undoLast(s: *Session) !void {
@@ -1845,9 +1997,13 @@ fn undoLast(s: *Session) !void {
 
 /// Saida limpa apaga as areas. A partir daqui a remocao e definitiva.
 fn cleanupAreas(s: *Session) void {
-    if (s.area) |*a| {
-        a.close(s.io);
-        s.area = null;
+    var it = s.views.iterator();
+    while (it.next()) |entry| {
+        const v = entry.value_ptr.*;
+        if (v.area) |*a| {
+            a.close(s.io);
+            v.area = null;
+        }
     }
     for (s.areas.items) |a| {
         var base_dir = Io.Dir.cwd().openDir(s.io, a.base, .{ .iterate = true }) catch continue;
