@@ -161,8 +161,6 @@ pub const State = struct {
             \\" A busca do Vim segue a mesma regra do fzf: minusculas ignoram
             \\" caixa; uma maiuscula torna a consulta sensivel a caixa.
             \\set ignorecase smartcase incsearch
-            \\let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
-            \\  \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
             \\let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
             \\  \ ? get(readfile($LST_F_STATE . '/titles'), 0, '') : ''
             \\let s:lstf_identity = '
@@ -219,7 +217,9 @@ pub const State = struct {
             \\    \ '    Ctrl+S         Abre esta pasta numa segunda janela (:vsplit)',
             \\    \ '    Tab            Percorre as janelas abertas',
             \\    \ '    yy / y         Copia a linha (o ID vai junto, oculto)',
-            \\    \ '    p              Cola a linha copiada neste diretorio',
+            \\    \ '    dd             Apaga a linha: remove, ou recorta para colar',
+            \\    \ '    p              Cola neste diretorio: yy antes = copia,',
+            \\    \ '                   dd antes = move (salve a janela onde colou)',
             \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
             \\    \ '',
@@ -345,7 +345,7 @@ pub const State = struct {
             \\    let l:path = l:entry
             \\  endif
             \\  call s:lstf_set_clipboard(l:path)
-            \\  let s:lstf_notice = 'caminho copiado: ' . l:path
+            \\  let b:lstf_notice = 'caminho copiado: ' . l:path
             \\  redrawstatus!
             \\endfunction
             \\
@@ -364,7 +364,7 @@ pub const State = struct {
             \\  if !empty(l:paths)
             \\    let l:text = join(l:paths, "\n")
             \\    call s:lstf_set_clipboard(l:text)
-            \\    let s:lstf_notice = len(l:paths) == 1 ? ('caminho copiado: ' . l:paths[0]) : (len(l:paths) . ' caminhos copiados')
+            \\    let b:lstf_notice = len(l:paths) == 1 ? ('caminho copiado: ' . l:paths[0]) : (len(l:paths) . ' caminhos copiados')
             \\    redrawstatus!
             \\  endif
             \\endfunction
@@ -395,7 +395,7 @@ pub const State = struct {
             \\    else
             \\      call system('xdg-open ' . shellescape(a:path) . ' >/dev/null 2>&1 &')
             \\    endif
-            \\    let s:lstf_notice = 'aberto via xdg-open'
+            \\    let b:lstf_notice = 'aberto via xdg-open'
             \\    redrawstatus!
             \\    return 1
             \\  endif
@@ -488,20 +488,66 @@ pub const State = struct {
             \\  endif
             \\  let [l:err, l:out] = s:lstf_live(a:cmd)
             \\  if l:err
-            \\    let s:lstf_notice = l:out
+            \\    let b:lstf_notice = l:out
             \\    redrawstatus!
             \\    return
             \\  endif
             \\  call s:lstf_show_buffer(l:out)
             \\endfunction
             \\
+            \\" Todos os buffers de diretorio gravados no disco, menos o corrente
+            \\" (que vai pelo `proposal` ou pelo proprio `:w`). E o que deixa o
+            \\" laco enxergar o que esta pendente em cada janela: com isso o `dd`
+            \\" numa e o `p` na outra viram um movimento, porque o laco compara o
+            \\" texto dos dois buffers em vez de consultar um registro de recorte
+            \\" paralelo. Sem gravar, o arquivo no disco ainda teria a linha que o
+            \\" usuario acabou de apagar na tela.
+            \\function! s:lstf_flush_buffers() abort
+            \\  for l:info in getbufinfo({'bufloaded': 1})
+            \\    if l:info.bufnr == bufnr('%') | continue | endif
+            \\    if l:info.name !~# '\.lstf$' | continue | endif
+            \\    if !l:info.changed | continue | endif
+            \\    call writefile(getbufline(l:info.bufnr, 1, '$'), l:info.name, 'b')
+            \\  endfor
+            \\endfunction
+            \\
+            \\" Recarrega as janelas que mostram um buffer que a aplicacao mexeu --
+            \\" a pasta de onde saiu um movimento. Vem na resposta do laco, uma por
+            \\" linha depois do buffer desta janela; nenhuma outra e tocada, para
+            \\" nao apagar edicao pendente de quem nao entrou na operacao.
+            \\function! s:lstf_reload_others(paths) abort
+            \\  if !exists('*win_findbuf') | return | endif
+            \\  let l:cur = win_getid()
+            \\  for l:p in a:paths
+            \\    if empty(l:p) | continue | endif
+            \\    let l:nr = bufnr(l:p)
+            \\    if l:nr <= 0 | continue | endif
+            \\    for l:w in win_findbuf(l:nr)
+            \\      if l:w == l:cur | continue | endif
+            \\      noautocmd call win_gotoid(l:w)
+            \\      " Este reload acontece dentro de um autocmd (BufWritePost), e
+            \\      " autocmd aninhado nao dispara sem `nested`: o `BufReadPost`
+            \\      " que monta o buffer nao vem sozinho. A flag diz se veio.
+            \\      let s:lstf_opened = 0
+            \\      silent! edit!
+            \\      if !s:lstf_opened | call s:lstf_open_buffer() | endif
+            \\    endfor
+            \\  endfor
+            \\  noautocmd call win_gotoid(l:cur)
+            \\endfunction
+            \\
             \\" Abre nesta janela o buffer que o pai acabou de gravar. Caminho igual
             \\" ao atual: `edit!` so rele o arquivo. Caminho novo: o `BufReadPost`
             \\" monta o buffer (opcoes, sintaxe, mapas e comandos locais) antes do
-            \\" reload, exatamente como fez na abertura.
-            \\function! s:lstf_show_buffer(path) abort
+            \\" reload, exatamente como fez na abertura. Depois da primeira linha
+            \\" vem a lista de buffers de outras janelas que tambem mudaram.
+            \\function! s:lstf_show_buffer(reply) abort
+            \\  let l:linhas = split(a:reply, "\n")
+            \\  let l:target = get(l:linhas, 0, '')
+            \\  call s:lstf_reload_others(l:linhas[1:])
+            \\  " Depois do reload das outras: a flag e de quem esta sendo aberto
+            \\  " agora, e cada reload la dentro mexe nela.
             \\  let s:lstf_opened = 0
-            \\  let l:target = a:path
             \\  if !empty(l:target) && filereadable(l:target)
             \\    \ && fnamemodify(bufname('%'), ':p') !=# fnamemodify(l:target, ':p')
             \\    silent! execute 'edit! ' . fnameescape(l:target)
@@ -660,6 +706,7 @@ pub const State = struct {
             \\  let l:is_quitting = search('^:quit', 'nw') > 0
             \\  let l:entries = s:lstf_entry_lines()
             \\  if exists('b:lstf_entry_lines') && l:entries !=# b:lstf_entry_lines
+            \\    call s:lstf_flush_buffers()
             \\    call writefile(getline(1, '$'), $LST_F_STATE . '/proposal', 'b')
             \\    let [l:perr, l:out] = s:lstf_live('preview')
             \\    if l:perr == 0
@@ -682,7 +729,7 @@ pub const State = struct {
             \\        throw 'lst-f: operation cancelled'
             \\      endif
             \\    else
-            \\      let s:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+            \\      let b:lstf_notice = substitute(l:out, "\n\\+$", '', '')
             \\      redrawstatus!
             \\      if l:is_quitting
             \\        return
@@ -705,6 +752,7 @@ pub const State = struct {
             \\  " abrem outra interface (:find, :open...) continuam pela volta
             \\  " externa, pois precisam tomar conta do terminal.
             \\  if len(l:directives) == 1 && l:directives[0] ==# ':refresh'
+            \\    call s:lstf_flush_buffers()
             \\    let [l:aerr, l:out] = s:lstf_live('apply')
             \\    if l:aerr == 0
             \\      call s:lstf_show_buffer(l:out)
@@ -715,7 +763,7 @@ pub const State = struct {
             \\    " laco antigo ainda consegue aplicar o arquivo que foi salvo.
             \\    if l:aerr != 2
             \\      setlocal modified
-            \\      let s:lstf_notice = l:out
+            \\      let b:lstf_notice = l:out
             \\      redrawstatus!
             \\      return
             \\    endif
@@ -865,10 +913,19 @@ pub const State = struct {
             \\" A barra e da tela inteira, mas descreve a janela da lista em foco:
             \\" a posicao fica guardada aqui e so e atualizada de dentro dela.
             \\function! s:lstf_follow_scroll() abort
+            \\  " Qual janela de lista a moldura descreve quando o foco sai delas
+            \\  " (popup de ajuda, janela de cabecalho): a ultima que esteve em
+            \\  " foco, nao a primeira que a sessao abriu.
+            \\  if exists('b:lstf_dir') | let s:lstf_list_win = win_getid() | endif
             \\  " A moldura e texto de buffer, entao nao se reajusta sozinha quando a
             \\  " largura muda. A janela de cabecalho tem a largura da tela inteira,
-            \\  " acima de todas as janelas de lista.
-            \\  if s:lstf_frame && winwidth(0) != get(s:, 'lstf_frame_width', -1)
+            \\  " acima de todas as janelas de lista: compara com `&columns`, nunca
+            \\  " com a largura desta janela -- com um split elas sao diferentes por
+            \\  " definicao, e a comparacao nunca fecharia (redesenho a cada tecla).
+            \\  " A pasta entra na condicao porque a moldura segue o foco: sem ela,
+            \\  " o Tab entre duas listas deixaria o caminho da outra na tela.
+            \\  if s:lstf_frame && (&columns != get(s:, 'lstf_frame_width', -1)
+            \\    \ || s:lstf_frame_location() !=# get(s:, 'lstf_frame_shown', ''))
             \\    call s:lstf_draw_frame()
             \\  endif
             \\  let l:left = winsaveview().leftcol
@@ -946,6 +1003,7 @@ pub const State = struct {
             \\  if !exists('s:lstf_header_win') || win_id2win(s:lstf_header_win) == 0 | return | endif
             \\  let l:cur = win_getid()
             \\  let l:where = s:lstf_frame_location()
+            \\  let s:lstf_frame_shown = l:where
             \\  noautocmd call win_gotoid(s:lstf_header_win)
             \\  let s:lstf_frame_width = winwidth(0)
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width, l:where)
@@ -1037,7 +1095,8 @@ pub const State = struct {
             \\  " embaixo sobrariam so tirando espaco do nome sob o cursor.
             \\  let l:where = s:lstf_frame ? l:name : l:location . (empty(l:name) ? '' : '  ' . l:name)
             \\  let l:tag = s:lstf_frame ? '' : s:lstf_identity . '  ·  '
-            \\  let l:aviso = empty(s:lstf_notice) ? '' : '%#LstfStatusNotice# ' . substitute(s:lstf_notice, '%', '%%', 'g') . ' %#LstfStatusInfo#'
+            \\  let l:av = get(b:, 'lstf_notice', '')
+            \\  let l:aviso = empty(l:av) ? '' : '%#LstfStatusNotice# ' . substitute(l:av, '%', '%%', 'g') . ' %#LstfStatusInfo#'
             \\  let l:collisions = get(b:, 'lstf_collision_count', 0)
             \\  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisao: ' . l:collisions . ' %#LstfStatusInfo#' : ''
             \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
@@ -1099,7 +1158,7 @@ pub const State = struct {
             \\  endif
             \\  silent! edit!
             \\  call s:lstf_after_reload()
-            \\  let s:lstf_notice = 'Lista atualizada'
+            \\  let b:lstf_notice = 'Lista atualizada'
             \\  redrawstatus
             \\endfunction
             \\
@@ -1352,8 +1411,16 @@ pub const State = struct {
             \\    if line('$') <= len(b:lstf_header) | call append('$', '') | endif
             \\    setlocal nomodified
             \\  endif
-            \\  let s:lstf_notice = filereadable($LST_F_STATE . '/notice')
-            \\    \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
+            \\  " O aviso e do buffer, nao da sessao: com duas janelas abertas o
+            \\  " arquivo global e o de quem pediu por ultimo, e o recado de uma
+            \\  " apareceria na barra da outra. O sidecar vem ao lado do conteudo.
+            \\  let l:side_note = s:lstf_sidecar('.notice')
+            \\  if !empty(l:side_note)
+            \\    let b:lstf_notice = get(readfile(l:side_note), 0, '')
+            \\  else
+            \\    let b:lstf_notice = filereadable($LST_F_STATE . '/notice')
+            \\      \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
+            \\  endif
             \\  call s:lstf_capture_prefixes()
             \\  call s:lstf_update_collisions()
             \\  let b:lstf_entry_lines = s:lstf_entry_lines()

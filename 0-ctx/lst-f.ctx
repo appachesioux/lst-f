@@ -149,17 +149,48 @@ de erro que o ID existe para impedir. Cada View reserva uma faixa a partir do
 contador da sessão; a reserva é reaproveitada enquanto couber, para que um refresh
 não troque os IDs debaixo de um buffer em edição.
 
-**Copiar entre janelas.** O gesto é o do Vim: `yy` na linha, `p` na outra janela. A
-linha colada aparece no buffer onde o `p` foi pressionado — nunca em outra janela —
-e o destino é o diretório daquele buffer, visível na tela. O mecanismo é o mesmo
-que o `oil.nvim` usa com o cache global de entradas: o ID viaja com a linha e a
-sessão sabe de onde ele veio. `plan.Copy.from_abs` carrega a origem absoluta real;
-sem ela, origem e destino são relativos ao base de sempre. O diff mostra a origem
-absoluta, que é a informação que importa numa cópia entre pastas.
+**Copiar e mover entre janelas.** O gesto é o do Vim: `yy` ou `dd` na linha, `p` na
+outra janela. A linha colada aparece no buffer onde o `p` foi pressionado — nunca
+em outra janela — e o destino é o diretório daquele buffer, visível na tela. O ID
+viaja com a linha e a sessão sabe de onde ele veio; `plan.Copy.from_abs` carrega a
+origem absoluta real. O diff mostra a origem absoluta (com `~`), que é a informação
+que importa numa operação entre pastas.
+
+**Cópia e movimento se distinguem pelo estado dos buffers, não por uma tecla.**
+No `:w` o helper grava no disco todos os buffers de diretório abertos
+(`s:lstf_flush_buffers`) e o laço lê o texto de cada um. A linha que **ficou** na
+origem e foi colada aqui é cópia; a que **sumiu** de lá é movimento
+(`plan.Copy.cut`). Isso evita a segunda verdade que um registro de recorte na
+sessão seria: o buffer continua sendo a única fonte. Consequências:
+
+- O movimento inteiro pertence ao buffer de **destino** — é lá que ele está
+  visível e é o `:w` de lá que o conclui. Salvar a janela de origem antes disso é
+  recusado por `claimed_elsewhere`, dizendo qual janela salvar; aplicar a remoção
+  ali mandaria o arquivo para a área de sessão e o outro `:w` não teria de onde
+  mover.
+- Colisão de nome tem desfechos diferentes: cópia ganha sufixo `-01` (duplicar é o
+  gesto), movimento é recusado por `move_dest_occupied` — escolher entre os dois
+  arquivos perderia um deles. Substituir é `dd` nos dois lados: a remoção que
+  libera o destino de uma cópia entra em `removes_before`, porque a cópia é a fase
+  5 e as remoções tardias são a 6.
+- Mesmo filesystem, o movimento é um `rename` (atômico, e o undo é o rename de
+  volta — não precisa de área). Filesystems diferentes (`plan.Copy.cross_device`,
+  decidido por `fsops.deviceOf`), vira cópia + remoção da origem para a **área de
+  sessão da pasta de origem**, registrada como as demais para a limpeza da saída.
+  `Applied.moved_out` é o que o rollback usa para devolvê-la.
+- Depois de aplicar, o laço relista e regrava os buffers das pastas de origem e
+  devolve o caminho deles na resposta do canal vivo, depois do buffer desta
+  janela. O helper recarrega só essas janelas — nunca todas, para não apagar
+  edição pendente de quem não entrou na operação.
 
 Sem o registro da sessão o plano recusa o ID como adulteração (`ID não pertence à
 seleção`). É deliberado: a recusa em voz alta é o que garante que IDs sobrepostos
 não casem por acaso.
+
+**O destino de uma cópia não sai do diretório do buffer.** Mesma regra lexical do
+destino de um rename (`plan.normalize`). A exceção antiga (`normalizeWithEscape`,
+removida) existia para o painel de destino, que não existe mais: copiar para outra
+pasta é a outra janela, não um `../` no texto.
 
 **Copiar um diretório para dentro dele mesmo é recusado.** O destino recém-criado
 aparece dentro da origem que ainda está sendo percorrida, e a percorrida desce por
@@ -179,6 +210,19 @@ O único buffer `nomodifiable` que resta é o da janela de cabeçalho (moldura e
 títulos das colunas). Aquele é linha de tela, não buffer de diretório: não é
 editável por definição. Buffers de diretório são modificáveis como qualquer
 buffer, e `u`/`<C-r>` são undo/redo de texto normais até o `:w`.
+
+**Aviso, `:undo` e moldura são por buffer.** `b:lstf_notice` vem do sidecar
+`.notice` que o laço grava ao lado do conteúdo; o `Undo` mora no *View*, então
+`:undo` numa janela não desfaz o que aconteceu na outra. A moldura é uma só (a
+janela de cabeçalho ocupa a tela inteira) e segue o foco — por isso
+`s:lstf_follow_scroll` compara a largura com `&columns`, nunca com a largura da
+janela em foco: com um split elas são diferentes por definição e a moldura seria
+redesenhada a cada tecla.
+
+**Autocmd aninhado não dispara.** Recarregar um buffer de dentro de um autocmd
+(`BufWritePost` → apply → reload) não emite `BufReadPost`, então a montagem do
+buffer não vem sozinha. A flag `s:lstf_opened` é quem diz se veio; quem recarrega
+chama `s:lstf_open_buffer()` quando ela ficou em zero.
 
 ## Remoção e área de sessão
 
@@ -280,30 +324,13 @@ O MVP e as funcionalidades principais estão implementados.
    - Abertura de arquivos binários via `explorer.exe` / `start` no Windows quando `xdg-open` não estiver presente.
    - Mapeamento de atributos NTFS (ReadOnly, Archive, Hidden) para a coluna `PERMS`.
 
-2. **Mover entre diretórios (`dd` numa janela, `p` na outra)**:
-   - A cópia entre janelas já funciona, e o que falta para o movimento é pouco: o
-     ID é único na sessão e `plan.Copy.from_abs` já carrega a origem absoluta. Um
-     move de fora é a mesma resolução com a origem entrando em `removes` (via área
-     de sessão do View de origem) em vez de permanecer.
-   - O `oil.nvim` distingue os dois pelo registro de yank (cópia ou recorte), não
-     pela tecla de colar; aqui seria o mesmo, guardado na sessão.
-   - Fallback de cross-device (`EXDEV`): cópia recursiva + remoção na origem
-     quando a pasta de destino estiver em outro ponto de montagem / filesystem.
-   - As áreas de sessão já são uma por View, então a origem e o destino de um move
-     entre pastas têm cada uma a sua; o que precisa de decisão é o rollback
-     atravessar as duas.
-
-3. **Avisos por buffer**: `s:lstf_notice` ainda é uma variável global do helper com
-   `redrawstatus!`. Com duas janelas, o aviso de uma aparece na outra. O natural é
-   `b:lstf_notice`, como já foi feito com `b:lstf_dir` e `b:lstf_location`.
-
-4. **Nome dos buffers**: hoje o buffer se chama pelo arquivo temporário
+2. **Nome dos buffers**: hoje o buffer se chama pelo arquivo temporário
    (`0003.lstf`), então `:ls` e `:b` não mostram pastas. Nomear pelo diretório
    exigiria `buftype=acwrite` com `BufWriteCmd`/`BufReadCmd`, porque `:w` é o gesto
    de aplicar e um buffer nomeado como diretório não tem onde gravar. Adiado: não
    muda comportamento, só o que `:ls` mostra.
 
-5. **Plugin próprio**: adiado pelo critério de só implementar se melhorar a mudança
+3. **Plugin próprio**: adiado pelo critério de só implementar se melhorar a mudança
    de comportamento. O helper gerado por sessão entregou tudo que as fases acima
    pediam; o que ele custa é o SID dinâmico e funções globais de statusline. Volta
    à mesa se isso começar a doer.

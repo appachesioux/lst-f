@@ -80,7 +80,7 @@ test "aplica renomeacao e troca ciclica no disco" {
         .{ .id = 2, .path = "a.txt", .line = 2 },
     };
     const p = try planFor(h.a(), &originals, &edits);
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure == null);
 
     try testing.expectEqualStrings("conteudo B", try h.read("a.txt"));
@@ -99,7 +99,7 @@ test "cria diretorio pai e desfaz no undo" {
     const edits = [_]plan.Edit{.{ .id = 1, .path = "docs/sub/doc.txt", .line = 1 }};
     const p = try planFor(h.a(), &originals, &edits);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expect(h.exists("docs/sub/doc.txt"));
 
@@ -124,7 +124,7 @@ test "remocao vai para a area e volta no undo" {
     var area = try openArea(h.a(), io, h.dir(), name);
     defer area.close(io);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expect(!h.exists("some.txt"));
     try testing.expect(h.exists(".lst-f-4242/0007"));
@@ -163,7 +163,7 @@ test "remover e renomear para o nome liberado na mesma rodada" {
     var area = try openArea(h.a(), io, h.dir(), name);
     defer area.close(io);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("novo", try h.read("a.txt"));
     try testing.expect(!h.exists("b.txt"));
@@ -204,7 +204,7 @@ test "rollback restaura a remocao antecipada depois do rename" {
     try testing.expectEqual(@as(usize, 1), p.removes_before);
     try testing.expectEqual(@as(usize, 2), p.removes.len);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expectEqualStrings("A", try h.read("a"));
@@ -228,7 +228,7 @@ test "copia arquivo e desfaz no undo" {
     const p = try planFor(h.a(), &originals, &edits);
     try testing.expectEqual(@as(usize, 1), p.copies.len);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("conteudo A", try h.read("a.txt"));
     try testing.expectEqualStrings("conteudo A", try h.read("b.txt"));
@@ -258,7 +258,7 @@ test "copia diretorio recursivo e desfaz" {
     const p = try planFor(h.a(), &originals, &edits);
     try testing.expectEqual(@as(usize, 1), p.copies.len);
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("1", try h.read("dst/a.txt"));
     try testing.expectEqualStrings("2", try h.read("dst/sub/b.txt"));
@@ -294,7 +294,7 @@ test "falha na remocao desfaz a copia ja feita" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expect(!h.exists("copia.txt"));
@@ -323,7 +323,7 @@ test "mesmo basename de subdiretorios diferentes nao colide na area" {
     const name = try areaName(h.a(), 4243);
     var area = try openArea(h.a(), io, h.dir(), name);
     defer area.close(io);
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expectEqualStrings("de x", try h.read(".lst-f-4243/0001"));
     try testing.expectEqualStrings("de y", try h.read(".lst-f-4243/0002"));
@@ -346,7 +346,7 @@ test "diretorio nao-vazio vai inteiro em um rename" {
     const name = try areaName(h.a(), 4244);
     var area = try openArea(h.a(), io, h.dir(), name);
     defer area.close(io);
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expect(!h.exists("dir"));
     try testing.expectEqualStrings("2", try h.read(".lst-f-4244/0003/sub/b"));
@@ -375,7 +375,7 @@ test "falha no meio da fase de rename faz rollback completo" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expect(outcome.applied.isEmpty());
@@ -410,7 +410,7 @@ test "falha na fase de remocao devolve os arquivos ja movidos" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expectEqualStrings("1", try h.read("um"));
@@ -453,7 +453,7 @@ test "symlink no caminho do pai bloqueia a criacao" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(error.SymlinkInPath, outcome.failure.?.err);
     try testing.expect(h.exists("f.txt"));
@@ -478,7 +478,7 @@ test "cria arquivo e diretorio no disco" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expectEqual(@as(usize, 3), outcome.applied.created.len);
     try testing.expect(h.exists("docs/nota.md"));
@@ -503,7 +503,7 @@ test "criacao nunca sobrescreve o que ja esta la" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqualStrings("nao me trunque", try h.read("ocupado.txt"));
 }
@@ -534,7 +534,7 @@ test "falha depois da criacao desfaz o que foi criado" {
         .moves = &.{},
         .unchanged = 0,
     };
-    const outcome = try apply(h.a(), io, h.dir(), p, &area);
+    const outcome = try apply(h.a(), io, h.dir(), p, &area, &.{});
     try testing.expect(outcome.failure != null);
     try testing.expectEqual(@as(usize, 0), outcome.rollback_errors.len);
     try testing.expect(!h.exists("novo/x.txt"));
@@ -586,7 +586,7 @@ test "aplica e desfaz criacao de symlink e hardlink" {
         .unchanged = 0,
     };
 
-    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    const outcome = try apply(h.a(), io, h.dir(), p, null, &.{});
     try testing.expect(outcome.failure == null);
     try testing.expect(h.exists("meu_symlink"));
     try testing.expect(h.exists("meu_hardlink"));
@@ -602,44 +602,110 @@ test "aplica e desfaz criacao de symlink e hardlink" {
     try testing.expectEqualStrings("conteudo do arquivo", try h.read("original.txt"));
 }
 
-test "copia arquivo e diretorio para fora do base com ../ e desfaz" {
+
+test "movimento vindo de outra pasta sai por rename e o undo devolve" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
     var h = Harness.init(io);
     defer h.deinit();
 
-    try h.dir().createDirPath(io, "base/pasta");
-    try h.dir().createDirPath(io, "fora");
-    try h.touch("base/a.txt", "conteudo A");
-    try h.touch("base/pasta/b.txt", "conteudo B");
+    try h.dir().createDirPath(io, "origem");
+    try h.dir().createDirPath(io, "destino");
+    try h.touch("origem/a.txt", "conteudo A");
 
-    var base_sub = try h.dir().openDir(io, "base", .{ .iterate = true });
-    defer base_sub.close(io);
+    var destino = try h.dir().openDir(io, "destino", .{ .iterate = true });
+    defer destino.close(io);
 
-    const originals = [_]plan.Original{
-        .{ .id = 1, .path = "a.txt", .kind = .file },
-        .{ .id = 2, .path = "pasta", .kind = .dir },
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    var origem = try h.dir().openDir(io, "origem", .{});
+    const n = try origem.realPath(io, &buf);
+    origem.close(io);
+    const from_abs = try std.fmt.allocPrint(h.a(), "{s}/a.txt", .{buf[0..n]});
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+        .copies = &.{.{
+            .id = 7,
+            .from = from_abs,
+            .to = "a.txt",
+            .kind = .file,
+            .from_abs = from_abs,
+            .cut = true,
+        }},
     };
-    const edits = [_]plan.Edit{
-        .{ .id = 1, .path = "a.txt", .line = 1 },
-        .{ .id = 1, .path = "../fora/a.txt", .line = 2 },
-        .{ .id = 2, .path = "pasta", .line = 3 },
-        .{ .id = 2, .path = "../fora/pasta_copia", .line = 4 },
-    };
-    const p = try planFor(h.a(), &originals, &edits);
-    try testing.expectEqual(@as(usize, 2), p.copies.len);
 
-    const outcome = try apply(h.a(), io, base_sub, p, null);
+    const outcome = try apply(h.a(), io, destino, p, null, &.{});
     try testing.expect(outcome.failure == null);
-    try testing.expectEqualStrings("conteudo A", try h.read("base/a.txt"));
-    try testing.expectEqualStrings("conteudo A", try h.read("fora/a.txt"));
-    try testing.expectEqualStrings("conteudo B", try h.read("fora/pasta_copia/b.txt"));
+    // Movimento: chegou aqui e saiu de la.
+    try testing.expectEqualStrings("conteudo A", try h.read("destino/a.txt"));
+    try testing.expect(!h.exists("origem/a.txt"));
 
-    const errors = try revert(h.a(), io, base_sub, outcome.applied, null);
+    // O undo devolve, em vez de apagar a copia -- que e o arquivo original.
+    const errors = try revert(h.a(), io, destino, outcome.applied, null);
     try testing.expectEqual(@as(usize, 0), errors.len);
-    try testing.expect(h.exists("base/a.txt"));
-    try testing.expect(h.exists("base/pasta/b.txt"));
-    try testing.expect(!h.exists("fora/a.txt"));
-    try testing.expect(!h.exists("fora/pasta_copia"));
+    try testing.expect(!h.exists("destino/a.txt"));
+    try testing.expectEqualStrings("conteudo A", try h.read("origem/a.txt"));
+}
+
+test "movimento entre filesystems copia e leva a origem para a area dela" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    // Sem dois filesystems de verdade no teste: o que se verifica e o caminho
+    // de codigo do fallback, que nao depende do mount -- copia, depois remove
+    // a origem para a area de sessao da pasta dela.
+    try h.dir().createDirPath(io, "origem");
+    try h.dir().createDirPath(io, "destino");
+    try h.touch("origem/a.txt", "conteudo A");
+
+    var destino = try h.dir().openDir(io, "destino", .{ .iterate = true });
+    defer destino.close(io);
+    var origem = try h.dir().openDir(io, "origem", .{ .iterate = true });
+    defer origem.close(io);
+
+    var buf: [Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try origem.realPath(io, &buf);
+    const origem_abs = try h.a().dupe(u8, buf[0..n]);
+    const from_abs = try std.fmt.allocPrint(h.a(), "{s}/a.txt", .{origem_abs});
+
+    var area = try openArea(h.a(), io, origem, ".lst-f-4242");
+    defer area.close(io);
+    const sources = [_]fsops.Source{.{ .dir = origem_abs, .handle = origem, .area = &area }};
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+        .copies = &.{.{
+            .id = 7,
+            .from = from_abs,
+            .to = "a.txt",
+            .kind = .file,
+            .from_abs = from_abs,
+            .cut = true,
+            .cross_device = true,
+        }},
+    };
+
+    const outcome = try apply(h.a(), io, destino, p, null, &sources);
+    try testing.expect(outcome.failure == null);
+    try testing.expectEqualStrings("conteudo A", try h.read("destino/a.txt"));
+    try testing.expect(!h.exists("origem/a.txt"));
+    // Nao foi apagada: esta na area, de onde o undo a tira.
+    try testing.expectEqualStrings("conteudo A", try h.read("origem/.lst-f-4242/0007"));
+
+    const errors = try revert(h.a(), io, destino, outcome.applied, null);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expect(!h.exists("destino/a.txt"));
+    try testing.expectEqualStrings("conteudo A", try h.read("origem/a.txt"));
 }

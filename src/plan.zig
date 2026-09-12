@@ -51,6 +51,16 @@ pub const Copy = struct {
     /// buffer de diretorio. `from` e `to` sao sempre relativos ao base; quando
     /// isto esta presente, quem aplica abre a origem pelo caminho absoluto.
     from_abs: ?[]const u8 = null,
+    /// A linha sumiu do buffer de origem: `dd` numa janela e `p` na outra.
+    /// Nao e copia, e movimento -- a origem sai do lugar, por `rename`. So
+    /// existe junto de `from_abs`: mover dentro do proprio base ja e um
+    /// rename comum, escrito como edicao do caminho.
+    cut: bool = false,
+    /// Movimento cuja origem esta em outro filesystem: `rename` nao atravessa
+    /// ponto de montagem, entao quem aplica copia e remove a origem para a
+    /// area de sessao da pasta dela. Quem preenche e a camada que conhece o
+    /// disco; o plano so carrega o veredito.
+    cross_device: bool = false,
 };
 
 /// Um ID que pertence a outro buffer da sessao. E o que permite colar de uma
@@ -60,6 +70,11 @@ pub const Foreign = struct {
     /// Caminho absoluto real da entrada na pasta de origem.
     path: []const u8,
     kind: Kind,
+    /// A entrada nao aparece mais no texto do buffer de onde veio: o usuario
+    /// apagou a linha la (`dd`) e colou aqui. O gesto e um movimento, e quem
+    /// decide isso e o estado dos buffers -- nao um registro de recorte
+    /// paralelo, que seria uma segunda verdade sobre a mesma coisa.
+    cut: bool = false,
 };
 
 pub const ForeignMap = std.AutoHashMapUnmanaged(u32, Foreign);
@@ -81,6 +96,15 @@ pub const Problem = union(enum) {
     /// em recursao ate estourar PATH_MAX: o destino aparece dentro da origem
     /// que ainda esta sendo percorrida.
     copy_into_self: struct { id: u32, from: []const u8, to: []const u8 },
+    /// Mover de outra pasta para um nome que continua ocupado aqui. Copia
+    /// resolve por sufixo (duplicar e o gesto), movimento nao: o nome so tem
+    /// um dono, e adivinhar qual perderia um dos dois arquivos.
+    move_dest_occupied: struct { id: u32, from: []const u8, to: []const u8 },
+    /// A linha deste ID foi apagada aqui e colada no buffer de outra pasta: o
+    /// movimento pertence aquele buffer, e e la que o `:w` o conclui. Aplicar
+    /// a remocao aqui levaria o arquivo para a area de sessao e o outro `:w`
+    /// nao teria mais de onde mover.
+    claimed_elsewhere: struct { id: u32, path: []const u8, dir: []const u8 },
     id_without_path: struct { line: u32 },
     unknown_id: struct { line: u32, id: u32 },
     duplicate_id: struct { line: u32, id: u32 },
@@ -126,6 +150,14 @@ pub const Problem = union(enum) {
             .copy_into_self => |v| try w.print(
                 "ID {d}: {s} seria copiado para dentro de si mesmo ({s})",
                 .{ v.id, v.from, v.to },
+            ),
+            .move_dest_occupied => |v| try w.print(
+                "ID {d}: mover {s} para ca esbarra em {s}, que ja existe; apague a linha dele ou escolha outro nome",
+                .{ v.id, v.from, v.to },
+            ),
+            .claimed_elsewhere => |v| try w.print(
+                "ID {d}: {s} foi colado no buffer de {s}; salve aquela janela para concluir o movimento",
+                .{ v.id, v.path, v.dir },
             ),
             .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
             .unknown_id => |v| try w.print("linha {d}: ID {d} nao pertence a selecao", .{ v.line, v.id }),
@@ -261,6 +293,7 @@ pub fn build(
                     .to = e.path,
                     .kind = fo.kind,
                     .from_abs = fo.path,
+                    .cut = fo.cut,
                 });
                 continue;
             }
@@ -366,17 +399,18 @@ pub fn build(
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
-    // Mesmas regras lexicais para os destinos de copia, exceto o escape do
-    // base: copiar para fora e legitimo, e a ancora do destino continua sendo o
-    // diretorio do buffer onde a linha foi colada. A origem pode estar em
-    // qualquer lugar da sessao (from_abs).
+    // Mesmas regras lexicais dos destinos de rename, sem excecao: a ancora de
+    // todo caminho editado e o diretorio deste buffer, entao um destino de
+    // copia tambem nao sai dele. Copiar para outra pasta e a outra janela, nao
+    // um `../` no texto. A origem, essa sim, pode estar em qualquer lugar da
+    // sessao (`from_abs`).
     for (copies.items) |*c| {
         const raw = c.to;
         if (raw[0] == '/') {
             try problems.append(arena, .{ .absolute_path = .{ .id = c.id, .path = raw } });
             continue;
         }
-        const norm = normalizeWithEscape(arena, raw) catch |err| switch (err) {
+        const norm = normalize(arena, raw) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             error.Escapes => {
                 try problems.append(arena, .{ .escapes_base = .{ .id = c.id, .path = raw } });
@@ -613,10 +647,13 @@ pub fn build(
     // --- 8. Ordem de execucao: ciclos, troca so de caixa e remocao antecipada -
     const renames = try order(arena, moves.items, options);
 
-    // Remocao cujo caminho e o destino de um rename tem que sair antes dele:
-    // o destino precisa estar livre na hora do rename. E o que o oil.nvim faz
-    // (o DELETE de um caminho roda antes do MOVE que o ocupa). As demais
-    // continuam por ultimo, como sempre.
+    // Remocao cujo caminho e o destino de um rename ou de uma copia tem que
+    // sair antes dele: o destino precisa estar livre na hora da operacao. E o
+    // que o oil.nvim faz (o DELETE de um caminho roda antes do MOVE que o
+    // ocupa). A copia conta junto porque e o gesto de substituir um arquivo
+    // pelo de outra pasta -- `dd` na linha antiga, `p` na linha que vem de
+    // fora; sem isto a copia encontra o nome ocupado e derruba o plano inteiro.
+    // As demais continuam por ultimo, como sempre.
     var removes_early: std.ArrayList(Remove) = .empty;
     var removes_late: std.ArrayList(Remove) = .empty;
     for (removes.items) |rm| {
@@ -625,6 +662,14 @@ pub fn build(
             if (std.mem.eql(u8, m.to, rm.path)) {
                 targeted = true;
                 break;
+            }
+        }
+        if (!targeted) {
+            for (copies.items) |c| {
+                if (std.mem.eql(u8, c.to, rm.path)) {
+                    targeted = true;
+                    break;
+                }
             }
         }
         if (targeted) try removes_early.append(arena, rm) else try removes_late.append(arena, rm);
@@ -779,30 +824,6 @@ pub fn normalize(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
         if (std.mem.eql(u8, comp, "..")) {
             if (comps.items.len == 0) return error.Escapes;
             _ = comps.pop();
-            continue;
-        }
-        try comps.append(arena, comp);
-    }
-    if (comps.items.len == 0) return error.Empty;
-    return std.mem.join(arena, "/", comps.items);
-}
-
-/// Como `normalize`, mas aceita subir alem da raiz com `..` e devolve o
-/// caminho com os componentes `../` na frente. Destinos de copia usam esta
-/// variante: o painel de destino (Ctrl+S) escolhe qualquer diretorio da
-/// maquina e a copia preserva a origem -- escapar do base so materializa
-/// coisa nova la fora, que o `:undo` remove por inteiro.
-pub fn normalizeWithEscape(arena: Allocator, path: []const u8) NormalizeError![]const u8 {
-    var comps: std.ArrayList([]const u8) = .empty;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |comp| {
-        if (comp.len == 0 or std.mem.eql(u8, comp, ".")) continue;
-        if (std.mem.eql(u8, comp, "..")) {
-            if (comps.items.len == 0 or std.mem.eql(u8, comps.items[comps.items.len - 1], "..")) {
-                try comps.append(arena, "..");
-            } else {
-                _ = comps.pop();
-            }
             continue;
         }
         try comps.append(arena, comp);
