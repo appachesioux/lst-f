@@ -276,20 +276,6 @@ test "ID duplicado no proprio nome pede copia (sufixo fica para o disco)" {
     try testing.expectEqualStrings("a.txt", p.copies[0].to);
 }
 
-test "destino de copia pode sair do base (painel de destino)" {
-    var f = Fixture.init();
-    defer f.deinit();
-    const originals = [_]Original{orig(1, "a.txt", .file)};
-    // O split escolhe qualquer diretorio da maquina; no buffer o destino
-    // chega relativo ao base, com `../` na frente.
-    const edits = [_]Edit{ edit(1, "a.txt"), edit(1, "../fora/a.txt") };
-    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
-    try testing.expectEqual(@as(usize, 1), p.copies.len);
-    try testing.expectEqualStrings("a.txt", p.copies[0].from);
-    try testing.expectEqualStrings("../fora/a.txt", p.copies[0].to);
-    // Renomeacao continua sem poder sair do base.
-    try expectProblem(try build(f.a(), &originals, &.{edit(1, "../fora/a.txt")}, &.{}, .{}), .escapes_base);
-}
 
 test "ID duplicado com as duas linhas editadas e ambiguo" {
     var f = Fixture.init();
@@ -956,4 +942,69 @@ test "copiar diretorio para um irmao dele e valido" {
     // O pai que falta entra no plano.
     try testing.expectEqual(@as(usize, 1), p.mkdirs.len);
     try testing.expectEqualStrings("backup", p.mkdirs[0]);
+}
+
+test "destino de copia nao sai do diretorio do buffer" {
+    var f = Fixture.init();
+    defer f.deinit();
+    // A ancora de todo caminho editado e o diretorio deste buffer, para copia
+    // tanto quanto para rename. Copiar para outra pasta e a outra janela.
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "a.txt"), edit(1, "../fora/a.txt") }, &.{}, .{}),
+        .escapes_base,
+    );
+    // Tambem para a linha que veio de outro buffer.
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/b.txt", .kind = .file });
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "a.txt"), edit(7, "../fora/b.txt") }, &.{}, .{ .foreign = &foreign }),
+        .escapes_base,
+    );
+}
+
+test "linha apagada no buffer de origem vira movimento, nao copia" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "a.txt") };
+
+    // A sessao viu a linha sumir la: `dd` numa janela e `p` na outra.
+    var cortado: plan.ForeignMap = .empty;
+    try cortado.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file, .cut = true });
+    const movido = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &cortado })).ok;
+    try testing.expectEqual(@as(usize, 1), movido.copies.len);
+    try testing.expect(movido.copies[0].cut);
+    try testing.expectEqualStrings("/origem/a.txt", movido.copies[0].from_abs.?);
+
+    // A linha continua la: e copia, e a origem fica.
+    var ficou: plan.ForeignMap = .empty;
+    try ficou.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file });
+    const copiado = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &ficou })).ok;
+    try testing.expectEqual(@as(usize, 1), copiado.copies.len);
+    try testing.expect(!copiado.copies[0].cut);
+}
+
+test "remocao que libera o destino de uma copia acontece antes dela" {
+    var f = Fixture.init();
+    defer f.deinit();
+    // Substituir o arquivo daqui pelo de outra pasta: `dd` na linha antiga e
+    // `p` na que vem de fora. A copia e a fase 5 e as remocoes sao a 6, entao
+    // sem antecipar a remocao o nome ainda estaria ocupado na hora de copiar.
+    const originals = [_]Original{ orig(1, "a.txt", .file), orig(2, "b.txt", .file) };
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file, .cut = true });
+    const p = (try build(f.a(), &originals, &.{ edit(2, "b.txt"), edit(7, "a.txt") }, &.{}, .{ .foreign = &foreign })).ok;
+    try testing.expectEqual(@as(usize, 1), p.removes.len);
+    try testing.expectEqualStrings("a.txt", p.removes[0].path);
+    try testing.expectEqual(@as(usize, 1), p.removes_before);
+}
+
+test "remocao que nao libera destino nenhum continua por ultimo" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{ orig(1, "a.txt", .file), orig(2, "b.txt", .file) };
+    const p = (try build(f.a(), &originals, &.{edit(2, "b.txt")}, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.removes.len);
+    try testing.expectEqual(@as(usize, 0), p.removes_before);
 }

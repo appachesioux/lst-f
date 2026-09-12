@@ -20,6 +20,30 @@ pub const Removed = struct {
     stored: []const u8,
 };
 
+/// Entrada que saiu de outra pasta por copia + remocao, porque origem e destino
+/// estao em filesystems diferentes e `rename` nao atravessa ponto de montagem.
+/// Guarda o que o rollback precisa para devolve-la: a area onde ela ficou, o
+/// nome la dentro e o nome original.
+pub const MovedOut = struct {
+    /// Diretorio de origem, absoluto.
+    dir: []const u8,
+    /// Area de sessao dentro dele.
+    area_name: []const u8,
+    stored: []const u8,
+    /// Nome original dentro do diretorio de origem.
+    name: []const u8,
+};
+
+/// Pasta de origem de um movimento entre filesystems, com a area de sessao
+/// dela ja aberta. Quem abre e a CLI, que e quem registra as areas para a
+/// limpeza no fim -- uma area aberta aqui dentro vazaria no diretorio alheio.
+pub const Source = struct {
+    /// Diretorio de origem, absoluto, como aparece em `dirname(copy.from_abs)`.
+    dir: []const u8,
+    handle: Io.Dir,
+    area: *Area,
+};
+
 /// O que efetivamente aconteceu no disco. Serve ao rollback e ao undo.
 pub const Applied = struct {
     created_dirs: []const []const u8 = &.{},
@@ -33,11 +57,14 @@ pub const Applied = struct {
     /// Quantas remocoes (prefixo de `removed`) aconteceram antes das
     /// renomeacoes; o rollback as restaura depois de desfazer os renames.
     removed_before: usize = 0,
+    /// Origens que sairam da pasta delas por copia + remocao (cross-device).
+    moved_out: []const MovedOut = &.{},
     area: ?[]const u8 = null,
 
     pub fn isEmpty(a: Applied) bool {
         return a.created_dirs.len == 0 and a.created.len == 0 and
-            a.renames.len == 0 and a.copied.len == 0 and a.removed.len == 0;
+            a.renames.len == 0 and a.copied.len == 0 and a.removed.len == 0 and
+            a.moved_out.len == 0;
     }
 };
 
@@ -76,6 +103,20 @@ pub const Area = struct {
     }
 };
 
+/// Numero do dispositivo do filesystem que contem `path`. `null` quando nao da
+/// para saber -- ai quem chama assume o caso conservador. E o que decide se um
+/// movimento entre pastas cabe num `rename` ou precisa de copia + remocao.
+pub fn deviceOf(io: Io, path: []const u8) ?u64 {
+    if (@import("builtin").os.tag != .linux) return null;
+    var dir = Io.Dir.cwd().openDir(io, path, .{}) catch return null;
+    defer dir.close(io);
+    const linux = std.os.linux;
+    var stx: linux.Statx = undefined;
+    const rc = linux.statx(dir.handle, "", linux.AT.EMPTY_PATH, .{ .TYPE = true }, &stx);
+    if (linux.errno(rc) != .SUCCESS) return null;
+    return (@as(u64, stx.dev_major) << 32) | stx.dev_minor;
+}
+
 pub fn areaName(arena: Allocator, pid: std.posix.pid_t) Allocator.Error![]const u8 {
     return std.fmt.allocPrint(arena, "{s}{d}", .{ plan.area_prefix, pid });
 }
@@ -113,12 +154,16 @@ pub fn apply(
     base: Io.Dir,
     p: plan.Plan,
     area: ?*Area,
+    /// Pastas de origem dos movimentos entre filesystems, com a area delas
+    /// aberta. Vazio quando nao ha nenhum.
+    sources: []const Source,
 ) Allocator.Error!Outcome {
     var created: std.ArrayList([]const u8) = .empty;
     var new_entries: std.ArrayList(plan.Create) = .empty;
     var renamed: std.ArrayList(plan.Rename) = .empty;
     var removed: std.ArrayList(Removed) = .empty;
     var copied: std.ArrayList(plan.Copy) = .empty;
+    var moved_out: std.ArrayList(MovedOut) = .empty;
 
     var failure: ?Outcome.Failure = null;
 
@@ -223,20 +268,35 @@ pub fn apply(
         }
     }
 
-    // Fase 5: copias. Depois das criacoes; a origem continua existindo (nao
-    // participa das fases de rename/remocao). Arquivo e copia de bytes;
-    // diretorio e recursivo.
+    // Fase 5: copias e movimentos vindos de outro buffer de diretorio. Depois
+    // das criacoes. Na copia a origem continua existindo (nao participa das
+    // fases de rename/remocao); no movimento ela sai do lugar por `rename`,
+    // que e atomico e volta atras sem area de sessao -- o undo so renomeia de
+    // volta.
     if (failure == null) {
         for (p.copies) |c| {
-            copyEntry(arena, io, base, c) catch |err| {
+            const outcome = if (c.cut and !c.cross_device)
+                moveEntry(io, base, c)
+            else
+                copyEntry(arena, io, base, c);
+            outcome catch |err| {
                 failure = .{
-                    .phase = "copiar",
+                    .phase = if (c.cut) "mover" else "copiar",
                     .detail = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ c.from, c.to }),
                     .err = err,
                 };
                 break;
             };
             try copied.append(arena, c);
+            // Movimento entre filesystems: a copia ja esta aqui, falta tirar a
+            // origem de la. Vai para a area de sessao da pasta dela, nunca
+            // apagada -- a promessa do `:undo` nao muda por causa do mount.
+            if (c.cut and c.cross_device) {
+                if (try removeSource(arena, io, c, sources, &moved_out)) |f| {
+                    failure = f;
+                    break;
+                }
+            }
         }
     }
 
@@ -258,6 +318,7 @@ pub fn apply(
         .copied = try copied.toOwnedSlice(arena),
         .removed = try removed.toOwnedSlice(arena),
         .removed_before = removed_before,
+        .moved_out = try moved_out.toOwnedSlice(arena),
         .area = if (area) |a| a.name else null,
     };
 
@@ -305,6 +366,65 @@ fn copyEntry(arena: Allocator, io: Io, base: Io.Dir, c: plan.Copy) !void {
             try src.copyFile(from, base, c.to, io, .{ .replace = false });
         },
     }
+}
+
+/// Devolve para a pasta de origem uma entrada que saiu por copia + remocao.
+/// Abre a pasta e a area pelo caminho, porque o rollback pode acontecer numa
+/// rodada em que aqueles descritores ja se foram (`:undo`).
+fn restoreMovedOut(io: Io, mv: MovedOut) !void {
+    var dir = try Io.Dir.cwd().openDir(io, mv.dir, .{});
+    defer dir.close(io);
+    var area_dir = try dir.openDir(io, mv.area_name, .{});
+    defer area_dir.close(io);
+    try area_dir.renamePreserve(mv.stored, dir, mv.name, io);
+}
+
+/// Tira a origem de um movimento entre filesystems da pasta dela, para a area
+/// de sessao daquela pasta. `null` quando passou.
+fn removeSource(
+    arena: Allocator,
+    io: Io,
+    c: plan.Copy,
+    sources: []const Source,
+    out: *std.ArrayList(MovedOut),
+) Allocator.Error!?Outcome.Failure {
+    const abs = c.from_abs orelse return null;
+    const dir = std.fs.path.dirname(abs) orelse "/";
+    const name = std.fs.path.basename(abs);
+    for (sources) |src| {
+        if (!std.mem.eql(u8, src.dir, dir)) continue;
+        const stored = try std.fmt.allocPrint(arena, "{d:0>4}", .{c.id});
+        src.handle.renamePreserve(name, src.area.dir, stored, io) catch |err| {
+            return .{ .phase = "remover a origem do movimento", .detail = abs, .err = err };
+        };
+        const w = &src.area.manifest_writer.interface;
+        w.print("{s}\x00{s}\x00", .{ stored, name }) catch {};
+        w.flush() catch {};
+        try out.append(arena, .{
+            .dir = src.dir,
+            .area_name = src.area.name,
+            .stored = stored,
+            .name = name,
+        });
+        return null;
+    }
+    // Sem area para a pasta de origem a copia ja aconteceu, mas a origem nao
+    // pode sair: recusar aqui deixa o rollback limpar o que foi materializado.
+    return .{ .phase = "remover a origem do movimento", .detail = abs, .err = error.AreaUnavailable };
+}
+
+/// Movimento vindo de outro buffer de diretorio: a entrada sai da pasta de
+/// origem e entra nesta. `renamePreserve` e `RENAME_NOREPLACE`, entao o destino
+/// precisa estar livre -- o plano garante isso antecipando a remocao que o
+/// libera, ou recusando o nome que continua ocupado. Origem e destino em
+/// filesystems diferentes dao `RenameAcrossMountPoints`, que sobe como falha
+/// sem ter mexido em nada.
+fn moveEntry(io: Io, base: Io.Dir, c: plan.Copy) !void {
+    const abs = c.from_abs orelse return error.MissingSource;
+    const parent = std.fs.path.dirname(abs) orelse "/";
+    var src = try Io.Dir.cwd().openDir(io, parent, .{});
+    defer src.close(io);
+    try src.renamePreserve(std.fs.path.basename(abs), base, c.to, io);
 }
 
 fn copyDirRecursive(arena: Allocator, io: Io, src_root: Io.Dir, base: Io.Dir, from: []const u8, to: []const u8) !void {
@@ -410,11 +530,51 @@ pub fn revert(
 
     // Copias sao materializacoes nossas; o undo as remove por inteiro, arquivo
     // ou arvore. Nao ha o guard de "vazio" da criacao: uma copia nasce com o
-    // conteudo da origem.
+    // conteudo da origem. Movimento vindo de outra pasta nao materializou nada:
+    // o undo dele e o rename de volta, senao apagaria o arquivo original.
+    // Origens que sairam da pasta delas por copia + remocao voltam da area
+    // daquela pasta. Antes de apagar a copia, porque e a copia que ainda
+    // carrega o conteudo caso a volta falhe.
+    var m = applied.moved_out.len;
+    while (m > 0) {
+        m -= 1;
+        const mv = applied.moved_out[m];
+        restoreMovedOut(io, mv) catch |err| {
+            try errors.append(arena, try std.fmt.allocPrint(
+                arena,
+                "devolver {s} para {s}: {s}",
+                .{ mv.name, mv.dir, @errorName(err) },
+            ));
+        };
+    }
+
     var k = applied.copied.len;
     while (k > 0) {
         k -= 1;
         const cp = applied.copied[k];
+        // O movimento entre filesystems e copia + remocao: a copia daqui sai
+        // como qualquer outra, e a origem ja voltou acima.
+        if (cp.cut and !cp.cross_device) {
+            const abs = cp.from_abs orelse continue;
+            const parent = std.fs.path.dirname(abs) orelse "/";
+            var src = Io.Dir.cwd().openDir(io, parent, .{}) catch |err| {
+                try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "devolver {s} para {s}: {s}",
+                    .{ cp.to, parent, @errorName(err) },
+                ));
+                continue;
+            };
+            defer src.close(io);
+            base.renamePreserve(cp.to, src, std.fs.path.basename(abs), io) catch |err| {
+                try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "devolver {s} para {s}: {s}",
+                    .{ cp.to, abs, @errorName(err) },
+                ));
+            };
+            continue;
+        }
         if (cp.kind == .dir) {
             base.deleteTree(io, cp.to) catch |err| try errors.append(arena, try std.fmt.allocPrint(
                 arena,

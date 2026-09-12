@@ -381,6 +381,10 @@ const View = struct {
     history: session.History = .{},
     /// Escopo de um `:find` em vigor neste buffer, para o cabecalho.
     scope: ?[]const u8 = null,
+    /// Ultima operacao aplicada a partir deste buffer, para o `:undo`. E do
+    /// buffer, nao da sessao: com duas janelas abertas, `:undo` numa delas
+    /// desfazendo o que aconteceu na outra seria um efeito invisivel.
+    undo: ?Undo = null,
     /// Base dos IDs deste buffer e quantos estao reservados a partir dela.
     /// IDs sao unicos na sessao inteira, nao por buffer: um `yy` numa janela
     /// seguido de `p` na outra nao pode casar com uma entrada de outra pasta.
@@ -449,9 +453,12 @@ const Session = struct {
 
     /// Aviso de uma operacao concluida, mostrado uma vez no buffer reaberto.
     notice: ?[]const u8 = null,
+    /// Buffers de outras janelas que a ultima aplicacao mudou (as pastas de
+    /// onde saiu um movimento). Vao na resposta do canal vivo para o helper
+    /// recarregar aquelas janelas; so a janela que pediu se recarrega sozinha.
+    reload_others: []const []const u8 = &.{},
     /// Areas de sessao abertas, para limpeza no fim e deteccao de orfas.
     areas: std.ArrayList(AreaRef) = .empty,
-    undo: ?Undo = null,
 };
 
 fn runSession(
@@ -631,7 +638,7 @@ fn loop(s: *Session) !void {
         }
         const document = parsed.ok;
 
-        const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, try planOptions(s));
+        const built = try buildPlan(s, document);
         switch (built) {
             .invalid => |problems| {
                 try reportProblems(s, problems);
@@ -841,6 +848,7 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     var ok = false;
     var rewrote_buffer = false;
     var response: ?[]const u8 = null;
+    s.reload_others = &.{};
     if (std.mem.eql(u8, cmd, "up")) {
         writeCursorNameHint(s);
         ok = enterDirQuiet(s, "..");
@@ -917,13 +925,17 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
 
     if (ok) {
         // Sucesso devolve o caminho do buffer desta janela: navegacao pode ter
-        // trocado de View, e o helper precisa saber qual arquivo `:edit`ar.
-        var reply_buf: [4224]u8 = undefined;
-        reply_buf[0] = 'K';
-        const p = s.view.buffer_path;
-        const n = @min(p.len, reply_buf.len - 1);
-        @memcpy(reply_buf[1 .. 1 + n], p[0..n]);
-        _ = linux.write(conn, reply_buf[0 .. 1 + n].ptr, 1 + n);
+        // trocado de View, e o helper precisa saber qual arquivo `:edit`ar. As
+        // linhas seguintes, quando ha, sao os buffers de outras janelas que a
+        // aplicacao mexeu -- a pasta de onde um movimento saiu.
+        var reply: std.ArrayList(u8) = .empty;
+        try reply.append(s.arena, 'K');
+        try reply.appendSlice(s.arena, s.view.buffer_path);
+        for (s.reload_others) |other| {
+            try reply.append(s.arena, '\n');
+            try reply.appendSlice(s.arena, other);
+        }
+        _ = linux.write(conn, reply.items.ptr, reply.items.len);
     } else {
         var reply_buf: [512]u8 = undefined;
         const msg = response orelse failure orelse "nao foi possivel";
@@ -952,7 +964,7 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
         return "diretiva requer a volta completa da sessao";
     }
 
-    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, try planOptions(s));
+    const built = try buildPlan(s, document);
     if (built == .invalid) return try describeProblems(s, built.invalid);
 
     const collisions = try checkCreatesOnDisk(s, built.ok);
@@ -965,11 +977,46 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
     if (!p.isEmpty()) {
         if (!s.state.takeApproval(s.io)) return "alteracoes nao foram confirmadas";
         if (try applyApprovedLive(s, p)) |message| return message;
+        s.reload_others = try refreshMovedSources(s, p.copies, try std.fmt.allocPrint(
+            s.arena,
+            "movido para {s}",
+            .{abbreviateHome(s.arena, s.environ, s.view.dir)},
+        ));
     }
 
     try loadListing(s);
     try writeBuffer(s);
     return null;
+}
+
+/// Depois de mover entradas de outras pastas para ca, os buffers delas mostram
+/// uma linha que nao existe mais (e depois de um `:undo`, o contrario). Relista
+/// e regrava cada um, e devolve o caminho dos arquivos para o helper recarregar
+/// as janelas que os mostram. O View em foco fica por ultimo, no chamador: e
+/// ele quem escreve o estado global que o self-exec de preview do fzf le.
+fn refreshMovedSources(s: *Session, copies: []const plan.Copy, note: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    const focused = s.view;
+    const notice = s.notice;
+    defer {
+        s.view = focused;
+        s.notice = notice;
+    }
+    for (copies) |c| {
+        if (!c.cut) continue;
+        const abs = c.from_abs orelse continue;
+        const dir = std.fs.path.dirname(abs) orelse continue;
+        if ((try seen.getOrPut(s.arena, dir)).found_existing) continue;
+        const v = s.views.get(dir) orelse continue;
+        s.view = v;
+        // O recado da pasta de origem e outro: aqui a linha sumiu, nao chegou.
+        s.notice = note;
+        loadListing(s) catch continue;
+        writeBuffer(s) catch continue;
+        try out.append(s.arena, v.buffer_path);
+    }
+    return out.toOwnedSlice(s.arena);
 }
 
 /// Monta o mesmo plano da aplicacao a partir da copia que o helper gravou
@@ -986,7 +1033,7 @@ fn previewProposedBuffer(s: *Session) !?[]const u8 {
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
 
-    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, try planOptions(s));
+    const built = try buildPlan(s, document);
     if (built == .invalid) return try describeProblems(s, built.invalid);
 
     const collisions = try checkCreatesOnDisk(s, built.ok);
@@ -1050,7 +1097,10 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
         );
     }
 
-    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr);
+    const sources = try moveSources(s, effective);
+    defer closeSources(s, sources);
+
+    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr, sources);
     if (outcome.failure) |failure| {
         return try std.fmt.allocPrint(s.arena, "falha em {s} {s}: {s}; rollback {s}", .{
             failure.phase,
@@ -1061,7 +1111,7 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     }
 
     if (!outcome.applied.isEmpty()) {
-        s.undo = .{
+        s.view.undo = .{
             .base = s.view.dir,
             .area = if (area_ptr) |a| a.name else null,
             .applied = outcome.applied,
@@ -1117,34 +1167,96 @@ const Collector = struct {
     }
 };
 
-/// IDs dos outros buffers abertos, com a origem absoluta de cada um. E o que
-/// permite colar de uma janela na outra: o numero da linha yankada nao pertence
-/// a este buffer, mas a sessao sabe de onde ele veio. Sem isto o plano so pode
-/// recusa-lo como adulteracao -- e com IDs unicos por buffer, antes da sessao
-/// passar a numera-los globalmente, ele casaria em silencio com outra entrada.
-fn foreignIds(s: *Session) !plan.ForeignMap {
-    var map: plan.ForeignMap = .empty;
+/// IDs que ainda aparecem no texto do buffer daquele View, como ele esta no
+/// disco agora. O helper grava todos os buffers de diretorio antes de pedir o
+/// preview ou a aplicacao, entao isto e o que o usuario tem na tela -- e a
+/// unica fonte de verdade sobre o que foi apagado e o que ficou. `null` quando
+/// nao deu para ler ou o texto nao passa no parser: dai nada e deduzido.
+fn idsInBuffer(s: *Session, v: *View) !?std.AutoHashMapUnmanaged(u32, void) {
+    const text = Io.Dir.cwd().readFileAlloc(
+        s.io,
+        v.buffer_path,
+        s.arena,
+        .limited(64 * 1024 * 1024),
+    ) catch return null;
+    const parsed = try plan.parseBuffer(s.arena, text, v.header_lines);
+    if (parsed == .invalid) return null;
+    var set: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (parsed.ok.edits) |e| try set.put(s.arena, e.id, {});
+    return set;
+}
+
+/// Uma entrada deste buffer cuja linha foi colada no buffer de outra pasta.
+const Claim = struct { id: u32, path: []const u8, dir: []const u8 };
+
+const CrossBuffers = struct {
+    /// IDs dos outros buffers abertos, com a origem absoluta de cada um. E o
+    /// que permite colar de uma janela na outra: o numero da linha yankada nao
+    /// pertence a este buffer, mas a sessao sabe de onde ele veio. Sem isto o
+    /// plano so pode recusa-lo como adulteracao.
+    foreign: *const plan.ForeignMap,
+    /// O caminho inverso: IDs daqui que apareceram la.
+    claims: []const Claim,
+};
+
+/// O que os outros buffers da sessao dizem sobre os IDs. Le o texto de cada um
+/// como esta no disco, entao distingue as duas metades do gesto do oil: a linha
+/// que **ficou** na origem e colada aqui e copia; a que **sumiu** de la e
+/// movimento. Quem decide e o estado dos buffers, nao um registro de recorte
+/// paralelo -- que seria uma segunda verdade sobre a mesma coisa.
+fn crossBuffers(s: *Session) !CrossBuffers {
+    const foreign = try s.arena.create(plan.ForeignMap);
+    foreign.* = .empty;
+    var claims: std.ArrayList(Claim) = .empty;
+
+    var mine: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    for (s.view.entries) |e| try mine.put(s.arena, e.id, e.path);
+
     var it = s.views.iterator();
     while (it.next()) |entry| {
         const v = entry.value_ptr.*;
         if (v == s.view) continue;
+        const present = try idsInBuffer(s, v);
         for (v.entries) |e| {
             const abs = try std.fs.path.join(s.arena, &.{ v.dir, e.path });
-            try map.put(s.arena, e.id, .{ .path = abs, .kind = e.kind });
+            // Sem conseguir ler o buffer de origem fica copia: e o desfecho
+            // conservador, o unico que nao tira nada do lugar.
+            const cut = if (present) |p| !p.contains(e.id) else false;
+            try foreign.put(s.arena, e.id, .{ .path = abs, .kind = e.kind, .cut = cut });
+        }
+        const p = present orelse continue;
+        var pit = p.keyIterator();
+        while (pit.next()) |id| {
+            const path = mine.get(id.*) orelse continue;
+            try claims.append(s.arena, .{ .id = id.*, .path = path, .dir = v.dir });
         }
     }
-    return map;
+    return .{ .foreign = foreign, .claims = try claims.toOwnedSlice(s.arena) };
 }
 
-fn planOptions(s: *Session) !plan.Options {
-    // No arena, nao na pilha: `plan.build` recebe o mapa por ponteiro e o
-    // plano sobrevive a esta funcao.
-    const foreign = try s.arena.create(plan.ForeignMap);
-    foreign.* = try foreignIds(s);
-    return .{
+/// Monta o plano deste buffer depois de ouvir os outros. Uma linha apagada aqui
+/// e colada la nao vira remocao: o movimento inteiro pertence ao buffer de
+/// destino, que e onde ele esta visivel, e e o `:w` de la que o conclui.
+/// Aplicar a remocao aqui mandaria o arquivo para a area de sessao e o outro
+/// `:w` nao teria mais de onde mover.
+fn buildPlan(s: *Session, document: plan.Document) !plan.Result {
+    const cross = try crossBuffers(s);
+
+    var kept: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (document.edits) |e| try kept.put(s.arena, e.id, {});
+    var problems: std.ArrayList(plan.Problem) = .empty;
+    for (cross.claims) |c| {
+        if (kept.contains(c.id)) continue;
+        try problems.append(s.arena, .{
+            .claimed_elsewhere = .{ .id = c.id, .path = c.path, .dir = c.dir },
+        });
+    }
+    if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(s.arena) };
+
+    return plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
         .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
-        .foreign = foreign,
-    };
+        .foreign = cross.foreign,
+    });
 }
 
 fn loadListing(s: *Session) !void {
@@ -1233,6 +1345,11 @@ fn writeViewSidecars(s: *Session, location: []const u8) !void {
     const hdr_joined = try std.mem.join(s.arena, "\n", s.view.header_lines);
     const hdr_path = try std.fmt.allocPrint(s.arena, "{s}.header", .{s.view.buffer_path});
     try cwd.writeFile(s.io, .{ .sub_path = hdr_path, .data = hdr_joined });
+    // O aviso tambem e por buffer: com duas janelas, o arquivo global de aviso
+    // e o de quem pediu por ultimo, e o recado de uma apareceria na barra da
+    // outra.
+    const note_path = try std.fmt.allocPrint(s.arena, "{s}.notice", .{s.view.buffer_path});
+    try cwd.writeFile(s.io, .{ .sub_path = note_path, .data = s.notice orelse "" });
 }
 
 fn editorLabel(editor: editor_mod.Editor) []const u8 {
@@ -1693,13 +1810,32 @@ fn resolveCopySuffixesOnDisk(s: *Session, p: plan.Plan) !CopyResolve {
         try occupied.put(s.arena, m.to, {});
         try freed.put(s.arena, m.from, {});
     }
-    for (p.removes) |rm| try freed.put(s.arena, rm.path, {});
+    // So as remocoes antecipadas liberam nome a tempo: elas rodam na fase 2,
+    // antes das copias. As demais sao a ultima fase, depois da copia, entao o
+    // nome delas ainda esta ocupado na hora de copiar. O `plan` ja antecipa a
+    // remocao que libera um destino de copia; contar as outras aqui daria o
+    // nome por livre e a aplicacao estouraria em `PathAlreadyExists`.
+    for (p.removes[0..p.removes_before]) |rm| try freed.put(s.arena, rm.path, {});
     for (p.creates) |c| try occupied.put(s.arena, c.path, {});
+
+    // `rename` nao atravessa ponto de montagem, entao um movimento cuja origem
+    // esta em outro filesystem vira copia + remocao. Quem sabe disso e esta
+    // camada, que conhece o disco; o plano so carrega o veredito.
+    const base_device = fsops.deviceOf(s.io, s.view.dir);
 
     var problems: std.ArrayList(plan.Problem) = .empty;
     var copies = try s.arena.alloc(plan.Copy, p.copies.len);
     for (p.copies, 0..) |c, i| {
         copies[i] = c;
+        if (c.cut) {
+            if (c.from_abs) |abs| {
+                const dir = std.fs.path.dirname(abs) orelse "/";
+                const src_device = fsops.deviceOf(s.io, dir);
+                // Sem conseguir medir, assume o caminho que sempre funciona.
+                copies[i].cross_device = base_device == null or src_device == null or
+                    src_device.? != base_device.?;
+            }
+        }
         // Origem em outra pasta: o `plan` e puro e nao conhece caminhos
         // absolutos, entao a checagem de "copiar para dentro de si mesmo"
         // acontece aqui, onde os dois lados sao conhecidos. Sem ela a
@@ -1713,6 +1849,18 @@ fn resolveCopySuffixesOnDisk(s: *Session, p: plan.Plan) !CopyResolve {
         }
         var to = c.to;
         if (busyCopyDest(s, base_dir, to, &occupied, &freed)) {
+            if (c.cut) {
+                // Movimento nao inventa nome. O sufixo `-01` e o gesto de
+                // duplicar, que so faz sentido quando a origem fica onde esta;
+                // aqui ela sai do lugar, e escolher por conta propria entre os
+                // dois arquivos perderia um deles em silencio.
+                try problems.append(s.arena, .{ .move_dest_occupied = .{
+                    .id = c.id,
+                    .from = c.from_abs orelse c.from,
+                    .to = to,
+                } });
+                continue;
+            }
             var n: u32 = 1;
             var resolved: ?[]const u8 = null;
             while (n < 100) : (n += 1) {
@@ -1811,7 +1959,10 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
         return false;
     }
 
-    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr);
+    const sources = try moveSources(s, effective);
+    defer closeSources(s, sources);
+
+    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, area_ptr, sources);
     if (outcome.failure) |failure| {
         // Em falha, o relatorio precisa permanecer visivel antes de voltar ao
         // editor para que o estado e a recuperacao manual fiquem claros.
@@ -1822,7 +1973,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     }
 
     if (!outcome.applied.isEmpty()) {
-        s.undo = .{
+        s.view.undo = .{
             .base = s.view.dir,
             .area = if (area_ptr) |a| a.name else null,
             .applied = outcome.applied,
@@ -1855,8 +2006,18 @@ fn appliedNotice(s: *Session, applied: fsops.Applied) ![]const u8 {
     if (created_links > 0) {
         try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} link(s)", .{created_links}));
     }
-    if (applied.copied.len > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} copiado(s)", .{applied.copied.len}));
+    // Copia e movimento vindo de outra pasta andam na mesma lista, mas o que o
+    // usuario precisa ler e se a origem ficou onde estava.
+    var moved_in: usize = 0;
+    var copied: usize = 0;
+    for (applied.copied) |c| {
+        if (c.cut) moved_in += 1 else copied += 1;
+    }
+    if (copied > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} copiado(s)", .{copied}));
+    }
+    if (moved_in > 0) {
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} movido(s) para ca", .{moved_in}));
     }
     if (applied.renames.len > 0) {
         try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} renomeado(s)", .{applied.renames.len}));
@@ -1891,6 +2052,37 @@ fn renderDiff(s: *Session, base_dir: Io.Dir, p: plan.Plan, missing: []const []co
     try writeDiff(s, s.out, base_dir, p, missing);
 }
 
+/// Uma das duas metades de `copies`: as que tiram a origem do lugar (`cut`) ou
+/// as que a deixam. Nada e impresso quando a metade esta vazia.
+fn writeCopySection(s: *Session, w: *Io.Writer, copies: []const plan.Copy, cut: bool, title: []const u8) !void {
+    var count: usize = 0;
+    var width: usize = 0;
+    for (copies) |c| {
+        if (c.cut != cut) continue;
+        count += 1;
+        width = @max(width, copyFrom(s, c).len);
+    }
+    if (count == 0) return;
+    width = @min(width, 48);
+    try w.print("{s} ({d}):\n", .{ title, count });
+    for (copies) |c| {
+        if (c.cut != cut) continue;
+        const from = copyFrom(s, c);
+        try w.print("  {s}", .{from});
+        try w.splatByteAll(' ', width -| from.len);
+        try w.print("  ->  {s}{s}\n", .{ c.to, if (c.kind == .dir) "/" else "" });
+    }
+    try w.writeAll("\n");
+}
+
+/// Origem como o usuario a le: relativa quando e daqui, absoluta com o home
+/// abreviado quando vem de outra pasta -- que e a informacao que importa numa
+/// operacao entre janelas.
+fn copyFrom(s: *Session, c: plan.Copy) []const u8 {
+    const abs = c.from_abs orelse return c.from;
+    return abbreviateHome(s.arena, s.environ, abs);
+}
+
 fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing: []const []const u8) !void {
     try w.writeAll("\n");
 
@@ -1916,18 +2108,11 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
         try w.writeAll("\n");
     }
 
-    if (p.copies.len > 0) {
-        try w.print("Copy ({d}):\n", .{p.copies.len});
-        var width: usize = 0;
-        for (p.copies) |c| width = @max(width, c.from.len);
-        width = @min(width, 48);
-        for (p.copies) |c| {
-            try w.print("  {s}", .{c.from});
-            try w.splatByteAll(' ', width -| c.from.len);
-            try w.print("  ->  {s}{s}\n", .{ c.to, if (c.kind == .dir) "/" else "" });
-        }
-        try w.writeAll("\n");
-    }
+    // Movimento vindo de outra pasta e copia sao secoes separadas: o que muda
+    // entre eles e se a origem continua existindo, e essa e justamente a
+    // pergunta que o usuario faz ao olhar o preview.
+    try writeCopySection(s, w, p.copies, true, "Move from another folder");
+    try writeCopySection(s, w, p.copies, false, "Copy");
 
     if (missing.len > 0) {
         try w.print("Create parent directory ({d}):\n", .{missing.len});
@@ -2023,20 +2208,50 @@ fn reportProblems(s: *Session, problems: []const plan.Problem) !void {
 /// Area de sessao do diretorio em foco. Cada View tem a sua, aberta uma vez:
 /// nao ha mais reabertura a cada navegacao, porque navegar troca de View.
 fn ensureArea(s: *Session) !*fsops.Area {
-    if (s.view.area != null) return &s.view.area.?;
+    return ensureAreaFor(s, s.view);
+}
 
-    var base_dir = try openBase(s);
-    defer base_dir.close(s.io);
+/// A mesma area, para um View qualquer: um movimento entre filesystems remove
+/// a origem, e a origem mora na pasta de outro buffer.
+fn ensureAreaFor(s: *Session, v: *View) !*fsops.Area {
+    if (v.area != null) return &v.area.?;
+
+    var dir = try Io.Dir.cwd().openDir(s.io, v.dir, .{ .iterate = true });
+    defer dir.close(s.io);
 
     const name = try fsops.areaName(s.arena, s.pid);
-    s.view.area = try fsops.openArea(s.arena, s.io, base_dir, name);
-    s.view.area_name = name;
-    try s.areas.append(s.arena, .{ .base = s.view.dir, .name = name });
-    return &s.view.area.?;
+    v.area = try fsops.openArea(s.arena, s.io, dir, name);
+    v.area_name = name;
+    try s.areas.append(s.arena, .{ .base = v.dir, .name = name });
+    return &v.area.?;
+}
+
+/// Pastas de origem dos movimentos entre filesystems, com a area de sessao de
+/// cada uma aberta. As areas entram no registro da sessao como as demais, para
+/// que a saida limpa as apague -- senao o lst-f deixaria um `.lst-f-<pid>/` na
+/// pasta alheia. Quem chama fecha os descritores.
+fn moveSources(s: *Session, p: plan.Plan) ![]fsops.Source {
+    var out: std.ArrayList(fsops.Source) = .empty;
+    var seen: std.StringHashMapUnmanaged(void) = .empty;
+    for (p.copies) |c| {
+        if (!c.cut or !c.cross_device) continue;
+        const abs = c.from_abs orelse continue;
+        const dir = std.fs.path.dirname(abs) orelse continue;
+        if ((try seen.getOrPut(s.arena, dir)).found_existing) continue;
+        const v = s.views.get(dir) orelse continue;
+        const area = try ensureAreaFor(s, v);
+        const handle = try Io.Dir.cwd().openDir(s.io, dir, .{ .iterate = true });
+        try out.append(s.arena, .{ .dir = dir, .handle = handle, .area = area });
+    }
+    return out.toOwnedSlice(s.arena);
+}
+
+fn closeSources(s: *Session, sources: []fsops.Source) void {
+    for (sources) |*src| src.handle.close(s.io);
 }
 
 fn undoLast(s: *Session) !void {
-    const u = s.undo orelse {
+    const u = s.view.undo orelse {
         s.notice = "nada para desfazer nesta sessao";
         return;
     };
@@ -2055,7 +2270,10 @@ fn undoLast(s: *Session) !void {
 
     const errors = try fsops.revert(s.arena, s.io, base_dir, u.applied, area_dir);
     if (errors.len == 0) {
-        s.undo = null;
+        // O movimento vindo de outra pasta voltou para la: aquele buffer
+        // tambem mudou, e nao e o que esta em foco.
+        _ = try refreshMovedSources(s, u.applied.copied, "devolvido pelo :undo");
+        s.view.undo = null;
         s.notice = "ultima operacao desfeita";
     } else {
         try s.out.writeAll("\nO undo nao conseguiu desfazer tudo:\n");

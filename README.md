@@ -62,6 +62,8 @@ que você acabou de entrar por SSH.
 | `Ctrl+S`                              | abre esta pasta numa segunda janela (`:vsplit`) |
 | `Tab`                                 | percorre as janelas abertas                |
 | `yy` + `p`                            | duplica a linha: o ID repetido é pedido de cópia |
+| `yy` aqui + `p` na outra janela       | copia para a pasta da outra janela          |
+| `dd` aqui + `p` na outra janela       | move para a pasta da outra janela           |
 | `nome -> alvo` em linha nova          | cria symlink apontando para o alvo         |
 | `nome => alvo` em linha nova          | cria hardlink apontando para o alvo        |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
@@ -158,6 +160,39 @@ Os IDs são únicos na sessão inteira, não por buffer. Uma linha yankada numa
 janela e colada na outra não casa por acaso com uma entrada de outra pasta: o
 plano recusa com `ID não pertence à seleção` em vez de copiar o arquivo errado.
 
+### Copiar e mover entre as duas
+
+O gesto é o do Vim, e a diferença entre copiar e mover é a mesma do Vim:
+
+| Na janela de origem | Na janela de destino | Resultado |
+| ------------------- | -------------------- | --------- |
+| `yy` (a linha fica) | `p`                  | **cópia** — a origem continua onde está |
+| `dd` (a linha some) | `p`                  | **movimento** — a origem sai da pasta dela |
+
+Quem decide não é uma tecla especial nem um registro de recorte escondido: é o
+estado dos buffers. No `:w`, o `lst-f` olha o texto de todas as janelas abertas;
+se a linha ainda está na origem, é cópia, e se sumiu de lá, é movimento. O
+preview do `:w` diz qual dos dois, com o caminho absoluto da origem:
+
+```
+Move from another folder (1):
+  ~/projetos/a.txt  ->  a.txt
+```
+
+O destino é sempre a pasta da janela onde o `p` aconteceu — a que está na
+moldura, visível na tela. Detalhes que valem saber:
+
+- **Colisão de nome** é resolvida de formas diferentes nos dois casos: uma cópia
+  ganha sufixo `-01` a `-99` (duplicar é o gesto), e um movimento é recusado,
+  porque escolher entre os dois arquivos perderia um deles. Para substituir o
+  arquivo do destino, apague a linha dele também: `dd` nos dois lados e `p`.
+- **Salve a janela onde você colou.** Salvar a janela de origem antes disso é
+  recusado com o recado de qual janela concluir — o movimento pertence ao buffer
+  onde o destino está visível.
+- **Mesmo filesystem**: o movimento é um `rename`, atômico. **Filesystems
+  diferentes**: vira cópia + remoção, e a origem vai para a área de sessão da
+  pasta dela, não para o nada — `:undo` devolve nos dois casos.
+
 Fechar uma janela é o de sempre no Vim (`:close`, `Ctrl+W c`).
 
 ## Criação
@@ -175,7 +210,10 @@ Para **copiar**, o gesto é o do Vim: `yy` na linha (ou visual + `y` em várias)
 `p` para colar. A linha colada repete o ID da original, e é o ID repetido que o
 plano lê como cópia — a origem fica, o destino materializa uma cópia. Nada toca
 o disco até o `:w`, que mostra a confirmação de sempre; colisão no destino ganha
-sufixo `-01` a `-99`, e `:undo` remove a cópia materializada.
+sufixo `-01` a `-99`, e `:undo` remove a cópia materializada. O destino é sempre
+a pasta daquele buffer: `../` no caminho é recusado, como em qualquer edição de
+nome. Para copiar para outra pasta, use a outra janela (ver *Duas pastas lado a
+lado*).
 
 As criações acontecem depois das renomeações, então um nome
 liberado no mesmo `:w` pode ser reocupado — arquivar `log.txt` como `log.1.txt`
