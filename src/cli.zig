@@ -631,9 +631,7 @@ fn loop(s: *Session) !void {
         }
         const document = parsed.ok;
 
-        const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
-            .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
-        });
+        const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, try planOptions(s));
         switch (built) {
             .invalid => |problems| {
                 try reportProblems(s, problems);
@@ -954,9 +952,7 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
         return "diretiva requer a volta completa da sessao";
     }
 
-    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
-        .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
-    });
+    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, try planOptions(s));
     if (built == .invalid) return try describeProblems(s, built.invalid);
 
     const collisions = try checkCreatesOnDisk(s, built.ok);
@@ -990,9 +986,7 @@ fn previewProposedBuffer(s: *Session) !?[]const u8 {
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
 
-    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, .{
-        .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
-    });
+    const built = try plan.build(s.arena, s.view.entries, document.edits, document.creates, try planOptions(s));
     if (built == .invalid) return try describeProblems(s, built.invalid);
 
     const collisions = try checkCreatesOnDisk(s, built.ok);
@@ -1111,7 +1105,7 @@ const Collector = struct {
         var display: std.Io.Writer.Allocating = .init(c.session.arena);
         try explorer.writeTableDetails(&display.writer, e);
         try c.entries.append(c.session.arena, .{
-            .id = index,
+            .id = c.session.view.id_base + index,
             .path = e.path,
             .kind = e.kind,
             .display = display.written(),
@@ -1122,6 +1116,36 @@ const Collector = struct {
         return .{ .ctx = c, .func = emit };
     }
 };
+
+/// IDs dos outros buffers abertos, com a origem absoluta de cada um. E o que
+/// permite colar de uma janela na outra: o numero da linha yankada nao pertence
+/// a este buffer, mas a sessao sabe de onde ele veio. Sem isto o plano so pode
+/// recusa-lo como adulteracao -- e com IDs unicos por buffer, antes da sessao
+/// passar a numera-los globalmente, ele casaria em silencio com outra entrada.
+fn foreignIds(s: *Session) !plan.ForeignMap {
+    var map: plan.ForeignMap = .empty;
+    var it = s.views.iterator();
+    while (it.next()) |entry| {
+        const v = entry.value_ptr.*;
+        if (v == s.view) continue;
+        for (v.entries) |e| {
+            const abs = try std.fs.path.join(s.arena, &.{ v.dir, e.path });
+            try map.put(s.arena, e.id, .{ .path = abs, .kind = e.kind });
+        }
+    }
+    return map;
+}
+
+fn planOptions(s: *Session) !plan.Options {
+    // No arena, nao na pilha: `plan.build` recebe o mapa por ponteiro e o
+    // plano sobrevive a esta funcao.
+    const foreign = try s.arena.create(plan.ForeignMap);
+    foreign.* = try foreignIds(s);
+    return .{
+        .temp_prefix = try std.fmt.allocPrint(s.arena, ".lst-f-tmp-{d}-", .{s.pid}),
+        .foreign = foreign,
+    };
+}
 
 fn loadListing(s: *Session) !void {
     var collector: Collector = .{ .session = s };
@@ -1136,6 +1160,8 @@ fn loadListing(s: *Session) !void {
 /// Garante que os IDs deste View nao colidem com os de nenhum outro buffer da
 /// sessao. A reserva existente e reaproveitada enquanto couber, para que um
 /// refresh nao troque os IDs debaixo de um buffer que o usuario esta editando.
+/// `high` e o maior indice que a enumeracao consumiu, contando as entradas
+/// nao-listaveis, que tambem gastam numero.
 fn reserveIds(s: *Session, high: u32) void {
     const v = s.view;
     const need = high + 2;
@@ -1541,7 +1567,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
         var display: std.Io.Writer.Allocating = .init(s.arena);
         try explorer.writeTableDetails(&display.writer, e);
         try entries.append(s.arena, .{
-            .id = index,
+            .id = s.view.id_base + index,
             .path = e.path,
             .kind = e.kind,
             .display = display.written(),
@@ -1674,6 +1700,17 @@ fn resolveCopySuffixesOnDisk(s: *Session, p: plan.Plan) !CopyResolve {
     var copies = try s.arena.alloc(plan.Copy, p.copies.len);
     for (p.copies, 0..) |c, i| {
         copies[i] = c;
+        // Origem em outra pasta: o `plan` e puro e nao conhece caminhos
+        // absolutos, entao a checagem de "copiar para dentro de si mesmo"
+        // acontece aqui, onde os dois lados sao conhecidos. Sem ela a
+        // aplicacao recursiona ate estourar PATH_MAX.
+        if (c.from_abs) |abs_from| {
+            const abs_to = try std.fs.path.join(s.arena, &.{ s.view.dir, c.to });
+            if (plan.isUnder(abs_from, abs_to)) {
+                try problems.append(s.arena, .{ .copy_into_self = .{ .id = c.id, .from = abs_from, .to = abs_to } });
+                continue;
+            }
+        }
         var to = c.to;
         if (busyCopyDest(s, base_dir, to, &occupied, &freed)) {
             var n: u32 = 1;

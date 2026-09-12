@@ -289,22 +289,26 @@ fn removeIntoArea(
     return null;
 }
 
-/// Copia `c.from` para `c.to` dentro do diretorio-base. Arquivo e copia de
-/// bytes (`replace=false` recusa sobrescrever); diretorio e recursivo.
+/// Copia para `c.to` dentro do diretorio-base. Arquivo e copia de bytes
+/// (`replace=false` recusa sobrescrever); diretorio e recursivo. A origem e o
+/// proprio base, exceto quando `from_abs` esta presente: linha colada de outro
+/// buffer de diretorio, cuja origem vive fora daqui.
 fn copyEntry(arena: Allocator, io: Io, base: Io.Dir, c: plan.Copy) !void {
+    const src = if (c.from_abs != null) Io.Dir.cwd() else base;
+    const from = c.from_abs orelse c.from;
     switch (c.kind) {
         .dir => {
             try base.createDir(io, c.to, .default_dir);
-            try copyDirRecursive(arena, io, base, c.from, c.to);
+            try copyDirRecursive(arena, io, src, base, from, c.to);
         },
         else => {
-            try base.copyFile(c.from, base, c.to, io, .{ .replace = false });
+            try src.copyFile(from, base, c.to, io, .{ .replace = false });
         },
     }
 }
 
-fn copyDirRecursive(arena: Allocator, io: Io, base: Io.Dir, from: []const u8, to: []const u8) !void {
-    var src = try base.openDir(io, from, .{ .iterate = true });
+fn copyDirRecursive(arena: Allocator, io: Io, src_root: Io.Dir, base: Io.Dir, from: []const u8, to: []const u8) !void {
+    var src = try src_root.openDir(io, from, .{ .iterate = true });
     defer src.close(io);
 
     var it = src.iterate();
@@ -314,15 +318,15 @@ fn copyDirRecursive(arena: Allocator, io: Io, base: Io.Dir, from: []const u8, to
         switch (e.kind) {
             .directory => {
                 try base.createDir(io, child_to, .default_dir);
-                try copyDirRecursive(arena, io, base, child_from, child_to);
+                try copyDirRecursive(arena, io, src_root, base, child_from, child_to);
             },
             .sym_link => {
                 var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-                const n = try base.readLink(io, child_from, &buf);
+                const n = try src_root.readLink(io, child_from, &buf);
                 try base.symLink(io, buf[0..n], child_to, .{});
             },
             else => {
-                try base.copyFile(child_from, base, child_to, io, .{ .replace = false });
+                try src_root.copyFile(child_from, base, child_to, io, .{ .replace = false });
             },
         }
     }
