@@ -702,6 +702,20 @@ pub const State = struct {
             \\  return l:approved
             \\endfunction
             \\
+            \\" Recusar o `:w` sem sujar a tela. O que aborta um BufWritePre e a
+            \\" excecao, mas `throw` sai como E605 mais o traceback do autocmd em
+            \\" vermelho e um `Press ENTER` -- tres linhas de ruido tapando o aviso
+            \\" que a barra acabou de receber, para um desfecho normal e previsto.
+            \\" Medido: interrupt() aborta igual (arquivo intacto, BufWritePost nao
+            \\" roda) e nao imprime nada. E de Vim 8.0.0140, abaixo do piso, mas vai
+            \\" por feature-detect como o resto; o throw fica de reserva.
+            \\function! s:lstf_abort_save() abort
+            \\  if exists('*interrupt')
+            \\    call interrupt()
+            \\  endif
+            \\  throw 'lst-f: operation cancelled'
+            \\endfunction
+            \\
             \\function! s:lstf_prepare_save() abort
             \\  call delete($LST_F_STATE . '/approved')
             \\  let l:is_quitting = search('^:quit', 'nw') > 0
@@ -718,7 +732,7 @@ pub const State = struct {
             \\          if l:is_quitting
             \\            return
             \\          endif
-            \\          throw 'lst-f: operation cancelled'
+            \\          call s:lstf_abort_save()
             \\        endif
             \\      endif
             \\    elseif l:perr == 2
@@ -727,7 +741,7 @@ pub const State = struct {
             \\        if l:is_quitting
             \\          return
             \\        endif
-            \\        throw 'lst-f: operation cancelled'
+            \\        call s:lstf_abort_save()
             \\      endif
             \\    else
             \\      let b:lstf_notice = substitute(l:out, "\n\\+$", '', '')
@@ -735,7 +749,7 @@ pub const State = struct {
             \\      if l:is_quitting
             \\        return
             \\      endif
-            \\      throw 'lst-f: invalid operation'
+            \\      call s:lstf_abort_save()
             \\    endif
             \\    call writefile(['approved'], $LST_F_STATE . '/approved')
             \\  endif
