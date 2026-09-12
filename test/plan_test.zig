@@ -802,32 +802,6 @@ test "criacao de symlink e hardlink por sintaxe no buffer" {
     try testing.expectEqualStrings("a.txt", p.creates[0].target.?);
 }
 
-test "criacao de symlink e hardlink por diretivas :ln, :symlink, :hardlink" {
-    var f = Fixture.init();
-    defer f.deinit();
-
-    const text =
-        \\/0001  a.txt
-        \\:ln /var/log/app.log link-log
-        \\:symlink /tmp/dados.csv
-        \\:hardlink a.txt a-hard.txt
-    ;
-    const doc = (try parseBuffer(f.a(), text, &.{})).ok;
-    try testing.expectEqual(@as(usize, 3), doc.creates.len);
-
-    try testing.expectEqualStrings("link-log", doc.creates[0].path);
-    try testing.expectEqualStrings("/var/log/app.log", doc.creates[0].target.?);
-    try testing.expectEqual(Kind.symlink, doc.creates[0].kind);
-
-    try testing.expectEqualStrings("dados.csv", doc.creates[1].path);
-    try testing.expectEqualStrings("/tmp/dados.csv", doc.creates[1].target.?);
-    try testing.expectEqual(Kind.symlink, doc.creates[1].kind);
-
-    try testing.expectEqualStrings("a-hard.txt", doc.creates[2].path);
-    try testing.expectEqualStrings("a.txt", doc.creates[2].target.?);
-    try testing.expectEqual(Kind.hardlink, doc.creates[2].kind);
-}
-
 test "link sem destino reporta erro" {
     var f = Fixture.init();
     defer f.deinit();

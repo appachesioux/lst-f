@@ -158,13 +158,14 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  :find [termo]      busca fuzzy na arvore com o fzf; o que voce marcar
         \\                     vira o conteudo do buffer
         \\  :sh [dir]          abre terminal / shell no diretorio (:shell, :terminal)
-        \\  :ln <alvo> [nome]  cria symlink para o alvo (:link, :symlink, :hardlink)
         \\  :undo              desfaz a ultima operacao aplicada nesta sessao
         \\  :quit              sai (salvar sem mudancas tambem sai; :cq aborta)
         \\  .                  alterna exibicao de arquivos ocultos
         \\  F4                 abre terminal / shell no diretorio atual
         \\  Enter              abre o arquivo da linha ou entra no diretorio
         \\  nome -> alvo       em linha nova cria symlink (nome => alvo cria hardlink)
+        \\  yl                 copia a linha de link pronta da entrada sob o cursor;
+        \\                     p cola onde o link deve nascer
         \\
         \\no buscador:
         \\  Tab                marca / desmarca      Enter  aceita a marcacao

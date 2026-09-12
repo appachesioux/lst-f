@@ -68,10 +68,9 @@ que você acabou de entrar por SSH.
 | `nome => alvo` em linha nova          | cria hardlink apontando para o alvo        |
 | `:cd <dir>`                          | entra no diretório (`..` sobe)             |
 | `:sh [dir]`                          | abre terminal / shell no diretório (`:shell`, `:terminal`) |
-| `:ln <alvo> [nome]`                  | cria symlink para o alvo (`:link`, `:symlink`) |
-| `:hardlink <alvo> [nome]`            | cria hardlink para o alvo                  |
 | `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor (:copy) |
 | `:abspath` / `:realpath`             | copia o caminho absoluto do arquivo sob o cursor |
+| `yl` (também em modo visual)          | copia a linha de link pronta; `p` cola onde criar |
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
 | `:trash`                             | abre a lixeira (remoção lá dentro é definitiva) |
 | `:theme [light|dark]`                | alterna ou define tema claro/escuro (`:light`, `:dark`) |

@@ -197,7 +197,6 @@ pub const State = struct {
             \\    \ '    :trash         Abre a lixeira (remocao la dentro e definitiva)',
             \\    \ '    :find [termo]  Busca recursiva fuzzy na arvore com fzf',
             \\    \ '    :sh [dir]      Abre terminal / shell no diretorio (:shell, :terminal)',
-            \\    \ '    :ln <alvo> [n] Cria symlink para o alvo (:link, :symlink, :hardlink)',
             \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
             \\    \ '    :theme [modo]  Alterna ou define tema: light ou dark (:light, :dark)',
             \\    \ '    :back/:forward Andam pelos diretorios visitados na sessao',
@@ -214,6 +213,8 @@ pub const State = struct {
             \\    \ '    r ou Ctrl+R    Recarrega (refresh) a lista atual',
             \\    \ '    yr ou yp       Copia caminho relativo para o clipboard',
             \\    \ '    ya             Copia caminho absoluto para o clipboard',
+            \\    \ '    yl             Copia a linha de link pronta; p cola onde criar',
+            \\    \ '                   (-> symlink, => hardlink; vale em modo visual)',
             \\    \ '    < e >          Voltam e avancam nos diretorios visitados',
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
@@ -316,12 +317,16 @@ pub const State = struct {
             \\  return l:body
             \\endfunction
             \\
-            \\function! s:lstf_set_clipboard(text) abort
-            \\  let @" = a:text
+            \\" `linewise` muda o tipo do registro, nao o texto: a linha de link precisa
+            \\" colar como linha (`p` do Vim), enquanto um caminho copiado para outro
+            \\" programa continua sendo texto no meio da linha.
+            \\function! s:lstf_set_clipboard(text, ...) abort
+            \\  let l:type = a:0 > 0 && a:1 ? 'V' : 'v'
+            \\  call setreg('"', a:text, l:type)
             \\  " Vim sem +clipboard nao tem os registros @+ e @*: E354.
             \\  if has('clipboard')
-            \\    let @+ = a:text
-            \\    let @* = a:text
+            \\    call setreg('+', a:text, l:type)
+            \\    call setreg('*', a:text, l:type)
             \\  endif
             \\  if executable('wl-copy') && (!empty($WAYLAND_DISPLAY) || !empty($WAYLAND_SOCKET))
             \\    call system('wl-copy', a:text)
@@ -352,6 +357,42 @@ pub const State = struct {
             \\  endif
             \\  call s:lstf_set_clipboard(l:path)
             \\  let b:lstf_notice = 'caminho copiado: ' . l:path
+            \\  redrawstatus!
+            \\endfunction
+            \\
+            \\" A linha de criacao pronta, para o `p` nativo colar onde o link deve
+            \\" nascer -- nesta pasta ou na outra janela. O alvo vai absoluto porque a
+            \\" linha viaja para outro diretorio; trocar `->` por `=>` faz hardlink, que
+            \\" ja e a sintaxe. Sai daqui uma linha de texto: nada toca o disco antes do
+            \\" `:w`, e o nome continua editavel.
+            \\function! s:lstf_link_line(entry, dir) abort
+            \\  return fnamemodify(a:entry, ':t') . ' -> ' . simplify(a:dir . '/' . a:entry)
+            \\endfunction
+            \\
+            \\function! LstfYankLink() abort
+            \\  let l:entry = s:lstf_entry_path()
+            \\  if empty(l:entry)
+            \\    return
+            \\  endif
+            \\  let l:line = s:lstf_link_line(l:entry, s:lstf_dir())
+            \\  call s:lstf_set_clipboard(l:line, 1)
+            \\  let b:lstf_notice = 'linha de link copiada: ' . l:line
+            \\  redrawstatus!
+            \\endfunction
+            \\
+            \\function! s:lstf_yank_link_visual() range abort
+            \\  let l:lines = []
+            \\  let l:dir = s:lstf_dir()
+            \\  for l:lnum in range(a:firstline, a:lastline)
+            \\    let l:entry = s:lstf_entry_path(getline(l:lnum))
+            \\    if empty(l:entry) | continue | endif
+            \\    call add(l:lines, s:lstf_link_line(l:entry, l:dir))
+            \\  endfor
+            \\  if empty(l:lines) | return | endif
+            \\  call s:lstf_set_clipboard(join(l:lines, "\n"), 1)
+            \\  let b:lstf_notice = len(l:lines) == 1
+            \\    \ ? ('linha de link copiada: ' . l:lines[0])
+            \\    \ : (len(l:lines) . ' linhas de link copiadas')
             \\  redrawstatus!
             \\endfunction
             \\
@@ -1810,10 +1851,6 @@ pub const State = struct {
             \\      return "\x15Find" . l:cmd[4:] . "\r"
             \\    elseif l:cmd =~# '^\%(sh\|shell\|terminal\|term\)\%(\s.*\|\)$'
             \\      return "\x15Sh" . l:cmd[match(l:cmd, '\s\|\$')..] . "\r"
-            \\    elseif l:cmd =~# '^\%(ln\|link\|symlink\)\%(\s.*\|\)$'
-            \\      return "\x15Ln" . l:cmd[match(l:cmd, '\s\|\$')..] . "\r"
-            \\    elseif l:cmd =~# '^hardlink\%(\s.*\|\)$'
-            \\      return "\x15Hardlink" . l:cmd[8:] . "\r"
             \\    elseif l:cmd =~# '^\%(yank\|copy\|relpath\)\%(\s.*\|\)$'
             \\      return "\x15Yank\r"
             \\    elseif l:cmd =~# '^\%(abspath\|realpath\)\%(\s.*\|\)$'
@@ -1829,15 +1866,6 @@ pub const State = struct {
             \\  return "\r"
             \\endfunction
             \\cnoremap <expr> <CR> <SID>lstf_cmd_cr()
-            \\
-            \\function! s:lstf_cmd_ln(args) abort
-            \\  if empty(a:args) | return | endif
-            \\  call s:lstf_write_directive(':ln ' . a:args)
-            \\endfunction
-            \\function! s:lstf_cmd_hardlink(args) abort
-            \\  if empty(a:args) | return | endif
-            \\  call s:lstf_write_directive(':hardlink ' . a:args)
-            \\endfunction
             \\
             \\function! s:lstf_setup_buffer() abort
             \\  call s:lstf_buffer_autocmds()
@@ -1865,10 +1893,15 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> yp :call LstfYank(0)<CR>
             \\  nnoremap <buffer> <silent> ya :call LstfYank(1)<CR>
             \\  nnoremap <buffer> <silent> yA :call LstfYank(1)<CR>
-            \\  xnoremap <buffer> <silent> yr :<C-u>call <SID>lstf_yank_visual(0)<CR>
-            \\  xnoremap <buffer> <silent> yp :<C-u>call <SID>lstf_yank_visual(0)<CR>
-            \\  xnoremap <buffer> <silent> ya :<C-u>call <SID>lstf_yank_visual(1)<CR>
-            \\  xnoremap <buffer> <silent> yA :<C-u>call <SID>lstf_yank_visual(1)<CR>
+            \\  nnoremap <buffer> <silent> yl :call LstfYankLink()<CR>
+            \\  " Sem `<C-u>`: e o intervalo `'<,'>` que o Vim insere ao abrir o cmdline no
+            \\  " modo visual que alimenta o `a:firstline`/`a:lastline` das funcoes
+            \\  " `range`. Limpando o cmdline, a selecao inteira virava a linha do cursor.
+            \\  xnoremap <buffer> <silent> yr :call <SID>lstf_yank_visual(0)<CR>
+            \\  xnoremap <buffer> <silent> yp :call <SID>lstf_yank_visual(0)<CR>
+            \\  xnoremap <buffer> <silent> ya :call <SID>lstf_yank_visual(1)<CR>
+            \\  xnoremap <buffer> <silent> yA :call <SID>lstf_yank_visual(1)<CR>
+            \\  xnoremap <buffer> <silent> yl :call <SID>lstf_yank_link_visual()<CR>
             \\  nnoremap <buffer> <silent> q :call LstfQuit()<CR>
             \\  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\  command! -buffer -nargs=? -complete=dir Cd call LstfCd(<q-args>)
@@ -1909,14 +1942,6 @@ pub const State = struct {
             \\  cnoreabbrev <expr> <buffer> relpath getcmdtype() ==# ':' && getcmdline() =~# '^relpath\%(\s.*\|\)$' ? 'Yank' : 'relpath'
             \\  cnoreabbrev <expr> <buffer> abspath getcmdtype() ==# ':' && getcmdline() =~# '^abspath\%(\s.*\|\)$' ? 'YankAbs' : 'abspath'
             \\  cnoreabbrev <expr> <buffer> realpath getcmdtype() ==# ':' && getcmdline() =~# '^realpath\%(\s.*\|\)$' ? 'YankAbs' : 'realpath'
-            \\  command! -buffer -nargs=+ Ln call s:lstf_cmd_ln(<q-args>)
-            \\  command! -buffer -nargs=+ Link call s:lstf_cmd_ln(<q-args>)
-            \\  command! -buffer -nargs=+ Symlink call s:lstf_cmd_ln(<q-args>)
-            \\  command! -buffer -nargs=+ Hardlink call s:lstf_cmd_hardlink(<q-args>)
-            \\  cnoreabbrev <expr> <buffer> ln getcmdtype() ==# ':' && getcmdline() =~# '^ln\%(\s.*\|\)$' ? 'Ln' : 'ln'
-            \\  cnoreabbrev <expr> <buffer> link getcmdtype() ==# ':' && getcmdline() =~# '^link\%(\s.*\|\)$' ? 'Link' : 'link'
-            \\  cnoreabbrev <expr> <buffer> symlink getcmdtype() ==# ':' && getcmdline() =~# '^symlink\%(\s.*\|\)$' ? 'Symlink' : 'symlink'
-            \\  cnoreabbrev <expr> <buffer> hardlink getcmdtype() ==# ':' && getcmdline() =~# '^hardlink\%(\s.*\|\)$' ? 'Hardlink' : 'hardlink'
             \\  cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
             \\  cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
             \\endfunction

@@ -1050,40 +1050,6 @@ pub fn parseBuffer(
             const name = body[0..split];
             const argument = std.mem.trim(u8, body[split..], " \t");
 
-            if (std.mem.eql(u8, name, "ln") or std.mem.eql(u8, name, "link") or std.mem.eql(u8, name, "symlink")) {
-                if (argument.len == 0) {
-                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = try arena.dupe(u8, name) } });
-                    continue;
-                }
-                const split_arg = std.mem.indexOfAny(u8, argument, " \t") orelse argument.len;
-                const target = argument[0..split_arg];
-                const raw_name = std.mem.trim(u8, argument[split_arg..], " \t");
-                const link_name = if (raw_name.len > 0) raw_name else std.fs.path.basename(target);
-                try creates.append(arena, .{
-                    .line = line_no,
-                    .path = link_name,
-                    .target = target,
-                    .kind = .symlink,
-                });
-                continue;
-            } else if (std.mem.eql(u8, name, "hardlink")) {
-                if (argument.len == 0) {
-                    try problems.append(arena, .{ .directive_needs_argument = .{ .line = line_no, .name = "hardlink" } });
-                    continue;
-                }
-                const split_arg = std.mem.indexOfAny(u8, argument, " \t") orelse argument.len;
-                const target = argument[0..split_arg];
-                const raw_name = std.mem.trim(u8, argument[split_arg..], " \t");
-                const link_name = if (raw_name.len > 0) raw_name else std.fs.path.basename(target);
-                try creates.append(arena, .{
-                    .line = line_no,
-                    .path = link_name,
-                    .target = target,
-                    .kind = .hardlink,
-                });
-                continue;
-            }
-
             if (directive != null) {
                 try problems.append(arena, .{ .multiple_directives = .{ .line = line_no } });
                 continue;
