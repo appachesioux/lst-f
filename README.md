@@ -156,6 +156,10 @@ pasta daquela janela, o `cwd` dela (`gf`, completação de `:e`) é aquela pasta
 a moldura no topo descreve a janela em foco. Não existe "o diretório corrente"
 da sessão — existe o de cada buffer.
 
+O `.` (mostrar ocultos) também é de cada buffer. Um diretório aberto pela primeira
+vez herda o valor da janela que o abriu, então ligar `.` e ir navegando continua
+valendo o caminho todo; um diretório que você já visitou volta como você o deixou.
+
 Os IDs são únicos na sessão inteira, não por buffer. Uma linha yankada numa
 janela e colada na outra não casa por acaso com uma entrada de outra pasta: o
 plano recusa com `ID não pertence à seleção` em vez de copiar o arquivo errado.
