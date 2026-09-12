@@ -420,7 +420,34 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
+            \\" Buffer com edicao pendente que nao e o desta janela -- inclusive um que
+            \\" ficou carregado sem janela, que o `quitall` conta igual. Devolve a pasta
+            \\" dele, para o recado; vazio quando nao ha.
+            \\function! s:lstf_pending_elsewhere() abort
+            \\  for l:info in getbufinfo({'bufloaded': 1})
+            \\    if l:info.bufnr == bufnr('%') || !l:info.changed | continue | endif
+            \\    if !empty(getbufvar(l:info.bufnr, '&buftype')) | continue | endif
+            \\    let l:dir = getbufvar(l:info.bufnr, 'lstf_dir', '')
+            \\    return fnamemodify(empty(l:dir) ? l:info.name : l:dir, ':t')
+            \\  endfor
+            \\  return ''
+            \\endfunction
+            \\
             \\function! s:lstf_write_directive(directive) abort
+            \\  " Toda diretiva encerra esta instancia (o laco externo assume o terminal)
+            \\  " e o `quitall` de `s:lstf_after_save` recusa sair com outro buffer
+            \\  " modificado: dava E162 com o erro na tela, a diretiva ja gravada e a
+            \\  " instancia viva -- e o `:w` seguinte repetia, porque a diretiva ficava
+            \\  " no buffer. Recusar antes de gravar nada deixa o estado intacto e diz o
+            \\  " que falta. Vale para `:q` e para as outras (`:open`, `:find`, `:sh`, e
+            \\  " a navegacao adiada), que caem no mesmo `quitall`.
+            \\  let l:pendente = s:lstf_pending_elsewhere()
+            \\  if !empty(l:pendente)
+            \\    let b:lstf_notice = 'edicao pendente em ' . l:pendente
+            \\      \ . ': aplique ali, ou :cq sai sem aplicar'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
             \\  " Atalhos podem ser repetidos antes que o Vim feche. Uma unica
             \\  " diretiva e valida; remover as anteriores evita travar o parser.
             \\  for l:lnum in reverse(range(1, line('$')))
