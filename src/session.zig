@@ -37,6 +37,14 @@ pub const History = struct {
         h.pos = h.items.items.len - 1;
     }
 
+    /// Copia independente do trilho. Um View novo herda o trilho de quem o
+    /// abriu, mas nao pode compartilhar o array: um `push` de um lado
+    /// descartaria o `forward` do outro.
+    pub fn clone(h: *const History, arena: Allocator) Allocator.Error!History {
+        const items = try arena.dupe([]const u8, h.items.items);
+        return .{ .items = .fromOwnedSlice(items), .pos = h.pos };
+    }
+
     /// `null` na ponta: nao ha para onde ir, e a posicao nao se mexe.
     pub fn back(h: *History) ?[]const u8 {
         if (h.pos == 0) return null;
@@ -333,7 +341,7 @@ pub const State = struct {
             \\    return
             \\  endif
             \\  if l:abs
-            \\    let l:loc = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\    let l:loc = s:lstf_location()
             \\    let l:path = simplify(l:loc . '/' . l:entry)
             \\  else
             \\    let l:path = l:entry
@@ -345,7 +353,7 @@ pub const State = struct {
             \\
             \\function! s:lstf_yank_visual(abs) range abort
             \\  let l:paths = []
-            \\  let l:loc = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\  let l:loc = s:lstf_location()
             \\  for l:lnum in range(a:firstline, a:lastline)
             \\    let l:entry = s:lstf_entry_path(getline(l:lnum))
             \\    if empty(l:entry) | continue | endif
@@ -424,24 +432,85 @@ pub const State = struct {
             \\  write
             \\endfunction
             \\
-            \\" Navegacao viva: o pai relista, regrava o buffer e responde; aqui
-            \\" basta recarregar o mesmo arquivo, sem fechar o editor nem limpar a
-            \\" tela. Com edicao pendente, o caminho e a diretiva antiga -- ela
-            \\" passa pela confirmacao antes de qualquer coisa. O argumento do
-            \\" `enter` vai por $LST_F_LIVE_ARG, nunca por argv.
+            \\" Diretorio deste buffer. E a ancora unica de tudo que acontece
+            \\" aqui dentro: caminho relativo, destino de copia, moldura, cwd.
+            \\" Por buffer, nunca global -- com duas janelas abertas nao existe
+            \\" "o" diretorio corrente, existe o de cada uma.
+            \\function! s:lstf_dir() abort
+            \\  if exists('b:lstf_dir') && !empty(b:lstf_dir) | return b:lstf_dir | endif
+            \\  if filereadable($LST_F_STATE . '/base')
+            \\    return get(readfile($LST_F_STATE . '/base'), 0, '')
+            \\  endif
+            \\  return getcwd()
+            \\endfunction
+            \\
+            \\" Sidecar deste buffer: o pai grava `<arquivo>.dir`, `.location` e
+            \\" `.header` ao lado do conteudo. Tenta o nome como o Vim o guarda e
+            \\" a forma absoluta, porque o caminho de estado pode vir relativo.
+            \\function! s:lstf_sidecar(ext) abort
+            \\  let l:name = bufname('%')
+            \\  if empty(l:name) | return '' | endif
+            \\  if filereadable(l:name . a:ext) | return l:name . a:ext | endif
+            \\  let l:abs = fnamemodify(l:name, ':p') . a:ext
+            \\  if filereadable(l:abs) | return l:abs | endif
+            \\  return ''
+            \\endfunction
+            \\
+            \\" Caminho para exibicao (home abreviado, sufixo de ocultos). Tambem
+            \\" por buffer: a moldura e a barra de cada janela descrevem a sua
+            \\" propria pasta, nao a que o pai visitou por ultimo.
+            \\function! s:lstf_location() abort
+            \\  if exists('b:lstf_location') && !empty(b:lstf_location)
+            \\    return b:lstf_location
+            \\  endif
+            \\  return empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\endfunction
+            \\
+            \\" Pedido ao laco vivo. O diretorio de quem pede vai por ambiente,
+            \\" nunca por argv: caminho de arquivo e dado hostil para interpolar
+            \\" em linha de comando. Devolve [exit_code, saida].
+            \\function! s:lstf_live(cmd) abort
+            \\  let $LST_F_LIVE_DIR = s:lstf_dir()
+            \\  let l:out = system($LST_F_SELF . ' --client ' . a:cmd)
+            \\  let l:err = v:shell_error
+            \\  unlet! $LST_F_LIVE_DIR
+            \\  return [l:err, substitute(l:out, "\n\\+$", '', '')]
+            \\endfunction
+            \\
+            \\" Navegacao viva: o pai relista, regrava e responde com o caminho do
+            \\" buffer que esta janela deve mostrar. Navegar pode trocar de buffer
+            \\" -- e o que permite dois diretorios lado a lado, cada janela no seu,
+            \\" sem um "painel de destino" de categoria separada. Com edicao
+            \\" pendente, o caminho e a diretiva antiga: ela passa pela
+            \\" confirmacao antes de qualquer coisa.
             \\function! s:lstf_nav(cmd, directive) abort
             \\  if &modified
             \\    call s:lstf_write_directive(a:directive)
             \\    return
             \\  endif
-            \\  let l:out = system($LST_F_SELF . ' --client ' . a:cmd)
-            \\  if v:shell_error
-            \\    let s:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+            \\  let [l:err, l:out] = s:lstf_live(a:cmd)
+            \\  if l:err
+            \\    let s:lstf_notice = l:out
             \\    redrawstatus!
             \\    return
             \\  endif
-            \\  silent! edit!
-            \\  call s:lstf_after_reload()
+            \\  call s:lstf_show_buffer(l:out)
+            \\endfunction
+            \\
+            \\" Abre nesta janela o buffer que o pai acabou de gravar. Caminho igual
+            \\" ao atual: `edit!` so rele o arquivo. Caminho novo: o `BufReadPost`
+            \\" monta o buffer (opcoes, sintaxe, mapas e comandos locais) antes do
+            \\" reload, exatamente como fez na abertura.
+            \\function! s:lstf_show_buffer(path) abort
+            \\  let s:lstf_opened = 0
+            \\  let l:target = a:path
+            \\  if !empty(l:target) && filereadable(l:target)
+            \\    \ && fnamemodify(bufname('%'), ':p') !=# fnamemodify(l:target, ':p')
+            \\    silent! execute 'edit! ' . fnameescape(l:target)
+            \\  else
+            \\    silent! edit!
+            \\  endif
+            \\  if !s:lstf_opened | call s:lstf_open_buffer() | endif
             \\endfunction
             \\
             \\function! LstfUp() abort
@@ -594,8 +663,8 @@ pub const State = struct {
             \\  let l:entries = s:lstf_entry_lines()
             \\  if exists('b:lstf_entry_lines') && l:entries !=# b:lstf_entry_lines
             \\    call writefile(getline(1, '$'), $LST_F_STATE . '/proposal', 'b')
-            \\    let l:out = system($LST_F_SELF . ' --client preview')
-            \\    if v:shell_error == 0
+            \\    let [l:perr, l:out] = s:lstf_live('preview')
+            \\    if l:perr == 0
             \\      let l:plan = filereadable($LST_F_STATE . '/preview')
             \\        \ ? readfile($LST_F_STATE . '/preview') : []
             \\      if !empty(l:plan)
@@ -606,7 +675,7 @@ pub const State = struct {
             \\          throw 'lst-f: operation cancelled'
             \\        endif
             \\      endif
-            \\    elseif v:shell_error == 2
+            \\    elseif l:perr == 2
             \\      let l:answer = input('Apply filesystem changes? [y/N] ')
             \\      if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
             \\        if l:is_quitting
@@ -638,18 +707,17 @@ pub const State = struct {
             \\  " abrem outra interface (:find, :open...) continuam pela volta
             \\  " externa, pois precisam tomar conta do terminal.
             \\  if len(l:directives) == 1 && l:directives[0] ==# ':refresh'
-            \\    let l:out = system($LST_F_SELF . ' --client apply')
-            \\    if v:shell_error == 0
-            \\      silent! edit!
-            \\      call s:lstf_after_reload()
+            \\    let [l:aerr, l:out] = s:lstf_live('apply')
+            \\    if l:aerr == 0
+            \\      call s:lstf_show_buffer(l:out)
             \\      redraw
             \\      return
             \\    endif
             \\    " Codigo 2 significa que o socket nao estava disponivel: o
             \\    " laco antigo ainda consegue aplicar o arquivo que foi salvo.
-            \\    if v:shell_error != 2
+            \\    if l:aerr != 2
             \\      setlocal modified
-            \\      let s:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+            \\      let s:lstf_notice = l:out
             \\      redrawstatus!
             \\      return
             \\    endif
@@ -867,8 +935,8 @@ pub const State = struct {
             \\" os dois -- a barra de titulo que o xpl-f desenha no topo da tela.
             \\" Volta em pedacos porque quem pinta e `matchaddpos`, por coluna de
             \\" byte: e conteudo de buffer, nao expressao de statusline.
-            \\function! s:lstf_frame_parts(width) abort
-            \\  let l:path = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\function! s:lstf_frame_parts(width, path) abort
+            \\  let l:path = a:path
             \\  let l:avail = a:width - 10 - strdisplaywidth(s:lstf_identity)
             \\  if strdisplaywidth(l:path) > l:avail
             \\    let l:path = l:avail > 1 ? '…' . strcharpart(l:path, strchars(l:path) - l:avail + 1) : ''
@@ -880,9 +948,10 @@ pub const State = struct {
             \\function! s:lstf_draw_frame() abort
             \\  if !exists('s:lstf_header_win') || win_id2win(s:lstf_header_win) == 0 | return | endif
             \\  let l:cur = win_getid()
+            \\  let l:where = s:lstf_frame_location()
             \\  noautocmd call win_gotoid(s:lstf_header_win)
             \\  let s:lstf_frame_width = winwidth(0)
-            \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width)
+            \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width, l:where)
             \\  let l:trow = s:lstf_titles_row(s:lstf_frame_width)
             \\  setlocal modifiable
             \\  call setline(1, [join(l:parts, ''), l:trow[0]])
@@ -934,6 +1003,21 @@ pub const State = struct {
             \\  call s:lstf_draw_frame()
             \\endfunction
             \\
+            \\" De qual janela a moldura fala. Com duas listas lado a lado o
+            \\" cabecalho e um so, entao ele segue o foco; quando o foco esta fora
+            \\" de uma lista (cabecalho, popup de ajuda), vale a ultima janela de
+            \\" lista vista.
+            \\function! s:lstf_frame_location() abort
+            \\  if exists('b:lstf_location') && !empty(b:lstf_location)
+            \\    return b:lstf_location
+            \\  endif
+            \\  if exists('s:lstf_list_win') && win_id2win(s:lstf_list_win) > 0
+            \\    let l:loc = getbufvar(winbufnr(s:lstf_list_win), 'lstf_location')
+            \\    if !empty(l:loc) | return l:loc | endif
+            \\  endif
+            \\  return empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\endfunction
+            \\
             \\" O cursor nunca para no cabecalho: quem entrar volta para a lista.
             \\function! s:lstf_leave_header() abort
             \\  if winnr('$') > 1 | wincmd j | endif
@@ -953,7 +1037,7 @@ pub const State = struct {
             \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^/\d\+\s\+''')) : 0
             \\  let l:mode = mode(1) =~# '^[iR]' ? 'EDIT' : mode(1) =~# '^[vV]' ? 'VISUAL' : 'NORMAL'
             \\  let l:name = substitute(s:lstf_entry_path(), '%', '%%', 'g')
-            \\  let l:location = empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+            \\  let l:location = s:lstf_location()
             \\  let l:location = substitute(l:location, '%', '%%', 'g')
             \\  let l:editor = has('nvim') ? 'Neovim' : 'Vim'
             \\  " A pasta corrente fica junto do nome, nao na outra ponta da barra:
@@ -994,10 +1078,9 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! LstfRefresh() abort
-            \\  let l:out = system($LST_F_SELF . ' --client reload')
-            \\  if v:shell_error == 0
-            \\    silent! edit!
-            \\    call s:lstf_after_reload()
+            \\  let [l:err, l:out] = s:lstf_live('reload')
+            \\  if l:err == 0
+            \\    call s:lstf_show_buffer(l:out)
             \\    redraw
             \\    return
             \\  endif
@@ -1435,23 +1518,29 @@ pub const State = struct {
             \\  execute 'syntax match LstfDateRecent /' . l:cur_hour . '\d\{2}/ containedin=' . l:all
             \\  execute 'syntax match LstfDateRecent /' . l:prev_hour . '\d\{2}/ containedin=' . l:all
             \\endfunction
-            \\call s:lstf_configure_buffer()
-            \\augroup lstf_buffer
-            \\  autocmd! * <buffer>
-            \\  autocmd BufWritePre <buffer> call s:lstf_prepare_save()
-            \\  autocmd TextChanged <buffer> call s:lstf_restore_header()
-            \\  autocmd CursorMoved <buffer> call s:lstf_keep_cursor_below_header()
-            \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_keep_cursor_in_name()
-            \\  autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_follow_scroll()
-            \\  autocmd CursorMoved <buffer> call s:lstf_highlight_visual_lines()
-            \\  autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
-            \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
-            \\  autocmd InsertLeave <buffer> call s:lstf_restore_header()
-            \\  autocmd TextChanged,InsertLeave <buffer> call s:lstf_update_collisions()
-            \\  " Salvar alteracoes comuns aplica pela sessao viva; diretivas e o
-            \\  " fallback fecham todas as janelas da instancia controlada.
-            \\  autocmd BufWritePost <buffer> call s:lstf_after_save()
-            \\augroup END
+            \\" Autocmds locais de um buffer de listagem. `autocmd! * <buffer>`
+            \\" limpa so os deste buffer, entao chamar de novo em cada buffer
+            \\" aberto e seguro -- e necessario, porque `:edit!` de um arquivo
+            \\" novo nao herda nada do anterior.
+            \\function! s:lstf_buffer_autocmds() abort
+            \\  call s:lstf_configure_buffer()
+            \\  augroup lstf_buffer
+            \\    autocmd! * <buffer>
+            \\    autocmd BufWritePre <buffer> call s:lstf_prepare_save()
+            \\    autocmd TextChanged <buffer> call s:lstf_restore_header()
+            \\    autocmd CursorMoved <buffer> call s:lstf_keep_cursor_below_header()
+            \\    autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_keep_cursor_in_name()
+            \\    autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_follow_scroll()
+            \\    autocmd CursorMoved <buffer> call s:lstf_highlight_visual_lines()
+            \\    autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
+            \\    autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
+            \\    autocmd InsertLeave <buffer> call s:lstf_restore_header()
+            \\    autocmd TextChanged,InsertLeave <buffer> call s:lstf_update_collisions()
+            \\    " Salvar alteracoes comuns aplica pela sessao viva; diretivas e o
+            \\    " fallback fecham todas as janelas da instancia controlada.
+            \\    autocmd BufWritePost <buffer> call s:lstf_after_save()
+            \\  augroup END
+            \\endfunction
             \\augroup lstf_statusline
             \\  autocmd!
             \\  autocmd ModeChanged * redrawstatus | if exists('b:lstf_header') | call s:lstf_highlight_visual_lines() | endif
@@ -1506,17 +1595,33 @@ pub const State = struct {
             \\      call s:lstf_apply_colors()
             \\    endif
             \\  endif
-            \\  if filereadable($LST_F_STATE . '/base')
-            \\    let l:newbase = get(readfile($LST_F_STATE . '/base'), 0, '')
-            \\    if !empty(l:newbase)
-            \\      silent! execute 'cd ' . fnameescape(l:newbase)
-            \\    endif
+            \\  " Estado deste buffer, lido dos sidecars que o pai gravou ao lado do
+            \\  " arquivo de conteudo. Por buffer, e nao do estado global: com duas
+            \\  " janelas abertas o "corrente" do pai e o de quem pediu por ultimo,
+            \\  " que nao e necessariamente esta janela.
+            \\  let l:side_dir = s:lstf_sidecar('.dir')
+            \\  if !empty(l:side_dir)
+            \\    let b:lstf_dir = get(readfile(l:side_dir), 0, '')
+            \\  elseif filereadable($LST_F_STATE . '/base')
+            \\    let b:lstf_dir = get(readfile($LST_F_STATE . '/base'), 0, '')
             \\  endif
-            \\  if filereadable($LST_F_STATE . '/location')
-            \\    let $LST_F_LOCATION = get(readfile($LST_F_STATE . '/location'), 0, '')
+            \\  if exists('b:lstf_dir') && !empty(b:lstf_dir)
+            \\    " `lcd`, nao `cd`: o cwd e da janela, para que `gf` e a completude
+            \\    " de `:e` sigam valendo por pasta em cada uma das duas janelas.
+            \\    silent! execute 'lcd ' . fnameescape(b:lstf_dir)
             \\  endif
-            \\  if filereadable($LST_F_STATE . '/header')
-            \\    let b:lstf_header = readfile($LST_F_STATE . '/header')
+            \\  let l:side_loc = s:lstf_sidecar('.location')
+            \\  if !empty(l:side_loc)
+            \\    let b:lstf_location = get(readfile(l:side_loc), 0, '')
+            \\  elseif filereadable($LST_F_STATE . '/location')
+            \\    let b:lstf_location = get(readfile($LST_F_STATE . '/location'), 0, '')
+            \\  endif
+            \\  let l:side_hdr = s:lstf_sidecar('.header')
+            \\  if empty(l:side_hdr) && filereadable($LST_F_STATE . '/header')
+            \\    let l:side_hdr = $LST_F_STATE . '/header'
+            \\  endif
+            \\  if !empty(l:side_hdr)
+            \\    let b:lstf_header = readfile(l:side_hdr)
             \\    call s:lstf_restore_header()
             \\    " Cabecalho ocupando o buffer todo: sem uma linha abaixo dele nao
             \\    " havia onde pousar o cursor para digitar o primeiro nome.
@@ -1535,39 +1640,22 @@ pub const State = struct {
             \\  redrawstatus!
             \\endfunction
             \\
-            \\call s:lstf_after_reload()
-            \\" A ajuda pode manter o foco em um popup ou painel auxiliar. Como esta
-            \\" instancia do Vim e exclusiva do lst-f, F1 e global para nunca deixar
-            \\" o Vim abrir :help em um split e alterar a tela controlada.
+            \\" A ajuda pode manter o foco em um popup ou painel auxiliar. Como
+            \\" esta instancia do Vim e exclusiva do lst-f, F1 e F2 sao globais
+            \\" para nunca deixar o Vim abrir :help em um split e alterar a tela.
             \\nnoremap <silent> <F1> :call LstfHelp()<CR>
-            \\nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
             \\nnoremap <silent> <F2> :call LstfToggleTheme()<CR>
-            \\nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>
-            \\nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
-            \\nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
-            \\nnoremap <buffer> <silent> - :call LstfUp()<CR>
-            \\nnoremap <buffer> <silent> ~ :call LstfHome()<CR>
-            \\nnoremap <buffer> <silent> gh :call LstfHome()<CR>
-            \\nnoremap <buffer> <silent> <lt> :call LstfBack()<CR>
-            \\nnoremap <buffer> <silent> > :call LstfForward()<CR>
-            \\nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
-            \\nnoremap <buffer> <silent> <F4> :call LstfShell()<CR>
-            \\nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
-            \\nnoremap <buffer> <silent> <C-a> ggVG
-            \\nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
-            \\nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
-            \\nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
-            \\nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
-            \\nnoremap <buffer> <silent> yr :call LstfYank(0)<CR>
-            \\nnoremap <buffer> <silent> yp :call LstfYank(0)<CR>
-            \\nnoremap <buffer> <silent> ya :call LstfYank(1)<CR>
-            \\nnoremap <buffer> <silent> yA :call LstfYank(1)<CR>
-            \\xnoremap <buffer> <silent> yr :<C-u>call <SID>lstf_yank_visual(0)<CR>
-            \\xnoremap <buffer> <silent> yp :<C-u>call <SID>lstf_yank_visual(0)<CR>
-            \\xnoremap <buffer> <silent> ya :<C-u>call <SID>lstf_yank_visual(1)<CR>
-            \\xnoremap <buffer> <silent> yA :<C-u>call <SID>lstf_yank_visual(1)<CR>
-            \\nnoremap <buffer> <silent> q :call LstfQuit()<CR>
-            \\nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
+            \\
+            \\" Tudo que e local a um buffer de listagem: opcoes, sintaxe,
+            \\" autocmds, mapas, comandos e abreviaturas. Uma funcao so, chamada
+            \\" na abertura e a cada buffer novo que o Vim ler -- e o que faz
+            \\" `:vsplit` + navegar abrir outro diretorio com as mesmas teclas,
+            \\" sem um "painel de destino" de categoria separada.
+            \\" Expansao de `:` no cmdline: transforma o que o usuario digitou no
+            \\" comando-local correspondente. Global porque o cmdline nao e
+            \\" do buffer; as funcoes abaixo idem, e por isso vivem fora de
+            \\" s:lstf_setup_buffer() -- Vim nao aceita definicao aninhada.
+            \\
             \\function! s:lstf_cmd_cr() abort
             \\  if getcmdtype() ==# ':'
             \\    let l:cmd = substitute(getcmdline(), '^\s*', '', '')
@@ -1606,42 +1694,7 @@ pub const State = struct {
             \\  return "\r"
             \\endfunction
             \\cnoremap <expr> <CR> <SID>lstf_cmd_cr()
-            \\command! -buffer -nargs=? -complete=dir Cd call LstfCd(<q-args>)
-            \\command! -buffer -nargs=? -complete=dir CD call LstfCd(<q-args>)
-            \\cnoreabbrev <expr> <buffer> cd getcmdtype() ==# ':' && getcmdline() =~# '^cd\%(\s.*\|\)$' ? 'Cd' : 'cd'
-            \\command! -buffer -nargs=0 Home call LstfHome()
-            \\cnoreabbrev <expr> <buffer> home getcmdtype() ==# ':' && getcmdline() ==# 'home' ? 'call LstfHome()' : 'home'
-            \\command! -buffer -nargs=0 Back call LstfBack()
-            \\cnoreabbrev <expr> <buffer> back getcmdtype() ==# ':' && getcmdline() ==# 'back' ? 'Back' : 'back'
-            \\command! -buffer -nargs=0 Forward call LstfForward()
-            \\cnoreabbrev <expr> <buffer> forward getcmdtype() ==# ':' && getcmdline() ==# 'forward' ? 'Forward' : 'forward'
-            \\command! -buffer -nargs=0 Hidden call LstfToggleHidden()
-            \\cnoreabbrev <expr> <buffer> hidden getcmdtype() ==# ':' && getcmdline() ==# 'hidden' ? 'Hidden' : 'hidden'
-            \\command! -buffer -nargs=? Theme call LstfToggleTheme(<q-args>)
-            \\command! -buffer -nargs=0 Light call LstfToggleTheme('light')
-            \\command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')
-            \\cnoreabbrev <expr> <buffer> theme getcmdtype() ==# ':' && getcmdline() =~# '^theme\%(\s.*\|\)$' ? 'Theme' : 'theme'
-            \\cnoreabbrev <expr> <buffer> light getcmdtype() ==# ':' && getcmdline() ==# 'light' ? 'Light' : 'light'
-            \\cnoreabbrev <expr> <buffer> dark getcmdtype() ==# ':' && getcmdline() ==# 'dark' ? 'Dark' : 'dark'
-            \\command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
-            \\cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
-            \\command! -buffer -nargs=? Sh call LstfShell(<q-args>)
-            \\command! -buffer -nargs=? Shell call LstfShell(<q-args>)
-            \\command! -buffer -nargs=? Terminal call LstfShell(<q-args>)
-            \\command! -buffer -nargs=? Term call LstfShell(<q-args>)
-            \\cnoreabbrev <expr> <buffer> sh getcmdtype() ==# ':' && getcmdline() =~# '^sh\%(\s.*\|\)$' ? 'Sh' : 'sh'
-            \\cnoreabbrev <expr> <buffer> shell getcmdtype() ==# ':' && getcmdline() =~# '^shell\%(\s.*\|\)$' ? 'Shell' : 'shell'
-            \\cnoreabbrev <expr> <buffer> terminal getcmdtype() ==# ':' && getcmdline() =~# '^terminal\%(\s.*\|\)$' ? 'Terminal' : 'terminal'
-            \\cnoreabbrev <expr> <buffer> term getcmdtype() ==# ':' && getcmdline() =~# '^term\%(\s.*\|\)$' ? 'Term' : 'term'
-            \\command! -buffer -nargs=0 Yank call LstfYank(0)
-            \\command! -buffer -nargs=0 YankRel call LstfYank(0)
-            \\command! -buffer -nargs=0 YankAbs call LstfYank(1)
-            \\command! -buffer -nargs=0 Copy call LstfYank(0)
-            \\cnoreabbrev <expr> <buffer> yank getcmdtype() ==# ':' && getcmdline() =~# '^yank\%(\s.*\|\)$' ? 'Yank' : 'yank'
-            \\cnoreabbrev <expr> <buffer> copy getcmdtype() ==# ':' && getcmdline() =~# '^copy\%(\s.*\|\)$' ? 'Copy' : 'copy'
-            \\cnoreabbrev <expr> <buffer> relpath getcmdtype() ==# ':' && getcmdline() =~# '^relpath\%(\s.*\|\)$' ? 'Yank' : 'relpath'
-            \\cnoreabbrev <expr> <buffer> abspath getcmdtype() ==# ':' && getcmdline() =~# '^abspath\%(\s.*\|\)$' ? 'YankAbs' : 'abspath'
-            \\cnoreabbrev <expr> <buffer> realpath getcmdtype() ==# ':' && getcmdline() =~# '^realpath\%(\s.*\|\)$' ? 'YankAbs' : 'realpath'
+            \\
             \\function! s:lstf_cmd_ln(args) abort
             \\  if empty(a:args) | return | endif
             \\  call s:lstf_write_directive(':ln ' . a:args)
@@ -1650,16 +1703,102 @@ pub const State = struct {
             \\  if empty(a:args) | return | endif
             \\  call s:lstf_write_directive(':hardlink ' . a:args)
             \\endfunction
-            \\command! -buffer -nargs=+ Ln call s:lstf_cmd_ln(<q-args>)
-            \\command! -buffer -nargs=+ Link call s:lstf_cmd_ln(<q-args>)
-            \\command! -buffer -nargs=+ Symlink call s:lstf_cmd_ln(<q-args>)
-            \\command! -buffer -nargs=+ Hardlink call s:lstf_cmd_hardlink(<q-args>)
-            \\cnoreabbrev <expr> <buffer> ln getcmdtype() ==# ':' && getcmdline() =~# '^ln\%(\s.*\|\)$' ? 'Ln' : 'ln'
-            \\cnoreabbrev <expr> <buffer> link getcmdtype() ==# ':' && getcmdline() =~# '^link\%(\s.*\|\)$' ? 'Link' : 'link'
-            \\cnoreabbrev <expr> <buffer> symlink getcmdtype() ==# ':' && getcmdline() =~# '^symlink\%(\s.*\|\)$' ? 'Symlink' : 'symlink'
-            \\cnoreabbrev <expr> <buffer> hardlink getcmdtype() ==# ':' && getcmdline() =~# '^hardlink\%(\s.*\|\)$' ? 'Hardlink' : 'hardlink'
-            \\cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
-            \\cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
+            \\
+            \\function! s:lstf_setup_buffer() abort
+            \\  call s:lstf_buffer_autocmds()
+            \\  " A ajuda pode manter o foco em um popup ou painel auxiliar. Como esta
+            \\  " instancia do Vim e exclusiva do lst-f, F1 e global para nunca deixar
+            \\  " o Vim abrir :help em um split e alterar a tela controlada.
+            \\  nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
+            \\  nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>
+            \\  nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
+            \\  nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
+            \\  nnoremap <buffer> <silent> - :call LstfUp()<CR>
+            \\  nnoremap <buffer> <silent> ~ :call LstfHome()<CR>
+            \\  nnoremap <buffer> <silent> gh :call LstfHome()<CR>
+            \\  nnoremap <buffer> <silent> <lt> :call LstfBack()<CR>
+            \\  nnoremap <buffer> <silent> > :call LstfForward()<CR>
+            \\  nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
+            \\  nnoremap <buffer> <silent> <F4> :call LstfShell()<CR>
+            \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+            \\  nnoremap <buffer> <silent> <C-a> ggVG
+            \\  nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
+            \\  nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
+            \\  nnoremap <buffer> <silent> <C-s> :call LstfToggleSplit()<CR>
+            \\  nnoremap <buffer> <silent> <Tab> :call <SID>lstf_tab_jump()<CR>
+            \\  nnoremap <buffer> <silent> yr :call LstfYank(0)<CR>
+            \\  nnoremap <buffer> <silent> yp :call LstfYank(0)<CR>
+            \\  nnoremap <buffer> <silent> ya :call LstfYank(1)<CR>
+            \\  nnoremap <buffer> <silent> yA :call LstfYank(1)<CR>
+            \\  xnoremap <buffer> <silent> yr :<C-u>call <SID>lstf_yank_visual(0)<CR>
+            \\  xnoremap <buffer> <silent> yp :<C-u>call <SID>lstf_yank_visual(0)<CR>
+            \\  xnoremap <buffer> <silent> ya :<C-u>call <SID>lstf_yank_visual(1)<CR>
+            \\  xnoremap <buffer> <silent> yA :<C-u>call <SID>lstf_yank_visual(1)<CR>
+            \\  nnoremap <buffer> <silent> q :call LstfQuit()<CR>
+            \\  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
+            \\  command! -buffer -nargs=? -complete=dir Cd call LstfCd(<q-args>)
+            \\  command! -buffer -nargs=? -complete=dir CD call LstfCd(<q-args>)
+            \\  cnoreabbrev <expr> <buffer> cd getcmdtype() ==# ':' && getcmdline() =~# '^cd\%(\s.*\|\)$' ? 'Cd' : 'cd'
+            \\  command! -buffer -nargs=0 Home call LstfHome()
+            \\  cnoreabbrev <expr> <buffer> home getcmdtype() ==# ':' && getcmdline() ==# 'home' ? 'call LstfHome()' : 'home'
+            \\  command! -buffer -nargs=0 Back call LstfBack()
+            \\  cnoreabbrev <expr> <buffer> back getcmdtype() ==# ':' && getcmdline() ==# 'back' ? 'Back' : 'back'
+            \\  command! -buffer -nargs=0 Forward call LstfForward()
+            \\  cnoreabbrev <expr> <buffer> forward getcmdtype() ==# ':' && getcmdline() ==# 'forward' ? 'Forward' : 'forward'
+            \\  command! -buffer -nargs=0 Hidden call LstfToggleHidden()
+            \\  cnoreabbrev <expr> <buffer> hidden getcmdtype() ==# ':' && getcmdline() ==# 'hidden' ? 'Hidden' : 'hidden'
+            \\  command! -buffer -nargs=? Theme call LstfToggleTheme(<q-args>)
+            \\  command! -buffer -nargs=0 Light call LstfToggleTheme('light')
+            \\  command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')
+            \\  cnoreabbrev <expr> <buffer> theme getcmdtype() ==# ':' && getcmdline() =~# '^theme\%(\s.*\|\)$' ? 'Theme' : 'theme'
+            \\  cnoreabbrev <expr> <buffer> light getcmdtype() ==# ':' && getcmdline() ==# 'light' ? 'Light' : 'light'
+            \\  cnoreabbrev <expr> <buffer> dark getcmdtype() ==# ':' && getcmdline() ==# 'dark' ? 'Dark' : 'dark'
+            \\  command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
+            \\  cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
+            \\  command! -buffer -nargs=? Sh call LstfShell(<q-args>)
+            \\  command! -buffer -nargs=? Shell call LstfShell(<q-args>)
+            \\  command! -buffer -nargs=? Terminal call LstfShell(<q-args>)
+            \\  command! -buffer -nargs=? Term call LstfShell(<q-args>)
+            \\  cnoreabbrev <expr> <buffer> sh getcmdtype() ==# ':' && getcmdline() =~# '^sh\%(\s.*\|\)$' ? 'Sh' : 'sh'
+            \\  cnoreabbrev <expr> <buffer> shell getcmdtype() ==# ':' && getcmdline() =~# '^shell\%(\s.*\|\)$' ? 'Shell' : 'shell'
+            \\  cnoreabbrev <expr> <buffer> terminal getcmdtype() ==# ':' && getcmdline() =~# '^terminal\%(\s.*\|\)$' ? 'Terminal' : 'terminal'
+            \\  cnoreabbrev <expr> <buffer> term getcmdtype() ==# ':' && getcmdline() =~# '^term\%(\s.*\|\)$' ? 'Term' : 'term'
+            \\  command! -buffer -nargs=0 Yank call LstfYank(0)
+            \\  command! -buffer -nargs=0 YankRel call LstfYank(0)
+            \\  command! -buffer -nargs=0 YankAbs call LstfYank(1)
+            \\  command! -buffer -nargs=0 Copy call LstfYank(0)
+            \\  cnoreabbrev <expr> <buffer> yank getcmdtype() ==# ':' && getcmdline() =~# '^yank\%(\s.*\|\)$' ? 'Yank' : 'yank'
+            \\  cnoreabbrev <expr> <buffer> copy getcmdtype() ==# ':' && getcmdline() =~# '^copy\%(\s.*\|\)$' ? 'Copy' : 'copy'
+            \\  cnoreabbrev <expr> <buffer> relpath getcmdtype() ==# ':' && getcmdline() =~# '^relpath\%(\s.*\|\)$' ? 'Yank' : 'relpath'
+            \\  cnoreabbrev <expr> <buffer> abspath getcmdtype() ==# ':' && getcmdline() =~# '^abspath\%(\s.*\|\)$' ? 'YankAbs' : 'abspath'
+            \\  cnoreabbrev <expr> <buffer> realpath getcmdtype() ==# ':' && getcmdline() =~# '^realpath\%(\s.*\|\)$' ? 'YankAbs' : 'realpath'
+            \\  command! -buffer -nargs=+ Ln call s:lstf_cmd_ln(<q-args>)
+            \\  command! -buffer -nargs=+ Link call s:lstf_cmd_ln(<q-args>)
+            \\  command! -buffer -nargs=+ Symlink call s:lstf_cmd_ln(<q-args>)
+            \\  command! -buffer -nargs=+ Hardlink call s:lstf_cmd_hardlink(<q-args>)
+            \\  cnoreabbrev <expr> <buffer> ln getcmdtype() ==# ':' && getcmdline() =~# '^ln\%(\s.*\|\)$' ? 'Ln' : 'ln'
+            \\  cnoreabbrev <expr> <buffer> link getcmdtype() ==# ':' && getcmdline() =~# '^link\%(\s.*\|\)$' ? 'Link' : 'link'
+            \\  cnoreabbrev <expr> <buffer> symlink getcmdtype() ==# ':' && getcmdline() =~# '^symlink\%(\s.*\|\)$' ? 'Symlink' : 'symlink'
+            \\  cnoreabbrev <expr> <buffer> hardlink getcmdtype() ==# ':' && getcmdline() =~# '^hardlink\%(\s.*\|\)$' ? 'Hardlink' : 'hardlink'
+            \\  cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
+            \\  cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
+            \\endfunction
+            \\
+            \\" Buffer de listagem que o Vim ler recebe o tratamento acima. O
+            \\" arquivo inicial e lido antes do `-S`, entao este autocmd pega so
+            \\" os seguintes: os que a navegacao viva abre ao trocar de pasta.
+            \\function! s:lstf_open_buffer() abort
+            \\  call s:lstf_setup_buffer()
+            \\  call s:lstf_after_reload()
+            \\endfunction
+            \\
+            \\augroup lstf_buffers
+            \\  autocmd!
+            \\  autocmd BufReadPost *.lstf let s:lstf_opened = 1 | call s:lstf_open_buffer()
+            \\augroup END
+            \\
+            \\let s:lstf_opened = 0
+            \\call s:lstf_open_buffer()
             \\" Por ultimo: abrir o split antes daqui faria os `setlocal` e os
             \\" mapeamentos `<buffer>` acima cairem no buffer errado.
             \\call s:lstf_open_header()
