@@ -98,9 +98,26 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Light call LstfToggleTheme('light')") != null);
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')") != null);
 
-    // Painel de destino (split) com colagem de copia (p/P)
-    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_dest_paste() abort") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> p :call <SID>lstf_dest_paste()<CR>") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> P :call <SID>lstf_dest_paste()<CR>") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "NAME [Y=copy S=link p=paste .=hidden]") != null);
+    // Dois diretorios lado a lado sao mecanica pura do Vim: `:vsplit` da mesma
+    // pasta e navegar numa das janelas. O "painel de destino" de categoria
+    // separada (render, parser e keymap proprios) nao existe mais.
+    try testing.expect(std.mem.indexOf(u8, script, "function! LstfSplit() abort") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> <C-s> :call LstfSplit()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "__lstf_dest_panel__") == null);
+    try testing.expect(std.mem.indexOf(u8, script, "lstf_dest_paste") == null);
+    try testing.expect(std.mem.indexOf(u8, script, "LstfToggleSplit") == null);
+
+    // Sem painel, nao ha buffer de lista trancado: `u`/`U` silenciados e
+    // `undolevels=-1` eram remendos para o E21 que ele provocava.
+    try testing.expect(std.mem.indexOf(u8, script, "<Nop>") == null);
+    try testing.expect(std.mem.indexOf(u8, script, "undolevels=-1") == null);
+
+    // Cada buffer de diretorio e montado de novo ao ser lido, senao o que a
+    // navegacao abre nao teria tecla nenhuma.
+    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_setup_buffer() abort") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "autocmd BufReadPost *.lstf let s:lstf_opened = 1 | call s:lstf_open_buffer()") != null);
+
+    // Ancora unica: o diretorio do proprio buffer, nao um estado global.
+    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_dir() abort") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "b:lstf_dir") != null);
 }
