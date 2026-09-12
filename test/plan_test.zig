@@ -1008,3 +1008,35 @@ test "remocao que nao libera destino nenhum continua por ultimo" {
     try testing.expectEqual(@as(usize, 1), p.removes.len);
     try testing.expectEqual(@as(usize, 0), p.removes_before);
 }
+
+test "linha cortada colada varias vezes: so a ultima e o movimento" {
+    var f = Fixture.init();
+    defer f.deinit();
+    // Uma origem so nao pode ser movida duas vezes: a segunda procuraria um
+    // arquivo que a primeira ja levou. Regra do oil.nvim -- com delete mais N
+    // creates, os N-1 primeiros sao copia e o ultimo e o movimento.
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file, .cut = true });
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "um.txt"), edit(7, "dois.txt"), edit(7, "tres.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign })).ok;
+    try testing.expectEqual(@as(usize, 3), p.copies.len);
+    try testing.expectEqualStrings("um.txt", p.copies[0].to);
+    try testing.expect(!p.copies[0].cut);
+    try testing.expectEqualStrings("dois.txt", p.copies[1].to);
+    try testing.expect(!p.copies[1].cut);
+    try testing.expectEqualStrings("tres.txt", p.copies[2].to);
+    try testing.expect(p.copies[2].cut);
+}
+
+test "linha yankada colada varias vezes continua toda copia" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file });
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "um.txt"), edit(7, "dois.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign })).ok;
+    try testing.expectEqual(@as(usize, 2), p.copies.len);
+    for (p.copies) |c| try testing.expect(!c.cut);
+}

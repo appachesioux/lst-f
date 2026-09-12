@@ -172,7 +172,14 @@ sessão seria: o buffer continua sendo a única fonte. Consequências:
   gesto), movimento é recusado por `move_dest_occupied` — escolher entre os dois
   arquivos perderia um deles. Substituir é `dd` nos dois lados: a remoção que
   libera o destino de uma cópia entra em `removes_before`, porque a cópia é a fase
-  5 e as remoções tardias são a 6.
+  5 e as remoções tardias são a 6. Os movimentos resolvem o destino antes das
+  cópias, para que o nome que o usuário escreveu fique com o movimento e o sufixo
+  caia na cópia.
+- A mesma linha cortada colada **N vezes** vira N-1 cópias e **um** movimento, na
+  última linha — uma origem só não pode sair do lugar duas vezes. É a regra do
+  `oil.nvim` (`mutator/init.lua`: com delete mais N creates, os N-1 primeiros são
+  COPY e o último é MOVE); sem ela o segundo `rename` não acha mais a origem e o
+  plano inteiro cai.
 - Mesmo filesystem, o movimento é um `rename` (atômico, e o undo é o rename de
   volta — não precisa de área). Filesystems diferentes (`plan.Copy.cross_device`,
   decidido por `fsops.deviceOf`), vira cópia + remoção da origem para a **área de

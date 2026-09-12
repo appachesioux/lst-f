@@ -339,6 +339,22 @@ pub fn build(
         }
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
+    // A mesma linha cortada colada varias vezes: so uma pode ser o movimento,
+    // senao a segunda procuraria uma origem que a primeira ja levou e o plano
+    // inteiro cairia. A ultima linha fica com o movimento e as anteriores viram
+    // copia -- a regra do oil.nvim (`mutator/init.lua`: com delete mais N
+    // creates, os N-1 primeiros sao COPY e o ultimo e MOVE). A ultima, e nao a
+    // primeira, porque e a que o usuario acabou de posicionar.
+    if (foreign_copies.items.len > 1) {
+        var claimed: std.AutoHashMapUnmanaged(u32, void) = .empty;
+        var i = foreign_copies.items.len;
+        while (i > 0) {
+            i -= 1;
+            const c = &foreign_copies.items[i];
+            if (!c.cut) continue;
+            if ((try claimed.getOrPut(arena, c.id)).found_existing) c.cut = false;
+        }
+    }
     try copies.appendSlice(arena, foreign_copies.items);
 
     // --- 2. Validacao lexical dos destinos -----------------------------------

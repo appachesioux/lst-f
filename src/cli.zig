@@ -1827,65 +1827,77 @@ fn resolveCopySuffixesOnDisk(s: *Session, p: plan.Plan) !CopyResolve {
     var copies = try s.arena.alloc(plan.Copy, p.copies.len);
     for (p.copies, 0..) |c, i| {
         copies[i] = c;
-        if (c.cut) {
-            if (c.from_abs) |abs| {
-                const dir = std.fs.path.dirname(abs) orelse "/";
-                const src_device = fsops.deviceOf(s.io, dir);
-                // Sem conseguir medir, assume o caminho que sempre funciona.
-                copies[i].cross_device = base_device == null or src_device == null or
-                    src_device.? != base_device.?;
+        if (!c.cut) continue;
+        const abs = c.from_abs orelse continue;
+        const dir = std.fs.path.dirname(abs) orelse "/";
+        const src_device = fsops.deviceOf(s.io, dir);
+        // Sem conseguir medir, assume o caminho que sempre funciona.
+        copies[i].cross_device = base_device == null or src_device == null or
+            src_device.? != base_device.?;
+    }
+
+    // Movimentos primeiro. Quando a mesma linha cortada foi colada mais de uma
+    // vez, o movimento e uma delas e as outras sao copias; resolver o movimento
+    // antes garante que o nome que o usuario escreveu fique com ele, e que o
+    // sufixo caia nas copias -- que e onde o sufixo faz sentido.
+    for ([2]bool{ true, false }) |pass_cut| {
+        for (p.copies, 0..) |c, i| {
+            if (c.cut != pass_cut) continue;
+            if (try resolveCopyDest(s, base_dir, &copies[i], &occupied, &freed)) |problem| {
+                try problems.append(s.arena, problem);
             }
         }
-        // Origem em outra pasta: o `plan` e puro e nao conhece caminhos
-        // absolutos, entao a checagem de "copiar para dentro de si mesmo"
-        // acontece aqui, onde os dois lados sao conhecidos. Sem ela a
-        // aplicacao recursiona ate estourar PATH_MAX.
-        if (c.from_abs) |abs_from| {
-            const abs_to = try std.fs.path.join(s.arena, &.{ s.view.dir, c.to });
-            if (plan.isUnder(abs_from, abs_to)) {
-                try problems.append(s.arena, .{ .copy_into_self = .{ .id = c.id, .from = abs_from, .to = abs_to } });
-                continue;
-            }
-        }
-        var to = c.to;
-        if (busyCopyDest(s, base_dir, to, &occupied, &freed)) {
-            if (c.cut) {
-                // Movimento nao inventa nome. O sufixo `-01` e o gesto de
-                // duplicar, que so faz sentido quando a origem fica onde esta;
-                // aqui ela sai do lugar, e escolher por conta propria entre os
-                // dois arquivos perderia um deles em silencio.
-                try problems.append(s.arena, .{ .move_dest_occupied = .{
-                    .id = c.id,
-                    .from = c.from_abs orelse c.from,
-                    .to = to,
-                } });
-                continue;
-            }
-            var n: u32 = 1;
-            var resolved: ?[]const u8 = null;
-            while (n < 100) : (n += 1) {
-                const candidate = try plan.suffixed(s.arena, to, n, c.kind == .dir);
-                if (!busyCopyDest(s, base_dir, candidate, &occupied, &freed)) {
-                    try occupied.put(s.arena, candidate, {});
-                    resolved = candidate;
-                    break;
-                }
-            }
-            if (resolved) |r| {
-                to = r;
-            } else {
-                try problems.append(s.arena, .{ .copy_no_free_name = .{ .id = c.id, .path = to } });
-                continue;
-            }
-        } else {
-            try occupied.put(s.arena, to, {});
-        }
-        copies[i].to = to;
     }
 
     var result = p;
     result.copies = copies;
     return .{ .plan = result, .problems = try problems.toOwnedSlice(s.arena) };
+}
+
+/// Destino final de uma copia ou movimento, contra o plano e o disco. Devolve
+/// o problema quando nao ha destino possivel; caso contrario grava em `c.to`.
+fn resolveCopyDest(
+    s: *Session,
+    base_dir: Io.Dir,
+    c: *plan.Copy,
+    occupied: *std.StringHashMapUnmanaged(void),
+    freed: *const std.StringHashMapUnmanaged(void),
+) !?plan.Problem {
+    // Origem em outra pasta: o `plan` e puro e nao conhece caminhos absolutos,
+    // entao a checagem de "copiar para dentro de si mesmo" acontece aqui, onde
+    // os dois lados sao conhecidos. Sem ela a aplicacao recursiona ate estourar
+    // PATH_MAX.
+    if (c.from_abs) |abs_from| {
+        const abs_to = try std.fs.path.join(s.arena, &.{ s.view.dir, c.to });
+        if (plan.isUnder(abs_from, abs_to)) {
+            return .{ .copy_into_self = .{ .id = c.id, .from = abs_from, .to = abs_to } };
+        }
+    }
+    if (!busyCopyDest(s, base_dir, c.to, occupied, freed)) {
+        try occupied.put(s.arena, c.to, {});
+        return null;
+    }
+    if (c.cut) {
+        // Movimento nao inventa nome. O sufixo `-01` e o gesto de duplicar, que
+        // so faz sentido quando a origem fica onde esta; aqui ela sai do lugar,
+        // e escolher por conta propria entre os dois arquivos perderia um deles
+        // em silencio.
+        return .{ .move_dest_occupied = .{
+            .id = c.id,
+            .from = c.from_abs orelse c.from,
+            .to = c.to,
+        } };
+    }
+    var n: u32 = 1;
+    while (n < 100) : (n += 1) {
+        const candidate = try plan.suffixed(s.arena, c.to, n, c.kind == .dir);
+        if (!busyCopyDest(s, base_dir, candidate, occupied, freed)) {
+            try occupied.put(s.arena, candidate, {});
+            c.to = candidate;
+            return null;
+        }
+    }
+    return .{ .copy_no_free_name = .{ .id = c.id, .path = c.to } };
 }
 
 fn busyCopyDest(
