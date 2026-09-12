@@ -350,8 +350,10 @@ pub const State = struct {
             \\    return
             \\  endif
             \\  if l:abs
-            \\    let l:loc = s:lstf_location()
-            \\    let l:path = simplify(l:loc . '/' . l:entry)
+            \\    " `s:lstf_dir()`, nao `s:lstf_location()`: o segundo e o caminho de
+            \\    " exibicao -- com `~` nao expandido e, com ocultos ligados, o sufixo
+            \\    " `[all]` colado no meio. Caminho absoluto tem de ser caminho.
+            \\    let l:path = simplify(s:lstf_dir() . '/' . l:entry)
             \\  else
             \\    let l:path = l:entry
             \\  endif
@@ -398,7 +400,7 @@ pub const State = struct {
             \\
             \\function! s:lstf_yank_visual(abs) range abort
             \\  let l:paths = []
-            \\  let l:loc = s:lstf_location()
+            \\  let l:loc = s:lstf_dir()
             \\  for l:lnum in range(a:firstline, a:lastline)
             \\    let l:entry = s:lstf_entry_path(getline(l:lnum))
             \\    if empty(l:entry) | continue | endif
@@ -541,11 +543,27 @@ pub const State = struct {
             \\" Pedido ao laco vivo. O diretorio de quem pede vai por ambiente,
             \\" nunca por argv: caminho de arquivo e dado hostil para interpolar
             \\" em linha de comando. Devolve [exit_code, saida].
+            \\" Pastas cujos buffers tem edicao pendente. O pai nao relista nem regrava
+            \\" o arquivo de nenhuma delas: as entradas que ele tem em memoria sao as que
+            \\" o texto na tela descreve, e mexer no arquivo debaixo de um buffer
+            \\" modificado faria o `:w` daquela janela cair no aviso de mtime do Vim.
+            \\function! s:lstf_dirty_dirs() abort
+            \\  let l:dirs = []
+            \\  for l:info in getbufinfo({'bufloaded': 1})
+            \\    if l:info.name !~# '\.lstf$' || !l:info.changed | continue | endif
+            \\    let l:dir = getbufvar(l:info.bufnr, 'lstf_dir', '')
+            \\    if !empty(l:dir) | call add(l:dirs, l:dir) | endif
+            \\  endfor
+            \\  return join(l:dirs, "\n")
+            \\endfunction
+            \\
             \\function! s:lstf_live(cmd) abort
             \\  let $LST_F_LIVE_DIR = s:lstf_dir()
+            \\  let $LST_F_LIVE_DIRTY = s:lstf_dirty_dirs()
             \\  let l:out = system($LST_F_SELF . ' --client ' . a:cmd)
             \\  let l:err = v:shell_error
             \\  unlet! $LST_F_LIVE_DIR
+            \\  unlet! $LST_F_LIVE_DIRTY
             \\  return [l:err, substitute(l:out, "\n\\+$", '', '')]
             \\endfunction
             \\
@@ -596,8 +614,16 @@ pub const State = struct {
             \\  for l:info in getbufinfo({'bufloaded': 1})
             \\    if l:info.bufnr == bufnr('%') | continue | endif
             \\    if l:info.name !~# '\.lstf$' | continue | endif
-            \\    if !l:info.changed | continue | endif
-            \\    call writefile(getbufline(l:info.bufnr, 1, '$'), l:info.name, 'b')
+            \\    " Num arquivo ao lado, nunca no do proprio buffer: `writefile()` nao
+            \\    " atualiza o mtime que o buffer guarda, e o Vim compara os dois no
+            \\    " `:w`. Escrevendo por cima, o `:w` seguinte daquela janela caia no
+            \\    " aviso "file has been changed since reading it", que so aceita `y`
+            \\    " minusculo e engole as teclas ate ser respondido.
+            \\    if l:info.changed
+            \\      call writefile(getbufline(l:info.bufnr, 1, '$'), l:info.name . '.pending', 'b')
+            \\    else
+            \\      call delete(l:info.name . '.pending')
+            \\    endif
             \\  endfor
             \\endfunction
             \\
@@ -1785,12 +1811,13 @@ pub const State = struct {
             \\    let l:side_hdr = $LST_F_STATE . '/header'
             \\  endif
             \\  if !empty(l:side_hdr)
+            \\    let l:pendente = &modified
             \\    let b:lstf_header = readfile(l:side_hdr)
             \\    call s:lstf_restore_header()
             \\    " Cabecalho ocupando o buffer todo: sem uma linha abaixo dele nao
             \\    " havia onde pousar o cursor para digitar o primeiro nome.
             \\    if line('$') <= len(b:lstf_header) | call append('$', '') | endif
-            \\    setlocal nomodified
+            \\    if !l:pendente | setlocal nomodified | endif
             \\  endif
             \\  " O aviso e do buffer, nao da sessao: com duas janelas abertas o
             \\  " arquivo global e o de quem pediu por ultimo, e o recado de uma
@@ -1804,6 +1831,16 @@ pub const State = struct {
             \\  endif
             \\  call s:lstf_capture_prefixes()
             \\  call s:lstf_update_collisions()
+            \\  " Voltar a um buffer que tem edicao pendente nao pode zerar a baseline:
+            \\  " `b:lstf_entry_lines` e `nomodified` sao o que o `:w` compara, e regrava-los
+            \\  " aqui fazia a linha continuar sumida na tela e o `:w` nao ver mudanca --
+            \\  " um `dd` esquecido em silencio, e um paste depois disso virando copia.
+            \\  if &modified
+            \\    call s:lstf_follow_scroll()
+            \\    call s:lstf_draw_frame()
+            \\    redrawstatus!
+            \\    return
+            \\  endif
             \\  let b:lstf_entry_lines = s:lstf_entry_lines()
             \\  call s:lstf_follow_scroll()
             \\  call s:lstf_restore_cursor()

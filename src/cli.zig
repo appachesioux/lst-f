@@ -29,6 +29,12 @@ pub const live_env_arg = "LST_F_LIVE_ARG";
 /// janela a navegacao aconteceu quando ha mais de um buffer de diretorio.
 pub const live_env_dir = "LST_F_LIVE_DIR";
 
+/// Pastas com edicao pendente, uma por linha. O pai nao relista nem regrava o
+/// arquivo de nenhuma delas: as entradas que ele tem em memoria sao as que o
+/// texto na tela descreve, e mexer no arquivo debaixo de um buffer modificado
+/// faria o `:w` daquela janela cair no aviso de mtime do Vim.
+pub const live_env_dirty = "LST_F_LIVE_DIRTY";
+
 pub const Command = union(enum) {
     browse: Browse,
     preview_index: u32,
@@ -277,6 +283,7 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
     };
     const arg = environ.get(live_env_arg) orelse "";
     const dir = environ.get(live_env_dir) orelse "";
+    const dirty = environ.get(live_env_dirty) orelse "";
 
     var addr: linux.sockaddr.un = .{ .path = undefined };
     @memset(&addr.path, 0);
@@ -297,8 +304,8 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
         return 2;
     }
 
-    var payload: [4096]u8 = undefined;
-    if (cmd.len + 1 + arg.len + 1 + dir.len > payload.len) return 2;
+    var payload: [8192]u8 = undefined;
+    if (cmd.len + 1 + arg.len + 1 + dir.len + 1 + dirty.len > payload.len) return 2;
     var total: usize = 0;
     @memcpy(payload[0..cmd.len], cmd);
     total += cmd.len;
@@ -310,6 +317,10 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
     total += 1;
     @memcpy(payload[total..][0..dir.len], dir);
     total += dir.len;
+    payload[total] = 0;
+    total += 1;
+    @memcpy(payload[total..][0..dirty.len], dirty);
+    total += dirty.len;
     var sent: usize = 0;
     while (sent < total) {
         const w = linux.write(sock, payload[sent..].ptr, total - sent);
@@ -457,6 +468,10 @@ const Session = struct {
     /// onde saiu um movimento). Vao na resposta do canal vivo para o helper
     /// recarregar aquelas janelas; so a janela que pediu se recarrega sozinha.
     reload_others: []const []const u8 = &.{},
+    /// Pastas com edicao pendente no pedido vivo em curso, uma por linha.
+    /// Buffer que esta nessa lista nao e relistado nem regravado: o texto na
+    /// tela e a verdade dele ate o `:w`.
+    dirty: []const u8 = "",
     /// Onde a remocao guarda o que sai, uma so para a sessao e para o usuario.
     /// O caminho e sempre conhecido; a pasta abre na primeira remocao, para nao
     /// criar nada em `~` numa sessao que so navega.
@@ -842,6 +857,8 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     const cmd = fields.next() orelse payload;
     const arg = fields.next() orelse "";
     const req_dir = fields.next() orelse "";
+    s.dirty = fields.next() orelse "";
+    defer s.dirty = "";
 
     // O pedido vem de uma janela especifica: o foco passa a ser o View dela.
     // Sem isso, navegar numa janela reescreveria o buffer da outra.
@@ -933,6 +950,7 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     // porque o registro de mtime do buffer so se atualiza num reload.
     if (ok and
         !rewrote_buffer and
+        !isDirty(s, s.view.dir) and
         !std.mem.eql(u8, cmd, "apply") and
         !std.mem.eql(u8, cmd, "preview") and
         !std.mem.eql(u8, cmd, "theme")) try writeBuffer(s);
@@ -1181,7 +1199,18 @@ const Collector = struct {
 /// unica fonte de verdade sobre o que foi apagado e o que ficou. `null` quando
 /// nao deu para ler ou o texto nao passa no parser: dai nada e deduzido.
 fn idsInBuffer(s: *Session, v: *View) !?std.AutoHashMapUnmanaged(u32, void) {
+    // O helper grava o texto pendente de cada buffer num `.pending` ao lado, e
+    // nao por cima do arquivo do buffer: o `writefile()` dele nao atualiza o
+    // mtime que o Vim guarda, e o `:w` daquela janela cairia no aviso de
+    // "arquivo mudou desde a leitura". Sem pendencia, o arquivo do buffer ja e
+    // o que esta na tela.
+    const pending = try std.fmt.allocPrint(s.arena, "{s}.pending", .{v.buffer_path});
     const text = Io.Dir.cwd().readFileAlloc(
+        s.io,
+        pending,
+        s.arena,
+        .limited(64 * 1024 * 1024),
+    ) catch Io.Dir.cwd().readFileAlloc(
         s.io,
         v.buffer_path,
         s.arena,
@@ -1301,6 +1330,15 @@ fn writeBuffer(s: *Session) !void {
 
     try s.state.writeNotice(s.io, s.notice orelse "");
 
+    // Esta tela e nova, entao qualquer pendencia registrada para ela morreu com
+    // a anterior. O helper tambem apaga, no flush seguinte; aqui e para nao
+    // existir janela em que um `.pending` velho descreva a tela atual.
+    Io.Dir.cwd().deleteFile(s.io, try std.fmt.allocPrint(
+        s.arena,
+        "{s}.pending",
+        .{s.view.buffer_path},
+    )) catch {};
+
     var file = try Io.Dir.cwd().createFile(s.io, s.view.buffer_path, .{ .truncate = true });
     defer file.close(s.io);
     var buffer: [64 * 1024]u8 = undefined;
@@ -1417,9 +1455,21 @@ fn expandHome(s: *Session, target: []const u8) []const u8 {
     return target;
 }
 
+/// Este diretorio tem edicao pendente no Vim, segundo o pedido em curso.
+fn isDirty(s: *Session, dir: []const u8) bool {
+    if (s.dirty.len == 0) return false;
+    var it = std.mem.splitScalar(u8, s.dirty, '\n');
+    while (it.next()) |d| {
+        if (d.len > 0 and std.mem.eql(u8, d, dir)) return true;
+    }
+    return false;
+}
+
 /// Troca o foco para o View de `dir` e recarrega a listagem. Navegar nao
 /// reescreve o View de origem: cada diretorio tem o seu, e e isso que permite
-/// duas janelas com dois diretorios sem que uma pise na outra.
+/// duas janelas com dois diretorios sem que uma pise na outra. Buffer com
+/// edicao pendente nao e relistado: as entradas em memoria sao as que o texto
+/// na tela descreve, e o `:w` daquela janela compara com elas.
 fn switchView(s: *Session, dir: []const u8) bool {
     const from = s.view;
     const v = s.views.getOrCreate(s.arena, s.io, s.state.path, dir, from.show_hidden) catch {
@@ -1427,6 +1477,7 @@ fn switchView(s: *Session, dir: []const u8) bool {
         return false;
     };
     if (v == from) {
+        if (isDirty(s, v.dir)) return true;
         loadListing(s) catch {
             s.notice = "nao consegui listar o diretorio";
             return false;
@@ -1440,6 +1491,7 @@ fn switchView(s: *Session, dir: []const u8) bool {
         v.history.push(s.arena, dir) catch {};
     }
     s.view = v;
+    if (isDirty(s, v.dir)) return true;
     loadListing(s) catch {
         s.notice = "nao consegui listar o diretorio";
         return false;
