@@ -186,6 +186,8 @@ moldura, visível na tela. Detalhes que valem saber:
   ganha sufixo `-01` a `-99` (duplicar é o gesto), e um movimento é recusado,
   porque escolher entre os dois arquivos perderia um deles. Para substituir o
   arquivo do destino, apague a linha dele também: `dd` nos dois lados e `p`.
+  Você não precisa esperar o `:w` para saber qual dos dois vai acontecer — ver
+  *O desfecho aparece na linha*.
 - **Colar a mesma linha cortada várias vezes** dá N-1 cópias e um movimento, na
   última — uma origem só não sai do lugar duas vezes.
 - **Salve a janela onde você colou.** Salvar a janela de origem antes disso é
@@ -196,6 +198,29 @@ moldura, visível na tela. Detalhes que valem saber:
   pasta dela, não para o nada — `:undo` devolve nos dois casos.
 
 Fechar uma janela é o de sempre no Vim (`:close`, `Ctrl+W c`).
+
+## O desfecho aparece na linha
+
+Quando dois nomes colidem, os dois ficam em destaque e a linha que vai mudar
+ganha, ao lado, o desfecho que o `lst-f` seguirá se você não intervier:
+
+```
+/0001  - │ rw-r--r-- │ … │  a.txt
+/0002  - │ rw-r--r-- │ … │  b.txt
+/0001  - │ rw-r--r-- │ … │  a.txt    → a-01.txt
+/0007  - │ rw-r--r-- │ … │  c.txt    ✗ ocupado: apague a linha dele ou renomeie
+```
+
+Esse texto **não está no buffer**: `getline()` não o vê, o `:w` não o grava e ele
+nem marca o buffer como modificado. É anotação de tela (extmark no Neovim, text
+property no Vim 9), então uma previsão errada nunca pode virar nome de arquivo.
+Editar o nome da linha faz a anotação sumir; o sufixo só acontece se você deixar.
+
+Em Vim anterior ao 9.0 fica só o destaque colorido, como antes.
+
+A palavra final continua sendo o preview da confirmação do `:w`, que enxerga o
+disco inteiro — inclusive arquivos ocultos e o que outra janela acabou de fazer.
+A anotação enxerga o mesmo que o destaque: os nomes do buffer.
 
 ## Criação
 
