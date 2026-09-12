@@ -47,7 +47,22 @@ pub const Copy = struct {
     from: []const u8,
     to: []const u8,
     kind: Kind,
+    /// Origem fora do diretorio-base desta operacao: linha colada de outro
+    /// buffer de diretorio. `from` e `to` sao sempre relativos ao base; quando
+    /// isto esta presente, quem aplica abre a origem pelo caminho absoluto.
+    from_abs: ?[]const u8 = null,
 };
+
+/// Um ID que pertence a outro buffer da sessao. E o que permite colar de uma
+/// janela na outra: o numero da linha yankada nao esta nos `originals` deste
+/// buffer, mas a sessao sabe de onde ele veio.
+pub const Foreign = struct {
+    /// Caminho absoluto real da entrada na pasta de origem.
+    path: []const u8,
+    kind: Kind,
+};
+
+pub const ForeignMap = std.AutoHashMapUnmanaged(u32, Foreign);
 
 pub const Problem = union(enum) {
     create_empty_path: struct { line: u32 },
@@ -62,6 +77,10 @@ pub const Problem = union(enum) {
     link_empty_target: struct { line: u32, path: []const u8 },
     copy_no_free_name: struct { id: u32, path: []const u8 },
     copy_under_touched: struct { id: u32, path: []const u8 },
+    /// Copiar um diretorio para dentro dele mesmo. Sem isto a aplicacao entra
+    /// em recursao ate estourar PATH_MAX: o destino aparece dentro da origem
+    /// que ainda esta sendo percorrida.
+    copy_into_self: struct { id: u32, from: []const u8, to: []const u8 },
     id_without_path: struct { line: u32 },
     unknown_id: struct { line: u32, id: u32 },
     duplicate_id: struct { line: u32, id: u32 },
@@ -103,6 +122,10 @@ pub const Problem = union(enum) {
             .copy_under_touched => |v| try w.print(
                 "ID {d}: {s} fica dentro de um diretorio que esta sendo movido ou removido",
                 .{ v.id, v.path },
+            ),
+            .copy_into_self => |v| try w.print(
+                "ID {d}: {s} seria copiado para dentro de si mesmo ({s})",
+                .{ v.id, v.from, v.to },
             ),
             .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
             .unknown_id => |v| try w.print("linha {d}: ID {d} nao pertence a selecao", .{ v.line, v.id }),
@@ -187,6 +210,11 @@ pub const Options = struct {
     /// Prefixo dos nomes temporarios usados para resolver ciclos. Fica sempre
     /// no mesmo diretorio da entrada, logo no mesmo filesystem.
     temp_prefix: []const u8 = ".lst-f-tmp-",
+    /// IDs dos outros buffers abertos na sessao. Sem isto, uma linha colada de
+    /// outra janela so pode ser recusada como ID adulterado; com isto, vira
+    /// copia de fora. Os IDs sao unicos na sessao inteira justamente para que
+    /// a consulta nao tenha ambiguidade.
+    foreign: ?*const ForeignMap = null,
 };
 
 /// Prefixo da area de sessao; nenhum destino pode cair dentro dela.
@@ -215,8 +243,27 @@ pub fn build(
     @memset(copy_dests, null);
     const copy_line = try arena.alloc(u32, originals.len);
 
+    var foreign_copies: std.ArrayList(Copy) = .empty;
     for (edits) |e| {
         const idx = by_id.get(e.id) orelse {
+            // O ID nao e deste buffer. Pode ser uma linha colada de outra
+            // janela: a sessao resolve o numero na origem absoluta real e o
+            // plano ve uma copia de fora, nao um ID adulterado.
+            const known = if (options.foreign) |f| f.get(e.id) else null;
+            if (known) |fo| {
+                if (e.path.len == 0) {
+                    try problems.append(arena, .{ .id_without_path = .{ .line = e.line } });
+                    continue;
+                }
+                try foreign_copies.append(arena, .{
+                    .id = e.id,
+                    .from = fo.path,
+                    .to = e.path,
+                    .kind = fo.kind,
+                    .from_abs = fo.path,
+                });
+                continue;
+            }
             try problems.append(arena, .{ .unknown_id = .{ .line = e.line, .id = e.id } });
             continue;
         };
@@ -259,6 +306,7 @@ pub fn build(
         }
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
+    try copies.appendSlice(arena, foreign_copies.items);
 
     // --- 2. Validacao lexical dos destinos -----------------------------------
     for (originals, 0..) |o, i| {
@@ -319,7 +367,9 @@ pub fn build(
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
     // Mesmas regras lexicais para os destinos de copia, exceto o escape do
-    // base: copiar para fora e o que torna o painel de destino util.
+    // base: copiar para fora e legitimo, e a ancora do destino continua sendo o
+    // diretorio do buffer onde a linha foi colada. A origem pode estar em
+    // qualquer lugar da sessao (from_abs).
     for (copies.items) |*c| {
         const raw = c.to;
         if (raw[0] == '/') {
@@ -475,6 +525,21 @@ pub fn build(
             }
         } else {
             try removes.append(arena, .{ .id = o.id, .path = o.path, .kind = o.kind });
+        }
+    }
+
+    // Copiar um diretorio para DENTRO dele mesmo: a aplicacao percorre a origem
+    // enquanto cria o destino la dentro, e o destino recem-criado entra na
+    // mesma percorrida -- recursao ate estourar PATH_MAX. Copiar sobre o proprio
+    // nome nao entra aqui: esse e o caso normal do `yy`+`p`, e quem resolve e o
+    // sufixo `-01` da checagem de colisao no disco, depois do plano.
+    // So da para detectar aqui quando origem e destino sao relativos ao mesmo
+    // base; o caso de origem em outra pasta (from_abs) e checado por quem
+    // aplica, que conhece os dois caminhos absolutos.
+    for (copies.items) |c| {
+        if (c.from_abs != null) continue;
+        if (isUnder(c.from, c.to)) {
+            try problems.append(arena, .{ .copy_into_self = .{ .id = c.id, .from = c.from, .to = c.to } });
         }
     }
 

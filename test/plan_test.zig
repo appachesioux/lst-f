@@ -839,3 +839,121 @@ test "diretiva :sh / :shell / :terminal eh parseada corretamente" {
     try testing.expect(t4.directive.? == .shell);
     try testing.expectEqualStrings("sub/dir", t4.directive.?.shell.?);
 }
+
+test "ID de outra pasta vira copia de fora quando a sessao o conhece" {
+    var f = Fixture.init();
+    defer f.deinit();
+    // Buffer de /destino: so ve o proprio c.txt. A linha colada traz o ID 7,
+    // que pertence ao buffer de /origem.
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "a.txt") };
+
+    // Sem o registro da sessao o ID e estrangeiro e o plano recusa: e a
+    // garantia de que IDs sobrepostos entre buffers nao casam por acaso.
+    try expectProblem(try build(f.a(), &originals, &edits, &.{}, .{}), .unknown_id);
+
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file });
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign })).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+    try testing.expectEqual(@as(usize, 0), p.renames.len);
+    try testing.expectEqual(@as(usize, 0), p.removes.len);
+    // A origem absoluta real, nao um caminho relativo ao base deste buffer.
+    try testing.expectEqualStrings("/origem/a.txt", p.copies[0].from_abs.?);
+    try testing.expectEqualStrings("a.txt", p.copies[0].to);
+    // c.txt nao participou de nada.
+    try testing.expectEqual(@as(u32, 1), p.unchanged);
+}
+
+test "copia de fora preserva o tipo da origem" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(9, "docs/") };
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 9, .{ .path = "/origem/docs", .kind = .dir });
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign })).ok;
+    try testing.expectEqual(.dir, p.copies[0].kind);
+    try testing.expectEqualStrings("docs", p.copies[0].to);
+}
+
+test "duas coladas do mesmo ID de fora sao duas copias" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "a.txt"), edit(7, "b.txt") };
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file });
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign })).ok;
+    try testing.expectEqual(@as(usize, 2), p.copies.len);
+    try testing.expectEqualStrings("a.txt", p.copies[0].to);
+    try testing.expectEqualStrings("b.txt", p.copies[1].to);
+}
+
+test "copia de fora com destino absoluto e recusada" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "/etc/a.txt") };
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file });
+    try expectProblem(
+        try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign }),
+        .absolute_path,
+    );
+}
+
+test "copia de fora sem caminho e recusada" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(3, "c.txt", .file)};
+    const edits = [_]Edit{ edit(3, "c.txt"), edit(7, "") };
+    var foreign: plan.ForeignMap = .empty;
+    try foreign.put(f.a(), 7, .{ .path = "/origem/a.txt", .kind = .file });
+    try expectProblem(
+        try build(f.a(), &originals, &edits, &.{}, .{ .foreign = &foreign }),
+        .id_without_path,
+    );
+}
+
+test "copiar diretorio para dentro de si mesmo e recusado" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "docs", .dir)};
+    // docs -> docs/2026: o destino esta dentro da origem que ainda esta sendo
+    // percorrida. Sem a recusa, a aplicacao recursiona ate estourar PATH_MAX.
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "docs"), edit(1, "docs/2026") }, &.{}, .{}),
+        .copy_into_self,
+    );
+    // Um nivel abaixo do proprio nome tambem.
+    try expectProblem(
+        try build(f.a(), &originals, &.{ edit(1, "docs"), edit(1, "docs/docs") }, &.{}, .{}),
+        .copy_into_self,
+    );
+    // Para fora da origem continua valido.
+    const p = (try build(f.a(), &originals, &.{ edit(1, "docs"), edit(1, "backup/docs") }, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+}
+
+test "copiar arquivo sobre o proprio nome continua permitido (sufixo resolve)" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "a.txt", .file)};
+    const edits = [_]Edit{ edit(1, "a.txt"), edit(1, "a.txt") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+}
+
+test "copiar diretorio para um irmao dele e valido" {
+    var f = Fixture.init();
+    defer f.deinit();
+    const originals = [_]Original{orig(1, "docs", .dir)};
+    const edits = [_]Edit{ edit(1, "docs"), edit(1, "backup/docs") };
+    const p = (try build(f.a(), &originals, &edits, &.{}, .{})).ok;
+    try testing.expectEqual(@as(usize, 1), p.copies.len);
+    try testing.expectEqualStrings("backup/docs", p.copies[0].to);
+    // O pai que falta entra no plano.
+    try testing.expectEqual(@as(usize, 1), p.mkdirs.len);
+    try testing.expectEqualStrings("backup", p.mkdirs[0]);
+}
