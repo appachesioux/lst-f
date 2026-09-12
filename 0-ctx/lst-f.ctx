@@ -23,7 +23,7 @@ São duas diferenças em relação ao `oil.nvim`, e as duas importam:
 1. **Seleção fuzzy recursiva alimentando o buffer.** O oil navega um diretório por vez e não filtra. O caso *"filtrar um termo na árvore inteira, marcar 12 dos 200 resultados espalhados por 6 diretórios, renomear todos de uma vez"* exige colar o oil a um picker externo. No `lst-f` é `:find termo`, marcar, e o resultado **é** o buffer.
 2. **Nada de plugin.** O oil é um plugin de Neovim: exige gerenciador de plugin, exige Neovim, e vive dentro de uma sessão de editor. O `lst-f` é um binário único que funciona com `vim` puro e roda como CLI componível. É a diferença entre "está no meu setup" e "funciona no servidor em que acabei de entrar por SSH".
 
-**Consequência de design**: não há plugin. O `lst-f` gera um pequeno script local para o buffer atual, compatível com Vim e Neovim, que faz `Enter` abrir arquivos ou entrar em diretórios; ele vive só durante a sessão e não instala configuração no editor. As ações que exigem o laço completo continuam sendo diretivas escritas no próprio buffer (`:open`, `:find`, `:undo`, `:quit`), executadas quando o editor sai; navegação (`-`, `Enter` em diretório, `<`, `>`, `.`) não passa por diretiva — pede a nova listagem ao laço pelo canal vivo descrito no contrato e recarrega o mesmo buffer. Linha de entrada sempre começa por `/` seguido de dígitos (o ID, oculto por *conceal*), então nem uma linha iniciada por `:` nem um nome de arquivo qualquer são ambíguos com ela — `/` é o único byte que um nome de arquivo não pode conter.
+**Consequência de design**: não há plugin. O `lst-f` gera um pequeno script local para o buffer atual, compatível com Vim e Neovim, que faz `Enter` abrir arquivos ou entrar em diretórios; ele vive só durante a sessão e não instala configuração no editor. As ações que exigem o laço completo continuam sendo diretivas escritas no próprio buffer (`:open`, `:find`, `:undo`, `:quit`), executadas quando o editor sai; navegação (`-`, `Enter` em diretório, `<`, `>`, `.`) não passa por diretiva — pede a nova listagem ao laço pelo canal vivo descrito no contrato, que abre o buffer daquele diretório na janela que pediu. Linha de entrada sempre começa por `/` seguido de dígitos (o ID, oculto por *conceal*), então nem uma linha iniciada por `:` nem um nome de arquivo qualquer são ambíguos com ela — `/` é o único byte que um nome de arquivo não pode conter.
 
 Está fora de escopo:
 
@@ -69,7 +69,7 @@ Contrato universal, sem plugin, RPC, `--remote` ou `+cmd`: `editor <arquivo_temp
 1. Rodar em foreground no TTY — rejeitar `gvim`, `nvim-qt`, `mvim`, `code` sem `--wait`, `subl` sem `-w`.
 2. Suportar aborto por exit code diferente de zero (`:cq`), sinal de "não aplica nada", como no `git commit`.
 
-**Canal vivo de navegação.** Enquanto a rodada do editor vive, o `lst-f` escuta um socket Unix em `$LST_F_STATE/live.sock` (permissão `0600`; o diretório pode ser um `$TMPDIR` compartilhado). Os atalhos de navegação chamam o próprio binário (`$LST_F_SELF --client <cmd>`) via `system()` — sem protocolo de editor, funciona igual no Vim e no Neovim; o caminho do `enter` vai por variável de ambiente (`LST_F_LIVE_ARG`), nunca por *argv*. O laço relista o diretório, regrava o arquivo do buffer e responde; o helper recarrega o **mesmo buffer** com `:edit!`, que redesenha só as linhas alteradas — a tela nunca sai do modo alternativo e não há reapertura de processo por tecla. Com edição pendente no buffer, o atalho desvia para a diretiva escrita: a confirmação de aplicação não pode ser pulada. Se o socket não estiver disponível, tudo cai no fluxo antigo de reabrir o editor a cada rodada.
+**Canal vivo de navegação.** Enquanto a rodada do editor vive, o `lst-f` escuta um socket Unix em `$LST_F_STATE/live.sock` (permissão `0600`; o diretório pode ser um `$TMPDIR` compartilhado). Os atalhos de navegação chamam o próprio binário (`$LST_F_SELF --client <cmd>`) via `system()` — sem protocolo de editor, funciona igual no Vim e no Neovim; o caminho do `enter` vai por variável de ambiente (`LST_F_LIVE_ARG`), nunca por *argv*. O pedido leva três campos separados por NUL: comando, argumento e o **diretório do buffer que pede** (`LST_F_LIVE_DIR`, também por ambiente). O terceiro campo é o que permite mais de uma janela: sem ele o laço não saberia em qual delas a navegação aconteceu, e "o diretório corrente" deixaria de existir. O laço relista o diretório, regrava o arquivo daquele buffer e responde com o caminho dele; o helper faz `:edit!` desse caminho — o mesmo arquivo quando a pasta não mudou, um arquivo novo quando mudou. A tela nunca sai do modo alternativo e não há reapertura de processo por tecla. Com edição pendente no buffer, o atalho desvia para a diretiva escrita: a confirmação de aplicação não pode ser pulada. Se o socket não estiver disponível, tudo cai no fluxo antigo de reabrir o editor a cada rodada.
 
 ## Fluxo principal
 
@@ -106,9 +106,9 @@ d │ rwxr-xr-x │ root     │         - │ 2026-08-22 13:19 │  docs/
 
 **Atalho de abertura.** `Enter` em um diretório pede a navegação viva (o cursor pousa na primeira entrada da nova listagem); em arquivos binários/mídia (imagens, PDFs, vídeos, áudios, documentos), abre no visualizador padrão via `xdg-open` em background sem travar o editor; em arquivos de texto/código, grava `:open <arquivo>`, abrindo-o no editor limpo com toda a sua configuração pessoal, e ao fechar com `:q` (ou `:wq`), retorna imediatamente à listagem do `lst-f`.
 
-`-` volta ao diretório-pai — e o cursor pousa na entrada do diretório de onde se veio: o laço grava o basename dele antes de subir, e a recarga procura esse nome no novo buffer (nome, não posição: sobrevive a `:sort`; sumiu a entrada, vale o fallback posicional). `.` alterna a exibição de arquivos e diretórios ocultos (dotfiles). `\` abre uma árvore visual flutuante. `Ctrl+P` dispara a busca fuzzy (`fzf`) na árvore inteira imediatamente. `Ctrl+S` abre/fecha o painel dividido de destino (split vertical na direita); `Tab` alterna o foco entre o painel principal e o painel de destino; no painel de destino, `Enter` navega nas pastas e `Y` (ou `yy`) copia o caminho do destino para a área de transferência do Vim para ser colado (`p`) facilmente durante a renomeação.
+`-` volta ao diretório-pai — e o cursor pousa na entrada do diretório de onde se veio: o laço grava o basename dele antes de subir, e a recarga procura esse nome no novo buffer (nome, não posição: sobrevive a `:sort`; sumiu a entrada, vale o fallback posicional). `.` alterna a exibição de arquivos e diretórios ocultos (dotfiles). `\` abre uma árvore visual flutuante. `Ctrl+P` dispara a busca fuzzy (`fzf`) na árvore inteira imediatamente. `Ctrl+S` abre a mesma pasta numa segunda janela (`:vsplit` à direita) e `Tab` percorre as janelas; navegar numa delas troca só o buffer dela. Não existe painel de categoria separada: dois diretórios lado a lado são mecânica pura do Vim, como no `oil.nvim`.
 
-Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, pede a confirmação e envia a aplicação pelo canal vivo. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O mesmo buffer é recarregado no cursor salvo e mostra o resultado na barra de baixo; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
+Salvar com `:w` é o gesto de aplicar: o helper anexa internamente `:refresh` quando não há outra diretiva, pede a confirmação e envia a aplicação pelo canal vivo. Isso também faz `:w` sem edição apenas atualizar a lista, em vez de encerrar a sessão. O buffer daquela janela é recarregado no cursor salvo e mostra o resultado na barra de baixo; não há pausa extra após sucesso. `q`, `:q`, `:quit` e `ZZ` encerram a sessão com uma diretiva explícita.
 
 **Diretivas.** As ações restantes escrevem-se como uma linha começando por `:` — no máximo uma por rodada, executada depois de o plano ser aplicado. Navegação também aceita diretiva (`:cd`, `:back`, `:forward`, `:hidden`): é o caminho que os atalhos usam quando há edição pendente, e o que resta digitável a mão:
 
@@ -124,6 +124,61 @@ Linha de entrada sempre começa por `/` seguido de dígitos, então `:` no iníc
 **Por que ID e não posição.** Mapeamento posicional falha em silêncio no caso mais provável. Um `:sort` no buffer — coisa natural de fazer numa lista de arquivos — produz uma permutação válida: a contagem de linhas bate, não há colisão, o plano passa em toda validação, e a ferramenta renomeia cada arquivo com o nome de outro. Só o ID torna essa classe de erro impossível.
 
 Com remoção no escopo, o ID deixa de ser conveniência e vira requisito de segurança: sem ele, não há como distinguir "apagou a linha 3" de "reordenou o buffer", e as duas leituras divergem entre não fazer nada e apagar um arquivo.
+
+## Um buffer por diretório
+
+Cada diretório visitado é um buffer de verdade, com arquivo próprio em
+`$LST_F_STATE/buffers/`. É o que permite dois diretórios lado a lado como
+mecânica pura do Vim (`Ctrl+S` ou `:vsplit`, e navegar numa das janelas), no
+modelo do `oil.nvim`. Um *View* no CLI guarda o estado daquele buffer:
+diretório, listagem, cabeçalho, área de sessão e histórico de navegação.
+
+**Âncora única.** O diretório do buffer é a âncora de todo caminho relativo que o
+usuário vê e edita nele. Não existe "o diretório corrente" da sessão: com duas
+janelas abertas, cada uma tem a sua. O helper lê a sua de `b:lstf_dir`, vindo do
+sidecar `.dir` que o laço grava ao lado do conteúdo — nunca de um estado global,
+porque o global passa a ser o de quem pediu por último. O `cwd` é `lcd`, por
+janela, para que `gf` e a completude de `:e` sigam valendo por pasta em cada uma.
+O estado global (`base`, `location`, `header`) continua existindo só para o
+self-exec de preview do `fzf`, que não tem janela.
+
+**IDs únicos na sessão, não por buffer.** Dois buffers abertos ao mesmo tempo
+teriam IDs sobrepostos (ambos começam em 1), e um `yy` numa janela seguido de `p`
+na outra casaria em silêncio com outra entrada — cópia do arquivo errado, a classe
+de erro que o ID existe para impedir. Cada View reserva uma faixa a partir do
+contador da sessão; a reserva é reaproveitada enquanto couber, para que um refresh
+não troque os IDs debaixo de um buffer em edição.
+
+**Copiar entre janelas.** O gesto é o do Vim: `yy` na linha, `p` na outra janela. A
+linha colada aparece no buffer onde o `p` foi pressionado — nunca em outra janela —
+e o destino é o diretório daquele buffer, visível na tela. O mecanismo é o mesmo
+que o `oil.nvim` usa com o cache global de entradas: o ID viaja com a linha e a
+sessão sabe de onde ele veio. `plan.Copy.from_abs` carrega a origem absoluta real;
+sem ela, origem e destino são relativos ao base de sempre. O diff mostra a origem
+absoluta, que é a informação que importa numa cópia entre pastas.
+
+Sem o registro da sessão o plano recusa o ID como adulteração (`ID não pertence à
+seleção`). É deliberado: a recusa em voz alta é o que garante que IDs sobrepostos
+não casem por acaso.
+
+**Copiar um diretório para dentro dele mesmo é recusado.** O destino recém-criado
+aparece dentro da origem que ainda está sendo percorrida, e a percorrida desce por
+ele: recursão até estourar `PATH_MAX`. O `plan` pega quando origem e destino são
+relativos ao mesmo base; o CLI pega quando a origem está em outra pasta, porque só
+ele conhece os dois caminhos absolutos. Copiar sobre o próprio nome **não** entra
+nessa recusa — é o `yy`+`p` normal, e quem resolve é o sufixo `-01` da checagem de
+colisão no disco.
+
+**Montagem por buffer.** Tudo que é local a um buffer de listagem (opções,
+sintaxe, autocmds, mapas, comandos, abreviaturas) vive numa função só, rodada de
+novo a cada `BufReadPost` de `*.lstf`. Sem isso o buffer que a navegação abre não
+teria tecla nenhuma. `F1`, `F2`, o `cnoremap` de `<CR>` e as funções do cmdline
+ficam fora dela: são globais, e o Vim não aceita definição de função aninhada.
+
+O único buffer `nomodifiable` que resta é o da janela de cabeçalho (moldura e
+títulos das colunas). Aquele é linha de tela, não buffer de diretório: não é
+editável por definição. Buffers de diretório são modificáveis como qualquer
+buffer, e `u`/`<C-r>` são undo/redo de texto normais até o `:w`.
 
 ## Remoção e área de sessão
 
@@ -225,10 +280,33 @@ O MVP e as funcionalidades principais estão implementados.
    - Abertura de arquivos binários via `explorer.exe` / `start` no Windows quando `xdg-open` não estiver presente.
    - Mapeamento de atributos NTFS (ReadOnly, Archive, Hidden) para a coluna `PERMS`.
 
-2. **Movimentação entre diretórios via Cut/Paste integrado à Área de Sessão (`dd` / `:cut` -> `:cd` -> `:paste` / `p`)**:
-   - Integração do fluxo de recorte com a área temporária da sessão (`.lst-f-<pid>/`): arquivos removidos ou marcados com `:cut` podem ser colados com `:paste` em outro diretório visitado durante a mesma sessão viva.
-   - Resolução de IDs reindexados na navegação: vincular o arquivo temporário da área de sessão ao novo diretório `s.base` ao salvar (`:w`).
-   - Fallback de cross-device (`EXDEV`): cópia recursiva + remoção na origem quando a pasta de destino estiver em outro ponto de montagem / filesystem.
+2. **Mover entre diretórios (`dd` numa janela, `p` na outra)**:
+   - A cópia entre janelas já funciona, e o que falta para o movimento é pouco: o
+     ID é único na sessão e `plan.Copy.from_abs` já carrega a origem absoluta. Um
+     move de fora é a mesma resolução com a origem entrando em `removes` (via área
+     de sessão do View de origem) em vez de permanecer.
+   - O `oil.nvim` distingue os dois pelo registro de yank (cópia ou recorte), não
+     pela tecla de colar; aqui seria o mesmo, guardado na sessão.
+   - Fallback de cross-device (`EXDEV`): cópia recursiva + remoção na origem
+     quando a pasta de destino estiver em outro ponto de montagem / filesystem.
+   - As áreas de sessão já são uma por View, então a origem e o destino de um move
+     entre pastas têm cada uma a sua; o que precisa de decisão é o rollback
+     atravessar as duas.
+
+3. **Avisos por buffer**: `s:lstf_notice` ainda é uma variável global do helper com
+   `redrawstatus!`. Com duas janelas, o aviso de uma aparece na outra. O natural é
+   `b:lstf_notice`, como já foi feito com `b:lstf_dir` e `b:lstf_location`.
+
+4. **Nome dos buffers**: hoje o buffer se chama pelo arquivo temporário
+   (`0003.lstf`), então `:ls` e `:b` não mostram pastas. Nomear pelo diretório
+   exigiria `buftype=acwrite` com `BufWriteCmd`/`BufReadCmd`, porque `:w` é o gesto
+   de aplicar e um buffer nomeado como diretório não tem onde gravar. Adiado: não
+   muda comportamento, só o que `:ls` mostra.
+
+5. **Plugin próprio**: adiado pelo critério de só implementar se melhorar a mudança
+   de comportamento. O helper gerado por sessão entregou tudo que as fases acima
+   pediam; o que ele custa é o SID dinâmico e funções globais de statusline. Volta
+   à mesa se isso começar a doer.
 
 Fora de escopo: lixeira do sistema (FreeDesktop/Recycle Bin) e integração com Git (fora de escopo em definitivo).
 
