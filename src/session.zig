@@ -503,7 +503,18 @@ pub const State = struct {
             \\    endif
             \\  endfor
             \\  call append('$', a:directive)
-            \\  write
+            \\  let l:lnum = line('$')
+            \\  try
+            \\    write
+            \\  finally
+            \\    " Gravacao recusada (plano invalido, confirmacao negada): a diretiva
+            \\    " nao chegou ao disco e nao pode ficar no texto, senao o proximo `:w`
+            \\    " que passar a executa -- aplica e ainda troca de pasta.
+            \\    if &modified && getline(l:lnum) ==# a:directive
+            \\      silent! undojoin
+            \\      execute l:lnum . 'delete _'
+            \\    endif
+            \\  endtry
             \\endfunction
             \\
             \\" Diretorio deste buffer. E a ancora unica de tudo que acontece
@@ -1519,6 +1530,55 @@ pub const State = struct {
             \\  redrawstatus!
             \\endfunction
             \\
+            \\" Buffer que recebeu linha colada de outra pasta: tem ID que a propria
+            \\" listagem nao tinha.
+            \\function! s:lstf_has_import(nr) abort
+            \\  let l:own = {}
+            \\  for l:line in getbufvar(a:nr, 'lstf_entry_lines', [])
+            \\    let l:id = matchstr(l:line, '^/\zs\d\+')
+            \\    if !empty(l:id) | let l:own[str2nr(l:id)] = 1 | endif
+            \\  endfor
+            \\  for l:line in getbufline(a:nr, 1, '$')
+            \\    let l:id = matchstr(l:line, '^/\zs\d\+')
+            \\    if !empty(l:id) && !has_key(l:own, str2nr(l:id)) | return 1 | endif
+            \\  endfor
+            \\  return 0
+            \\endfunction
+            \\
+            \\" `:wa` na ordem do recorte. O Vim grava por numero de buffer, e a origem
+            \\" costuma vir antes (o segundo painel nasce nela e depois navega): ela
+            \\" recusa com `claimed_elsewhere`, porque o movimento pertence ao destino,
+            \\" e o `interrupt()` da recusa aborta o `:wa` inteiro -- o destino nunca
+            \\" era gravado. Quem recebeu linha de outra pasta grava primeiro; o apply
+            \\" dele recarrega a origem, que chega a sua vez sem nada pendente.
+            \\function! LstfWriteAll(quit) abort
+            \\  let l:cur = win_getid()
+            \\  let l:first = []
+            \\  let l:rest = []
+            \\  for l:info in getbufinfo({'bufloaded': 1})
+            \\    if l:info.name !~# '\.lstf$' || !l:info.changed | continue | endif
+            \\    call add(s:lstf_has_import(l:info.bufnr) ? l:first : l:rest, l:info.bufnr)
+            \\  endfor
+            \\  for l:nr in l:first + l:rest
+            \\    if !getbufvar(l:nr, '&modified') | continue | endif
+            \\    let l:wins = win_findbuf(l:nr)
+            \\    if empty(l:wins)
+            \\      let b:lstf_notice = 'edicao pendente em '
+            \\        \ . fnamemodify(getbufvar(l:nr, 'lstf_dir', ''), ':t')
+            \\        \ . ' sem janela: abra a pasta para gravar'
+            \\      redrawstatus!
+            \\      return
+            \\    endif
+            \\    call win_gotoid(l:wins[0])
+            \\    write
+            \\    " Recusa ou confirmacao negada: para aqui, com o foco na janela que
+            \\    " tem o recado.
+            \\    if &modified | return | endif
+            \\  endfor
+            \\  call win_gotoid(l:cur)
+            \\  if a:quit | call LstfQuit() | endif
+            \\endfunction
+            \\
             \\function! LstfSplit() abort
             \\  " Com o segundo painel aberto, Ctrl+S e o caminho de volta: toggle, como
             \\  " era no painel de destino que saiu em 11/09.
@@ -1898,6 +1958,10 @@ pub const State = struct {
             \\      return "\x15call LstfQuit()\r"
             \\    elseif l:cmd =~# '^\%(bd\%[elete]\|bw\%[ipeout]\|bun\%[load]\)!\=\%(\s.*\|\)$'
             \\      return "\x15call LstfClosePanel()\r"
+            \\    elseif l:cmd =~# '^wa\%[ll]!\=$'
+            \\      return "\x15call LstfWriteAll(0)\r"
+            \\    elseif l:cmd =~# '^\%(wqa\%[ll]\|xa\%[ll]\)!\=$'
+            \\      return "\x15call LstfWriteAll(1)\r"
             \\    endif
             \\  endif
             \\  return "\r"
