@@ -2232,8 +2232,6 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
         }
         try w.writeAll("\n");
     }
-
-    if (p.unchanged > 0) try w.print("{d} entrada(s) sem mudanca.\n\n", .{p.unchanged});
 }
 
 fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
