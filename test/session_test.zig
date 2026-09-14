@@ -90,6 +90,20 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "guibg=#ccd0da") != null); // Cursorline claro (Latte)
     try testing.expect(std.mem.indexOf(u8, script, "guifg=#c0caf5") != null); // Cor de texto escura (Mocha)
 
+    // A confirmacao veste a paleta do tema oposto: no escuro usa a superficie
+    // clara do tema light, no claro usa a escura do dark, para a caixa de
+    // decisao se destacar do popup do :tree.
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfConfirm ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfConfirm ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "Normal:LstfConfirm") != null);
+
+    // As opcoes Yes/No ficam no rodape e ganham cor por significado, sem bloco
+    // de fundo (que parecia selecao): Yes verde, No vermelho.
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfConfirmYes cterm=bold ctermfg=2 ctermbg=254 gui=bold guifg=#40a02b guibg=#dce0e8") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfConfirmNo cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfConfirmYes cterm=bold ctermfg=10 ctermbg=236 gui=bold guifg=#a6e3a1 guibg=#2a2b3c") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "let l:lines = [''] + a:plan + ['', l:keys]") != null);
+
     // Toggle interno de tema (F2, cob, :theme, :light, :dark)
     try testing.expect(std.mem.indexOf(u8, script, "function! LstfToggleTheme(...)") != null);
     try testing.expect(std.mem.indexOf(u8, script, "nnoremap <silent> <F2> :call LstfToggleTheme()<CR>") != null);

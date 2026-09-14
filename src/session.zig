@@ -791,14 +791,14 @@ pub const State = struct {
             \\    return tolower(l:answer) ==# 'y' || tolower(l:answer) ==# 'yes'
             \\  endif
             \\  let l:max_height = &lines - 6
-            \\  let l:keys = len(a:plan) + 2 > l:max_height
+            \\  let l:keys = len(a:plan) + 3 > l:max_height
             \\    \ ? '[Y]es    [N]o     j/k rolam' : '[Y]es    [N]o'
-            \\  " As teclas vao no topo, nao no fim. Num plano mais alto que o popup a
-            \\  " ultima linha fica abaixo do corte, e a caixa perguntava sem mostrar
-            \\  " como responder -- e nem rolar resolvia, porque a propria dica de
-            \\  " rolagem estava escondida junto. O plano ja abre com uma linha vazia,
-            \\  " que serve de separador.
-            \\  let l:lines = ['', l:keys] + a:plan
+            \\  " As teclas vao no rodape, como numa caixa de dialogo: a acao fica
+            \\  " onde o olho a procura. O defeito antigo (a linha de opcoes cair
+            \\  " abaixo do corte num plano alto) nao volta porque a vista e ancorada
+            \\  " no fim logo abaixo, quando o plano nao cabe. O plano ja abre com
+            \\  " uma linha vazia, que serve de separador.
+            \\  let l:lines = [''] + a:plan + ['', l:keys]
             \\  let l:width = 50
             \\  for l:line in l:lines
             \\    let l:width = max([l:width, strdisplaywidth(l:line) + 4])
@@ -806,7 +806,7 @@ pub const State = struct {
             \\  let l:width = min([l:width, &columns - 4])
             \\  " Centrar as teclas na largura final, que so se conhece agora -- e
             \\  " depois de medir, para o proprio recuo nao alargar o popup.
-            \\  let l:lines[1] = repeat(' ',
+            \\  let l:lines[-1] = repeat(' ',
             \\    \ max([2, (l:width - strdisplaywidth(l:keys)) / 2])) . l:keys
             \\  let l:height = min([len(l:lines), l:max_height])
             \\  let l:buf = -1
@@ -825,7 +825,7 @@ pub const State = struct {
             \\      \ 'title_pos': 'center'
             \\    \ })
             \\    call setwinvar(l:win, '&winhighlight',
-            \\      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
+            \\      \ 'Normal:LstfConfirm,FloatBorder:LstfConfirmBorder,FloatTitle:LstfConfirmBorder')
             \\  else
             \\    let l:win = popup_create(l:lines, {
             \\      \ 'title': ' Confirmar alteracoes ',
@@ -839,21 +839,41 @@ pub const State = struct {
             \\      \ 'maxheight': l:height,
             \\      \ 'mapping': 0,
             \\      \ 'close': 'none',
-            \\      \ 'highlight': 'LstfPopup',
-            \\      \ 'borderhighlight': ['LstfPopupBorder']
+            \\      \ 'highlight': 'LstfConfirm',
+            \\      \ 'borderhighlight': ['LstfConfirmBorder']
             \\    \ })
+            \\  endif
+            \\  " Plano mais alto que a caixa: ancora a vista no fim, senao as
+            \\  " opcoes do rodape nasceriam fora da tela. k sobe para revisar.
+            \\  if len(l:lines) > l:height
+            \\    if has('nvim')
+            \\      " Neovim rola o minimo para mostrar o cursor: na ultima linha ele
+            \\      " fica no rodape, que e onde as opcoes estao.
+            \\      call nvim_win_set_cursor(l:win, [len(l:lines), 0])
+            \\    else
+            \\      " No popup do Vim o topline segue o cursor, entao por o cursor na
+            \\      " ultima linha deixaria o rodape no topo, com o resto vazio. O
+            \\      " topo da ultima tela e len - height + 1.
+            \\      silent! call win_execute(l:win,
+            \\        \ 'call cursor(' . (len(l:lines) - l:height + 1) . ', 1)')
+            \\    endif
             \\  endif
             \\  " A cor vai por matchadd na janela: um mecanismo so serve o popup do
             \\  " Vim e o float do Neovim, sem text property nem extmark, logo sem
             \\  " feature-detect. Sem isto o popup do Vim cai no Pmenu default, que e
             \\  " LightMagenta -- fundo rosa atras do texto todo, inclusive das teclas.
-            \\  " A remocao e a unica secao destacada: e onde a cor avisa em vez de
-            \\  " enfeitar. A linha de continuacao dela fica neutra, porque vermelho
-            \\  " numa frase inteira e o problema de leitura que isto vem corrigir.
+            \\  " Destaques, um papel cada: o cabecalho de Remove fica vermelho,
+            \\  " que e onde a cor avisa; Yes fica verde e No vermelho, que e onde
+            \\  " a cor aponta o que fazer. Texto colorido, nao bloco de fundo --
+            \\  " o bloco parecia selecao. A linha de continuacao do Remove fica
+            \\  " neutra de proposito: vermelho numa frase inteira e o problema de
+            \\  " leitura que isto vem corrigir.
             \\  silent! call win_execute(l:win,
             \\    \ "call matchadd('LstfConfirmRemove', '^Remove (\\d\\+).*')")
             \\  silent! call win_execute(l:win,
-            \\    \ "call matchadd('LstfConfirmKey', '\\[[YN]\\]')")
+            \\    \ "call matchadd('LstfConfirmYes', '\\[Y\\]es')")
+            \\  silent! call win_execute(l:win,
+            \\    \ "call matchadd('LstfConfirmNo', '\\[N\\]o')")
             \\  redraw
             \\  let l:approved = 0
             \\  while 1
@@ -1652,8 +1672,11 @@ pub const State = struct {
             \\    highlight LstfPopup ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
             \\    highlight LstfPopupBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
             \\    highlight PopupSelected cterm=NONE ctermfg=0 ctermbg=252 gui=NONE guifg=#4c4f69 guibg=#ccd0da
-            \\    highlight LstfConfirmRemove cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
-            \\    highlight LstfConfirmKey cterm=bold ctermfg=0 ctermbg=254 gui=bold guifg=#4c4f69 guibg=#dce0e8
+            \\    highlight LstfConfirm ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
+            \\    highlight LstfConfirmBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+            \\    highlight LstfConfirmRemove cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
+            \\    highlight LstfConfirmYes cterm=bold ctermfg=10 ctermbg=236 gui=bold guifg=#a6e3a1 guibg=#2a2b3c
+            \\    highlight LstfConfirmNo cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
             \\    highlight CursorLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
             \\    highlight Visual cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
             \\    highlight LstfVisualLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
@@ -1682,8 +1705,11 @@ pub const State = struct {
             \\    highlight LstfPopup ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
             \\    highlight LstfPopupBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
             \\    highlight PopupSelected cterm=NONE ctermfg=252 ctermbg=240 gui=NONE guifg=#cdd6f4 guibg=#45475a
-            \\    highlight LstfConfirmRemove cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
-            \\    highlight LstfConfirmKey cterm=bold ctermfg=252 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
+            \\    highlight LstfConfirm ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
+            \\    highlight LstfConfirmBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+            \\    highlight LstfConfirmRemove cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
+            \\    highlight LstfConfirmYes cterm=bold ctermfg=2 ctermbg=254 gui=bold guifg=#40a02b guibg=#dce0e8
+            \\    highlight LstfConfirmNo cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
             \\    highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\    highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
             \\    highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
