@@ -259,6 +259,8 @@ pub const State = struct {
             \\      \ 'title_pos': 'center'
             \\    \ }
             \\    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+            \\    call setwinvar(l:win, '&winhighlight',
+            \\      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
             \\    let l:close_cmd = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
             \\    for l:k in ['q', '<Esc>', '<CR>', '<Space>', '<F1>', '?']
             \\      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close_cmd
@@ -270,8 +272,11 @@ pub const State = struct {
             \\      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
             \\      \ 'padding': [0, 1, 0, 1],
             \\      \ 'pos': 'center',
+            \\      \ 'mapping': 0,
             \\      \ 'filter': function('s:lstf_popup_filter'),
-            \\      \ 'close': 'none'
+            \\      \ 'close': 'none',
+            \\      \ 'highlight': 'LstfPopup',
+            \\      \ 'borderhighlight': ['LstfPopupBorder']
             \\    \ })
             \\  endif
             \\endfunction
@@ -810,6 +815,8 @@ pub const State = struct {
             \\    \ max([2, (l:width - strdisplaywidth(l:keys)) / 2])) . l:keys
             \\  let l:height = min([len(l:lines), l:max_height])
             \\  let l:buf = -1
+            \\  let l:max_topline = max([1, len(l:lines) - l:height + 1])
+            \\  let l:topline = l:max_topline
             \\  if has('nvim')
             \\    let l:buf = nvim_create_buf(v:false, v:true)
             \\    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
@@ -837,6 +844,7 @@ pub const State = struct {
             \\      \ 'maxwidth': l:width,
             \\      \ 'minheight': l:height,
             \\      \ 'maxheight': l:height,
+            \\      \ 'firstline': l:topline,
             \\      \ 'mapping': 0,
             \\      \ 'close': 'none',
             \\      \ 'highlight': 'LstfConfirm',
@@ -845,18 +853,10 @@ pub const State = struct {
             \\  endif
             \\  " Plano mais alto que a caixa: ancora a vista no fim, senao as
             \\  " opcoes do rodape nasceriam fora da tela. k sobe para revisar.
-            \\  if len(l:lines) > l:height
-            \\    if has('nvim')
-            \\      " Neovim rola o minimo para mostrar o cursor: na ultima linha ele
-            \\      " fica no rodape, que e onde as opcoes estao.
-            \\      call nvim_win_set_cursor(l:win, [len(l:lines), 0])
-            \\    else
-            \\      " No popup do Vim o topline segue o cursor, entao por o cursor na
-            \\      " ultima linha deixaria o rodape no topo, com o resto vazio. O
-            \\      " topo da ultima tela e len - height + 1.
-            \\      silent! call win_execute(l:win,
-            \\        \ 'call cursor(' . (len(l:lines) - l:height + 1) . ', 1)')
-            \\    endif
+            \\  if len(l:lines) > l:height && has('nvim')
+            \\    " Neovim rola o minimo para mostrar o cursor: na ultima linha ele
+            \\    " fica no rodape, que e onde as opcoes estao.
+            \\    call nvim_win_set_cursor(l:win, [len(l:lines), 0])
             \\  endif
             \\  " A cor vai por matchadd na janela: um mecanismo so serve o popup do
             \\  " Vim e o float do Neovim, sem text property nem extmark, logo sem
@@ -884,9 +884,19 @@ pub const State = struct {
             \\    elseif l:key ==# 'n' || l:key ==# 'N' || l:key ==# 'q' || l:key ==# "\<Esc>"
             \\      break
             \\    elseif l:key ==# 'j' || l:key ==# "\<Down>"
-            \\      silent! call win_execute(l:win, 'normal! j')
+            \\      if has('nvim')
+            \\        silent! call win_execute(l:win, "normal! \<C-e>")
+            \\      else
+            \\        let l:topline = min([l:max_topline, l:topline + 1])
+            \\        call popup_setoptions(l:win, {'firstline': l:topline})
+            \\      endif
             \\    elseif l:key ==# 'k' || l:key ==# "\<Up>"
-            \\      silent! call win_execute(l:win, 'normal! k')
+            \\      if has('nvim')
+            \\        silent! call win_execute(l:win, "normal! \<C-y>")
+            \\      else
+            \\        let l:topline = max([1, l:topline - 1])
+            \\        call popup_setoptions(l:win, {'firstline': l:topline})
+            \\      endif
             \\    endif
             \\    redraw
             \\  endwhile
@@ -1407,6 +1417,8 @@ pub const State = struct {
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
             \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal statusline=%!LstfRuleBar()
+            \\  nnoremap <buffer> <silent> q :call LstfQuit()<CR>
+            \\  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\  augroup lstf_header
             \\    autocmd! * <buffer>
             \\    autocmd WinEnter <buffer> call s:lstf_leave_header()
@@ -1478,7 +1490,7 @@ pub const State = struct {
             \\      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close
             \\    endfor
             \\  elseif exists('*popup_create')
-            \\    let l:win = popup_create(l:lines, {'title': ' Tree ', 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'filter': function('s:lstf_tree_filter'), 'close': 'none', 'highlight': 'LstfPopup', 'borderhighlight': ['LstfPopupBorder']})
+            \\    let l:win = popup_create(l:lines, {'title': ' Tree ', 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'mapping': 0, 'filter': function('s:lstf_tree_filter'), 'close': 'none', 'highlight': 'LstfPopup', 'borderhighlight': ['LstfPopupBorder']})
             \\  else
             \\    echo join(l:lines, "\n")
             \\  endif
@@ -1669,9 +1681,9 @@ pub const State = struct {
             \\    highlight LstfPath cterm=bold ctermfg=166 gui=bold guifg=#bc5215 guibg=NONE
             \\    highlight LstfTitlesSep cterm=NONE ctermfg=248 ctermbg=254 gui=NONE guifg=#9ca0b0 guibg=#dce0e8
             \\    highlight LstfSep ctermfg=250 guifg=#bcc0cc guibg=NONE
-            \\    highlight LstfPopup ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
-            \\    highlight LstfPopupBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
-            \\    highlight PopupSelected cterm=NONE ctermfg=0 ctermbg=252 gui=NONE guifg=#4c4f69 guibg=#ccd0da
+            \\    highlight LstfPopup ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
+            \\    highlight LstfPopupBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+            \\    highlight PopupSelected cterm=NONE ctermfg=252 ctermbg=240 gui=NONE guifg=#cdd6f4 guibg=#45475a
             \\    highlight LstfConfirm ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
             \\    highlight LstfConfirmBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
             \\    highlight LstfConfirmRemove cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
@@ -1702,9 +1714,9 @@ pub const State = struct {
             \\    highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
             \\    highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
             \\    highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
-            \\    highlight LstfPopup ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
-            \\    highlight LstfPopupBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
-            \\    highlight PopupSelected cterm=NONE ctermfg=252 ctermbg=240 gui=NONE guifg=#cdd6f4 guibg=#45475a
+            \\    highlight LstfPopup ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
+            \\    highlight LstfPopupBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+            \\    highlight PopupSelected cterm=NONE ctermfg=0 ctermbg=252 gui=NONE guifg=#4c4f69 guibg=#ccd0da
             \\    highlight LstfConfirm ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
             \\    highlight LstfConfirmBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
             \\    highlight LstfConfirmRemove cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
@@ -1940,6 +1952,8 @@ pub const State = struct {
             \\" para nunca deixar o Vim abrir :help em um split e alterar a tela.
             \\nnoremap <silent> <F1> :call LstfHelp()<CR>
             \\nnoremap <silent> <F2> :call LstfToggleTheme()<CR>
+            \\nnoremap <silent> q :call LstfQuit()<CR>
+            \\nnoremap <silent> ZZ :call LstfQuit()<CR>
             \\
             \\" Tudo que e local a um buffer de listagem: opcoes, sintaxe,
             \\" autocmds, mapas, comandos e abreviaturas. Uma funcao so, chamada

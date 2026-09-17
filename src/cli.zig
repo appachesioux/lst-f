@@ -207,6 +207,9 @@ pub fn run(init: std.process.Init) !u8 {
 
     const args = try init.minimal.args.toSlice(arena);
     const color_default = environ.get("NO_COLOR") == null;
+    if (environ.get("NVIM_NOTTYFAST") == null) {
+        environ.put("NVIM_NOTTYFAST", "1") catch {};
+    }
 
     if (environ.get("LSTF_TZ_OFFSET")) |tz_str| {
         if (std.fmt.parseInt(i32, tz_str, 10)) |val| {
