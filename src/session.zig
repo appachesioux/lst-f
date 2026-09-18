@@ -833,6 +833,10 @@ pub const State = struct {
             \\    \ })
             \\    call setwinvar(l:win, '&winhighlight',
             \\      \ 'Normal:LstfConfirm,FloatBorder:LstfConfirmBorder,FloatTitle:LstfConfirmBorder')
+            \\    " Sem isto uma entrada mais larga que a caixa quebra em duas linhas
+            \\    " de tela para uma so linha logica: a conta de altura e topline, que
+            \\    " e toda em linhas logicas, fica errada e o rodape sai da vista.
+            \\    call win_execute(l:win, 'setlocal nowrap')
             \\  else
             \\    let l:win = popup_create(l:lines, {
             \\      \ 'title': ' Confirmar alteracoes ',
@@ -845,6 +849,7 @@ pub const State = struct {
             \\      \ 'minheight': l:height,
             \\      \ 'maxheight': l:height,
             \\      \ 'firstline': l:topline,
+            \\      \ 'wrap': v:false,
             \\      \ 'mapping': 0,
             \\      \ 'close': 'none',
             \\      \ 'highlight': 'LstfConfirm',
