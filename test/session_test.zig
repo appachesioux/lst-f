@@ -101,7 +101,7 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
 
     // Popups usam mapping=0 para as teclas nao expandirem mapas normais (ex: 'q' expandir LstfQuit)
     try testing.expect(std.mem.indexOf(u8, script, "'mapping': 0") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <silent> q :call LstfQuit()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <silent> q :call LstfQuitPanel()<CR>") != null);
 
     // As opcoes Yes/No ficam no rodape e ganham cor por significado, sem bloco
     // de fundo (que parecia selecao): Yes verde, No vermelho.
@@ -119,9 +119,9 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Light call LstfToggleTheme('light')") != null);
     try testing.expect(std.mem.indexOf(u8, script, "command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')") != null);
 
-    // Dois diretorios lado a lado sao mecanica pura do Vim: `:vsplit` da mesma
-    // pasta e navegar numa das janelas. O "painel de destino" de categoria
-    // separada (render, parser e keymap proprios) nao existe mais.
+    // Ctrl+S abre a segunda janela e depois alterna o foco. `q` fecha o split
+    // mantendo a pasta principal. O "painel de destino" de categoria separada
+    // (render, parser e keymap proprios) nao existe mais.
     try testing.expect(std.mem.indexOf(u8, script, "function! LstfSplit() abort") != null);
     try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> <C-s> :call LstfSplit()<CR>") != null);
     try testing.expect(std.mem.indexOf(u8, script, "__lstf_dest_panel__") == null);

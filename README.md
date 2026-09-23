@@ -43,7 +43,7 @@ que você acabou de entrar por SSH.
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
 | apaga a linha                        | manda para a lixeira (recuperável por 30 dias) |
 | escreve um nome em linha nova        | cria o arquivo (com `/` no fim, o diretório) |
-| `q` no buffer                        | sai do `lst-f`                            |
+| `q` no buffer                        | fecha primeiro o split; depois sai do `lst-f` |
 | `ZZ`                                  | sai do `lst-f`                            |
 | `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
 | `F2` ou `cob`                        | alterna tema entre claro e escuro (`light`/`dark`) |
@@ -59,7 +59,7 @@ que você acabou de entrar por SSH.
 | `Ctrl+A`                              | seleciona todo o buffer do `lst-f`         |
 | `yr` ou `yp`                          | copia caminho relativo do arquivo/diretório para o clipboard |
 | `ya`                                  | copia caminho absoluto do arquivo/diretório para o clipboard |
-| `Ctrl+S`                              | abre esta pasta numa segunda janela (`:vsplit`) |
+| `Ctrl+S`                              | abre o split; depois alterna entre as pastas |
 | `Tab`                                 | percorre as janelas abertas                |
 | `yy` + `p` (ou `Np`)                  | duplica a linha: o ID repetido é pedido de cópia |
 | `yy` aqui + `p` na outra janela       | copia para a pasta da outra janela          |
@@ -144,8 +144,10 @@ Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
 
 Cada diretório visitado é um buffer de verdade, com arquivo próprio. Então dois
 diretórios lado a lado não são uma feature: são `Ctrl+S` (ou `:vsplit`) e
-navegar numa das janelas. A que navegar troca para o buffer da outra pasta; a
-outra continua exatamente onde estava, com as edições que você já tinha feito.
+navegar numa das janelas. Com as duas abertas, `Ctrl+S` alterna o foco; `q`
+fecha o split e mantém a pasta da janela principal. Navegar numa delas
+troca só o buffer daquela janela; a outra continua onde estava, com as edições
+que você já tinha feito.
 
 ```
 ╭─ ~/projetos ────────────────────╮╭─ ~/projetos/relatorios ─────╮

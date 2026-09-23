@@ -219,7 +219,7 @@ pub const State = struct {
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
             \\    \ '    F4             Abre terminal / shell no diretorio atual',
-            \\    \ '    Ctrl+S         Abre a segunda janela; de novo, fecha (:vsplit)',
+            \\    \ '    Ctrl+S         Abre o split; depois alterna entre as pastas',
             \\    \ '    Tab            Percorre as janelas abertas',
             \\    \ '    yy / y         Copia a linha (o ID vai junto, oculto)',
             \\    \ '    dd             Apaga a linha: manda para a lixeira, ou recorta',
@@ -227,7 +227,8 @@ pub const State = struct {
             \\    \ '                   dd antes = move (salve a janela onde colou)',
             \\    \ '                   entre pastas: Ctrl+S e navegue na outra janela',
             \\    \ '                   nome em conflito mostra o desfecho na linha',
-            \\    \ '    q, :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
+            \\    \ '    q              Fecha primeiro o split, mantendo a pasta principal',
+            \\    \ '    :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
             \\    \ '    F1 ou ?        Abre este popup de ajuda',
             \\    \ '',
             \\    \ '  Em terminal estreito, zl/zh rolam horizontalmente',
@@ -740,6 +741,15 @@ pub const State = struct {
             \\
             \\function! LstfQuit() abort
             \\  call s:lstf_write_directive(':quit')
+            \\endfunction
+            \\
+            \\function! LstfQuitPanel() abort
+            \\  let l:wins = s:lstf_list_wins()
+            \\  if len(l:wins) > 1
+            \\    call s:lstf_collapse_panels(l:wins)
+            \\  else
+            \\    call LstfQuit()
+            \\  endif
             \\endfunction
             \\
             \\function! LstfFind() abort
@@ -1422,7 +1432,7 @@ pub const State = struct {
             \\  setlocal nonumber norelativenumber nocursorline winfixheight
             \\  setlocal signcolumn=no foldcolumn=0 colorcolumn=
             \\  setlocal statusline=%!LstfRuleBar()
-            \\  nnoremap <buffer> <silent> q :call LstfQuit()<CR>
+            \\  nnoremap <buffer> <silent> q :call LstfQuitPanel()<CR>
             \\  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\  augroup lstf_header
             \\    autocmd! * <buffer>
@@ -1519,25 +1529,25 @@ pub const State = struct {
             \\  return l:out
             \\endfunction
             \\
-            \\" Colapsa para a janela em foco: e a outra metade do toggle. Janela cujo
-            \\" buffer tem edicao pendente e nao aparece na que fica nao e fechada --
-            \\" a edicao viraria pendencia invisivel na sessao, que e o mesmo que o
-            \\" guard de `s:lstf_nav` evita ao navegar.
+            \\" Ao fechar o split, fica na pasta da janela principal, mesmo se o
+            \\" atalho foi pressionado no split. Uma edicao pendente em outro
+            \\" buffer impede fechar sua ultima janela e perder a edicao de vista.
             \\function! s:lstf_collapse_panels(wins) abort
-            \\  let l:cur = win_getid()
-            \\  let l:fica = winbufnr(win_id2win(l:cur))
+            \\  let l:dest = a:wins[0]
+            \\  let l:buf = winbufnr(win_id2win(l:dest))
             \\  let l:presa = ''
             \\  for l:w in a:wins
-            \\    if l:w == l:cur | continue | endif
-            \\    let l:b = winbufnr(win_id2win(l:w))
-            \\    if l:b != l:fica && getbufvar(l:b, '&modified')
-            \\      let l:presa = fnamemodify(getbufvar(l:b, 'lstf_dir', ''), ':t')
+            \\    if l:w == l:dest | continue | endif
+            \\    let l:other = winbufnr(win_id2win(l:w))
+            \\    if l:other != l:buf && getbufvar(l:other, '&modified')
+            \\      let l:presa = fnamemodify(getbufvar(l:other, 'lstf_dir', ''), ':t')
             \\      continue
             \\    endif
             \\    noautocmd call win_gotoid(l:w)
             \\    silent! close
             \\  endfor
-            \\  noautocmd call win_gotoid(l:cur)
+            \\  noautocmd call win_gotoid(l:dest)
+            \\  let s:lstf_list_win = l:dest
             \\  if !empty(l:presa)
             \\    let b:lstf_notice = 'edicao pendente em ' . l:presa . ': janela mantida'
             \\  endif
@@ -1617,11 +1627,11 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! LstfSplit() abort
-            \\  " Com o segundo painel aberto, Ctrl+S e o caminho de volta: toggle, como
-            \\  " era no painel de destino que saiu em 11/09.
+            \\  " Com o split aberto, alterna o foco entre as janelas de lista.
             \\  let l:wins = s:lstf_list_wins()
             \\  if len(l:wins) > 1
-            \\    call s:lstf_collapse_panels(l:wins)
+            \\    let l:idx = index(l:wins, win_getid())
+            \\    call win_gotoid(l:wins[(l:idx + 1) % len(l:wins)])
             \\    return
             \\  endif
             \\  let l:onde = win_getid()
@@ -1957,7 +1967,7 @@ pub const State = struct {
             \\" para nunca deixar o Vim abrir :help em um split e alterar a tela.
             \\nnoremap <silent> <F1> :call LstfHelp()<CR>
             \\nnoremap <silent> <F2> :call LstfToggleTheme()<CR>
-            \\nnoremap <silent> q :call LstfQuit()<CR>
+            \\nnoremap <silent> q :call LstfQuitPanel()<CR>
             \\nnoremap <silent> ZZ :call LstfQuit()<CR>
             \\
             \\" Tudo que e local a um buffer de listagem: opcoes, sintaxe,
@@ -2048,7 +2058,7 @@ pub const State = struct {
             \\  xnoremap <buffer> <silent> ya :call <SID>lstf_yank_visual(1)<CR>
             \\  xnoremap <buffer> <silent> yA :call <SID>lstf_yank_visual(1)<CR>
             \\  xnoremap <buffer> <silent> yl :call <SID>lstf_yank_link_visual()<CR>
-            \\  nnoremap <buffer> <silent> q :call LstfQuit()<CR>
+            \\  nnoremap <buffer> <silent> q :call LstfQuitPanel()<CR>
             \\  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
             \\  command! -buffer -nargs=? -complete=dir Cd call LstfCd(<q-args>)
             \\  command! -buffer -nargs=? -complete=dir CD call LstfCd(<q-args>)
