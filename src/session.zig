@@ -164,6 +164,18 @@ pub const State = struct {
             \\" A busca do Vim segue a mesma regra do fzf: minusculas ignoram
             \\" caixa; uma maiuscula torna a consulta sensivel a caixa.
             \\set ignorecase smartcase incsearch
+            \\" Formato do cursor por modo (barra vertical no insert, sublinhado no replace, bloco no normal).
+            \\" No Neovim o &guicursor cuida disso; no Vim puro em terminal (iniciado com -u NONE)
+            \\" as sequencias precisam ser configuradas explicitamente via termcap.
+            \\if has('nvim')
+            \\  set guicursor=n-v-c-sm:block,i-ci-ve:ver25,r-cr-o:hor20
+            \\elseif exists('+t_SI') && &term !~# 'dumb'
+            \\  let &t_SI = "\<Esc>[6 q"
+            \\  let &t_SR = "\<Esc>[4 q"
+            \\  let &t_EI = "\<Esc>[2 q"
+            \\  let &t_ti = &t_ti . "\<Esc>[2 q"
+            \\  let &t_te = &t_te . "\<Esc>[0 q"
+            \\endif
             \\let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
             \\  \ ? get(readfile($LST_F_STATE . '/titles'), 0, '') : ''
             \\let s:lstf_identity = '
@@ -1466,7 +1478,9 @@ pub const State = struct {
             \\  let l:start = s:lstf_content_start()
             \\  let l:total = l:start > 0 ? len(filter(getline(l:start, '$'), 'v:val =~# ''^/\d\+\s\+''')) : 0
             \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^/\d\+\s\+''')) : 0
-            \\  let l:mode = mode(1) =~# '^[iR]' ? 'EDIT' : mode(1) =~# '^[vV]' ? 'VISUAL' : 'NORMAL'
+            \\  let l:m = mode(1)
+            \\  let l:mode = l:m =~# '^[iR]' ? 'EDIT' : (l:m =~# '^[vV]' || l:m ==# "\<C-V>") ? 'VISUAL' : 'NORMAL'
+            \\  let l:mode_hl = l:mode ==# 'EDIT' ? 'LstfStatusModeEdit' : l:mode ==# 'VISUAL' ? 'LstfStatusModeVisual' : 'LstfStatusModeNormal'
             \\  let l:name = substitute(s:lstf_entry_path(), '%', '%%', 'g')
             \\  let l:location = s:lstf_location()
             \\  let l:location = substitute(l:location, '%', '%%', 'g')
@@ -1483,7 +1497,7 @@ pub const State = struct {
             \\  let l:aviso = empty(l:av) ? '' : '%#LstfStatusNotice# ' . substitute(l:av, '%', '%%', 'g') . ' %#LstfStatusInfo#'
             \\  let l:collisions = get(b:, 'lstf_collision_count', 0)
             \\  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisao: ' . l:collisions . ' %#LstfStatusInfo#' : ''
-            \\  return '%#LstfStatusMode# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
+            \\  return '%#' . l:mode_hl . '# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo# ' . l:tag . l:editor . ' %#LstfStatusHelp# F1=Help '
             \\endfunction
             \\
             \\function! LstfTree() abort
@@ -1686,6 +1700,9 @@ pub const State = struct {
             \\function! s:lstf_apply_colors() abort
             \\  if &background ==# 'light'
             \\    highlight LstfStatusMode cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+            \\    highlight LstfStatusModeNormal cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+            \\    highlight LstfStatusModeEdit cterm=bold ctermfg=0 ctermbg=3 gui=bold guifg=#202020 guibg=#df8e1d
+            \\    highlight LstfStatusModeVisual cterm=bold ctermfg=15 ctermbg=5 gui=bold guifg=#ffffff guibg=#8839ef
             \\    highlight LstfStatusInfo ctermfg=0 ctermbg=NONE guifg=#4c4f69 guibg=NONE
             \\    highlight LstfStatusHelp cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
             \\    highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=3 gui=bold guifg=#202020 guibg=#df8e1d
@@ -1719,6 +1736,9 @@ pub const State = struct {
         try w.writeAll(
             \\  else
             \\    highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\    highlight LstfStatusModeNormal cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+            \\    highlight LstfStatusModeEdit cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
+            \\    highlight LstfStatusModeVisual cterm=bold ctermfg=0 ctermbg=13 gui=bold guifg=#1e1e2e guibg=#cba6f7
             \\    highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
             \\    highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
             \\    highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
@@ -1847,6 +1867,7 @@ pub const State = struct {
             \\augroup lstf_statusline
             \\  autocmd!
             \\  autocmd ModeChanged * redrawstatus | if exists('b:lstf_header') | call s:lstf_highlight_visual_lines() | endif
+            \\  autocmd InsertEnter,InsertLeave * redrawstatus
             \\  " Abrir ou fechar um split estreita a janela da lista sem passar por
             \\  " ela: sem isto a barra de topo so voltaria a sincronizar no proximo
             \\  " Tab. Vim antigo nao tem o evento; ai sincroniza no Tab.

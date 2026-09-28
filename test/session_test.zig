@@ -141,4 +141,16 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     // Ancora unica: o diretorio do proprio buffer, nao um estado global.
     try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_dir() abort") != null);
     try testing.expect(std.mem.indexOf(u8, script, "b:lstf_dir") != null);
+
+    // Formato do cursor configurado para mudar no modo insert
+    try testing.expect(std.mem.indexOf(u8, script, "t_SI") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "t_SR") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "t_EI") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "guicursor") != null);
+
+    // Destaque de modo na statusline por estado (NORMAL, EDIT, VISUAL)
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfStatusModeNormal") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfStatusModeEdit") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "highlight LstfStatusModeVisual") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "l:mode_hl") != null);
 }
