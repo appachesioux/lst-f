@@ -798,6 +798,50 @@ pub const State = struct {
             \\  redrawstatus!
             \\endfunction
             \\
+            \\function! LstfBookmarkSelect(idx, ...) abort
+            \\  let l:win = a:0 > 0 ? a:1 : 0
+            \\  let l:orig_win = a:0 > 1 ? a:2 : 0
+            \\  if l:win > 0
+            \\    if has('nvim')
+            \\      silent! call nvim_win_close(l:win, v:true)
+            \\    elseif exists('*popup_close')
+            \\      silent! call popup_close(l:win)
+            \\    endif
+            \\  endif
+            \\  if l:orig_win > 0 && win_id2win(l:orig_win) > 0
+            \\    noautocmd call win_gotoid(l:orig_win)
+            \\  endif
+            \\  let l:items = s:lstf_bookmarks()
+            \\  if a:idx < 1 || a:idx > len(l:items) | return | endif
+            \\  let l:path = l:items[a:idx - 1]
+            \\  if !isdirectory(l:path)
+            \\    let b:lstf_notice = 'bookmark inacessivel: ' . l:path
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  call LstfCd(l:path)
+            \\endfunction
+            \\
+            \\function! s:lstf_bookmarks_filter(winid, key) abort
+            \\  if a:key ==# 'q' || a:key ==# "\<Esc>" || a:key ==# '0'
+            \\    call popup_close(a:winid, -1)
+            \\    return 1
+            \\  endif
+            \\  if a:key =~# '^[1-9]$'
+            \\    let l:num = str2nr(a:key)
+            \\    let l:items = s:lstf_bookmarks()
+            \\    if l:num <= len(l:items)
+            \\      call popup_close(a:winid, l:num)
+            \\      return 1
+            \\    endif
+            \\  endif
+            \\  return popup_filter_menu(a:winid, a:key)
+            \\endfunction
+            \\
+            \\function! s:lstf_bookmarks_cb(winid, result) abort
+            \\  call LstfBookmarkSelect(a:result)
+            \\endfunction
+            \\
             \\function! LstfBookmarks() abort
             \\  let l:items = s:lstf_bookmarks()
             \\  if empty(l:items)
@@ -805,19 +849,69 @@ pub const State = struct {
             \\    redrawstatus!
             \\    return
             \\  endif
-            \\  let l:menu = ['Bookmarks (0 cancela):']
+            \\  let l:lines = []
             \\  for l:i in range(len(l:items))
-            \\    call add(l:menu, printf('%d. %s', l:i + 1, l:items[l:i]))
+            \\    call add(l:lines, printf('%d. %s', l:i + 1, l:items[l:i]))
             \\  endfor
-            \\  let l:choice = inputlist(l:menu)
-            \\  if l:choice < 1 || l:choice > len(l:items) | return | endif
-            \\  let l:path = l:items[l:choice - 1]
-            \\  if !isdirectory(l:path)
-            \\    let b:lstf_notice = 'bookmark inacessivel: ' . l:path
-            \\    redrawstatus!
-            \\    return
+            \\  let l:max_w = 40
+            \\  for l:line in l:lines
+            \\    let l:max_w = max([l:max_w, strdisplaywidth(l:line) + 4])
+            \\  endfor
+            \\  let l:width = min([l:max_w, &columns - 4])
+            \\  let l:height = min([len(l:lines), &lines - 4])
+            \\  let l:orig_win = win_getid()
+            \\  if has('nvim')
+            \\    let l:buf = nvim_create_buf(v:false, v:true)
+            \\    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+            \\    let l:opts = {
+            \\      \ 'relative': 'editor',
+            \\      \ 'row': max([1, (&lines - l:height) / 2 - 1]),
+            \\      \ 'col': max([1, (&columns - l:width) / 2]),
+            \\      \ 'width': l:width,
+            \\      \ 'height': l:height,
+            \\      \ 'style': 'minimal',
+            \\      \ 'border': 'rounded',
+            \\      \ 'title': ' Bookmarks ',
+            \\      \ 'title_pos': 'center'
+            \\    \ }
+            \\    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+            \\    call setwinvar(l:win, '&winhighlight',
+            \\      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
+            \\    call setwinvar(l:win, '&cursorline', 1)
+            \\    call setwinvar(l:win, '&wrap', 0)
+            \\    call setbufvar(l:buf, '&buftype', 'nofile')
+            \\    call setbufvar(l:buf, '&bufhidden', 'wipe')
+            \\    call setbufvar(l:buf, '&modifiable', 0)
+            \\    let l:close = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
+            \\    for l:k in ['q', '<Esc>', '0']
+            \\      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close
+            \\    endfor
+            \\    execute 'nnoremap <buffer> <silent> <CR> :call LstfBookmarkSelect(line("."), ' . l:win . ', ' . l:orig_win . ')<CR>'
+            \\    execute 'nnoremap <buffer> <silent> <Space> :call LstfBookmarkSelect(line("."), ' . l:win . ', ' . l:orig_win . ')<CR>'
+            \\    for l:i in range(1, min([9, len(l:items)]))
+            \\      execute 'nnoremap <buffer> <silent> ' . l:i . ' :call LstfBookmarkSelect(' . l:i . ', ' . l:win . ', ' . l:orig_win . ')<CR>'
+            \\    endfor
+            \\  elseif exists('*popup_create')
+            \\    let l:win = popup_create(l:lines, {
+            \\      \ 'title': ' Bookmarks ',
+            \\      \ 'border': [],
+            \\      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+            \\      \ 'padding': [0, 1, 0, 1],
+            \\      \ 'pos': 'center',
+            \\      \ 'cursorline': v:true,
+            \\      \ 'wrap': v:false,
+            \\      \ 'mapping': 0,
+            \\      \ 'filter': function('s:lstf_bookmarks_filter'),
+            \\      \ 'callback': function('s:lstf_bookmarks_cb'),
+            \\      \ 'close': 'none',
+            \\      \ 'highlight': 'LstfPopup',
+            \\      \ 'borderhighlight': ['LstfPopupBorder']
+            \\    \ })
+            \\  else
+            \\    let l:menu = ['Bookmarks (0 cancela):'] + l:lines
+            \\    let l:choice = inputlist(l:menu)
+            \\    call LstfBookmarkSelect(l:choice)
             \\  endif
-            \\  call LstfCd(l:path)
             \\endfunction
             \\
             \\function! s:lstf_cmd_find(query) abort

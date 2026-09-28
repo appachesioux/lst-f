@@ -87,9 +87,9 @@ Na árvore, use `j`/`k` ou as setas para navegar; `q`, `Esc`, `Enter` ou `\` a f
 
 Os bookmarks ficam em `$XDG_CONFIG_HOME/lst-f/bookmarks` (por padrão,
 `~/.config/lst-f/bookmarks`), um caminho absoluto por linha. `m` marca a pasta
-sob o cursor; sobre um arquivo, marca a pasta atual. `b` mostra uma lista
-numerada para escolher o destino; `0` cancela. A visita entra no histórico,
-então `<` volta de onde você veio.
+sob o cursor; sobre um arquivo, marca a pasta atual. `b` abre um popup com a lista
+numerada para escolher o destino (`Enter` ou o número confirma, `0`, `Esc` ou `q` cancela).
+A visita entra no histórico, então `<` volta de onde você veio.
 
 Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
 

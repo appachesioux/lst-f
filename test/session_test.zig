@@ -153,4 +153,12 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "highlight LstfStatusModeEdit") != null);
     try testing.expect(std.mem.indexOf(u8, script, "highlight LstfStatusModeVisual") != null);
     try testing.expect(std.mem.indexOf(u8, script, "l:mode_hl") != null);
+
+    // Bookmarks em popup interativo (:bookmark, :bookmarks, m, b)
+    try testing.expect(std.mem.indexOf(u8, script, "function! LstfBookmark()") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "function! LstfBookmarks()") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "function! LstfBookmarkSelect(") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "'title': ' Bookmarks '") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> m :call LstfBookmark()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> b :call LstfBookmarks()<CR>") != null);
 }
