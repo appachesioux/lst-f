@@ -54,6 +54,7 @@ que você acabou de entrar por SSH.
 | `.`                                   | alterna exibição de arquivos ocultos       |
 | `-`                                   | sobe para o diretório-pai                  |
 | `<` e `>`                             | voltam e avançam nos diretórios visitados na sessão |
+| `m` / `b`                             | marca ou desmarca uma pasta; abre a lista de bookmarks |
 | `\`                                   | abre uma árvore visual do diretório atual  |
 | `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
 | `Ctrl+A`                              | seleciona todo o buffer do `lst-f`         |
@@ -77,11 +78,18 @@ que você acabou de entrar por SSH.
 | `:open <arquivo>`                    | abre o arquivo para edição no editor       |
 | `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
 | `:back` / `:forward`                 | andam pelos diretórios visitados na sessão |
+| `:bookmark` / `:bookmarks`           | marca a pasta selecionada ou atual; escolhe uma pasta marcada |
 | `:undo`                              | desfaz a última operação da sessão         |
 | `:quit`                              | sai (salvar sem mudanças também sai)       |
 | `:cq` no editor                      | aborta sem aplicar nada                    |
 
 Na árvore, use `j`/`k` ou as setas para navegar; `q`, `Esc`, `Enter` ou `\` a fecha. Para manter a abertura rápida em árvores grandes, ela mostra até 2.000 entradas e informa quando foi truncada.
+
+Os bookmarks ficam em `$XDG_CONFIG_HOME/lst-f/bookmarks` (por padrão,
+`~/.config/lst-f/bookmarks`), um caminho absoluto por linha. `m` marca a pasta
+sob o cursor; sobre um arquivo, marca a pasta atual. `b` mostra uma lista
+numerada para escolher o destino; `0` cancela. A visita entra no histórico,
+então `<` volta de onde você veio.
 
 Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
 

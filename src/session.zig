@@ -212,6 +212,8 @@ pub const State = struct {
             \\    \ '    :hidden        Alterna exibicao de arquivos ocultos',
             \\    \ '    :theme [modo]  Alterna ou define tema: light ou dark (:light, :dark)',
             \\    \ '    :back/:forward Andam pelos diretorios visitados na sessao',
+            \\    \ '    :bookmark      Marca/desmarca a pasta selecionada ou atual',
+            \\    \ '    :bookmarks     Escolhe uma pasta marcada para visitar',
             \\    \ '    :undo          Desfaz a ultima operacao aplicada na sessao',
             \\    \ '    :quit          Sai da sessao (:cq aborta sem aplicar nada)',
             \\    \ '',
@@ -231,6 +233,7 @@ pub const State = struct {
             \\    \ '    \              Mostra a arvore visual do diretorio',
             \\    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
             \\    \ '    F4             Abre terminal / shell no diretorio atual',
+            \\    \ '    m / b          Marca pasta / abre bookmarks',
             \\    \ '    Ctrl+S         Abre o split; depois alterna entre as pastas',
             \\    \ '    Tab            Percorre as janelas abertas',
             \\    \ '    yy / y         Copia a linha (o ID vai junto, oculto)',
@@ -736,6 +739,85 @@ pub const State = struct {
             \\    return
             \\  endif
             \\  call LstfCd($LST_F_TRASH)
+            \\endfunction
+            \\
+            \\" Um caminho absoluto por linha. Bookmarks pertencem ao usuario, nao a
+            \\" sessao volatil nem ao diretorio que esta aberto.
+            \\function! s:lstf_bookmark_file() abort
+            \\  if empty($HOME) | return '' | endif
+            \\  let l:config = empty($XDG_CONFIG_HOME) ? $HOME . '/.config' : $XDG_CONFIG_HOME
+            \\  return l:config . '/lst-f/bookmarks'
+            \\endfunction
+            \\
+            \\function! s:lstf_bookmarks() abort
+            \\  let l:file = s:lstf_bookmark_file()
+            \\  if empty(l:file) || !filereadable(l:file) | return [] | endif
+            \\  try
+            \\    return uniq(sort(filter(readfile(l:file), 'v:val =~# "^/"')))
+            \\  catch
+            \\    return []
+            \\  endtry
+            \\endfunction
+            \\
+            \\function! LstfBookmark() abort
+            \\  let l:file = s:lstf_bookmark_file()
+            \\  if empty(l:file)
+            \\    let b:lstf_notice = 'sem HOME: bookmarks indisponiveis'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  let l:entry = s:lstf_entry_path()
+            \\  let l:selected = empty(l:entry) ? '' : simplify(s:lstf_dir() . '/' . l:entry)
+            \\  let l:path = isdirectory(l:selected) ? l:selected : s:lstf_dir()
+            \\  if stridx(l:path, "\n") >= 0
+            \\    let b:lstf_notice = 'pasta com quebra de linha nao pode ser marcada'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  let l:items = s:lstf_bookmarks()
+            \\  let l:idx = index(l:items, l:path)
+            \\  if l:idx >= 0
+            \\    call remove(l:items, l:idx)
+            \\    let l:notice = 'bookmark removido: ' . l:path
+            \\  else
+            \\    call add(l:items, l:path)
+            \\    call sort(l:items)
+            \\    let l:notice = 'bookmark adicionado: ' . l:path
+            \\  endif
+            \\  try
+            \\    if mkdir(fnamemodify(l:file, ':h'), 'p') == 0
+            \\      throw 'nao consegui criar pasta de bookmarks'
+            \\    endif
+            \\    if writefile(l:items, l:file) != 0
+            \\      throw 'nao consegui gravar bookmarks'
+            \\    endif
+            \\    let b:lstf_notice = l:notice
+            \\  catch
+            \\    let b:lstf_notice = 'nao consegui salvar bookmarks'
+            \\  endtry
+            \\  redrawstatus!
+            \\endfunction
+            \\
+            \\function! LstfBookmarks() abort
+            \\  let l:items = s:lstf_bookmarks()
+            \\  if empty(l:items)
+            \\    let b:lstf_notice = 'sem bookmarks: m marca uma pasta'
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  let l:menu = ['Bookmarks (0 cancela):']
+            \\  for l:i in range(len(l:items))
+            \\    call add(l:menu, printf('%d. %s', l:i + 1, l:items[l:i]))
+            \\  endfor
+            \\  let l:choice = inputlist(l:menu)
+            \\  if l:choice < 1 || l:choice > len(l:items) | return | endif
+            \\  let l:path = l:items[l:choice - 1]
+            \\  if !isdirectory(l:path)
+            \\    let b:lstf_notice = 'bookmark inacessivel: ' . l:path
+            \\    redrawstatus!
+            \\    return
+            \\  endif
+            \\  call LstfCd(l:path)
             \\endfunction
             \\
             \\function! s:lstf_cmd_find(query) abort
@@ -2030,6 +2112,10 @@ pub const State = struct {
             \\      return "\x15YankAbs\r"
             \\    elseif l:cmd ==# 'trash' || l:cmd ==# 'lixeira'
             \\      return "\x15call LstfTrash()\r"
+            \\    elseif l:cmd ==# 'bookmark'
+            \\      return "\x15Bookmark\r"
+            \\    elseif l:cmd ==# 'bookmarks'
+            \\      return "\x15Bookmarks\r"
             \\    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
             \\      return "\x15call LstfQuit()\r"
             \\    elseif l:cmd =~# '^\%(bd\%[elete]\|bw\%[ipeout]\|bun\%[load]\)!\=\%(\s.*\|\)$'
@@ -2061,6 +2147,8 @@ pub const State = struct {
             \\  nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
             \\  nnoremap <buffer> <silent> <F4> :call LstfShell()<CR>
             \\  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+            \\  nnoremap <buffer> <silent> m :call LstfBookmark()<CR>
+            \\  nnoremap <buffer> <silent> b :call LstfBookmarks()<CR>
             \\  nnoremap <buffer> <silent> <C-a> ggVG
             \\  nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
             \\  nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
@@ -2088,6 +2176,10 @@ pub const State = struct {
             \\  cnoreabbrev <expr> <buffer> home getcmdtype() ==# ':' && getcmdline() ==# 'home' ? 'call LstfHome()' : 'home'
             \\  command! -buffer -nargs=0 Trash call LstfTrash()
             \\  cnoreabbrev <expr> <buffer> trash getcmdtype() ==# ':' && getcmdline() ==# 'trash' ? 'Trash' : 'trash'
+            \\  command! -buffer -nargs=0 Bookmark call LstfBookmark()
+            \\  command! -buffer -nargs=0 Bookmarks call LstfBookmarks()
+            \\  cnoreabbrev <expr> <buffer> bookmark getcmdtype() ==# ':' && getcmdline() ==# 'bookmark' ? 'Bookmark' : 'bookmark'
+            \\  cnoreabbrev <expr> <buffer> bookmarks getcmdtype() ==# ':' && getcmdline() ==# 'bookmarks' ? 'Bookmarks' : 'bookmarks'
             \\  command! -buffer -nargs=0 Back call LstfBack()
             \\  cnoreabbrev <expr> <buffer> back getcmdtype() ==# ':' && getcmdline() ==# 'back' ? 'Back' : 'back'
             \\  command! -buffer -nargs=0 Forward call LstfForward()
