@@ -1203,10 +1203,33 @@ pub const State = struct {
             \\  return filter(getline(l:start, '$'), 'v:val !~# "^:" && v:val !~# "^#"')
             \\endfunction
             \\
+            \\" Linhas de entrada do buffer, refeitas so quando o texto muda. A barra
+            \\" de status e redesenhada a cada tecla; varrer o buffer inteiro ali
+            \\" pesava em pasta com milhares de entradas.
+            \\function! s:lstf_scan() abort
+            \\  let l:scan = get(b:, 'lstf_scan', {})
+            \\  if get(l:scan, 'tick', -1) == b:changedtick | return l:scan | endif
+            \\  let l:lines = filter(map(getline(1, '$'),
+            \\    \ 'v:val =~# ''^/\d\+\s\+'' ? v:key + 1 : 0'), 'v:val > 0')
+            \\  let b:lstf_scan = {'tick': b:changedtick, 'lines': l:lines}
+            \\  return b:lstf_scan
+            \\endfunction
+            \\
             \\function! s:lstf_content_start() abort
             \\  " Do topo do buffer, nao do cursor: com 'nW' a "primeira entrada"
             \\  " era sempre a seguinte a ele, e o contador nascia zerado.
-            \\  return match(getline(1, '$'), '^/\d\+\s\+') + 1
+            \\  return get(s:lstf_scan().lines, 0, 0)
+            \\endfunction
+            \\
+            \\" Quantas entradas ha da primeira ate `lnum`, inclusive.
+            \\function! s:lstf_entries_upto(lnum) abort
+            \\  let l:lines = s:lstf_scan().lines
+            \\  let [l:lo, l:hi] = [0, len(l:lines)]
+            \\  while l:lo < l:hi
+            \\    let l:mid = (l:lo + l:hi) / 2
+            \\    if l:lines[l:mid] <= a:lnum | let l:lo = l:mid + 1 | else | let l:hi = l:mid | endif
+            \\  endwhile
+            \\  return l:lo
             \\endfunction
             \\
             \\" O cabecalho e a barra de titulo desta tela, nao conteudo: se uma
@@ -1240,7 +1263,13 @@ pub const State = struct {
             \\endfunction
             \\
             \\" Comeco do nome na linha: depois do ID e da grade de colunas.
+            \\" A grade e fixa: linha que ainda comeca pelo prefixo capturado na
+            \\" leitura tem o nome logo depois dele, sem regex.
             \\function! s:lstf_name_start(line) abort
+            \\  let l:prefix = get(get(b:, 'lstf_prefix', {}), matchstr(a:line, '^/\d\+'), '')
+            \\  if !empty(l:prefix) && strpart(a:line, 0, len(l:prefix)) ==# l:prefix
+            \\    return len(l:prefix)
+            \\  endif
             \\  return matchend(a:line, '^\/\d\+\s\+\%(.*│\s*\S*\s\+\)\?')
             \\endfunction
             \\
@@ -1287,8 +1316,13 @@ pub const State = struct {
             \\      let b:lstf_id_width = matchend(l:line, '^/\d\+\s\+')
             \\    endif
             \\    let l:start = s:lstf_name_start(l:line)
-            \\    if l:start > 0 | let b:lstf_prefix[l:id] = strpart(l:line, 0, l:start) | endif
-            \\    let b:lstf_original_path[l:id] = s:lstf_entry_path(l:line)
+            \\    if l:start > 0
+            \\      let b:lstf_prefix[l:id] = strpart(l:line, 0, l:start)
+            \\      " E o que `s:lstf_entry_path` devolveria, sem a segunda regex.
+            \\      let b:lstf_original_path[l:id] = strpart(l:line, l:start)
+            \\    else
+            \\      let b:lstf_original_path[l:id] = s:lstf_entry_path(l:line)
+            \\    endif
             \\  endfor
             \\endfunction
             \\
@@ -1388,6 +1422,51 @@ pub const State = struct {
             \\  return has_key(a:cache.ids, a:id)
             \\endfunction
             \\
+            \\" Um `A`...`Esc` dispara `InsertLeave` e `TextChanged` pela mesma
+            \\" edicao, e `InsertLeave` dispara sem edicao nenhuma: a varredura so
+            \\" refaz quando o texto desta janela mudou desde a ultima.
+            \\function! s:lstf_collisions_if_changed() abort
+            \\  if get(w:, 'lstf_collision_key', []) ==# [bufnr('%'), b:changedtick] | return | endif
+            \\  call s:lstf_update_collisions()
+            \\endfunction
+            \\
+            \\" A varredura percorre o buffer inteiro e, em pasta com milhares de
+            \\" entradas, levava 100 ms ou mais por edicao. Ela so alimenta destaque e
+            \\" barra de status -- o `:w` valida pelo lado Zig --, entao pode esperar a
+            \\" edicao aparecer: roda depois de uma pausa, e uma sequencia de `dd`/`.`
+            \\" paga uma varredura so. Sem `timers` (Vim anterior ao 8.0) fica sincrona.
+            \\" O `InsertLeave` nao passa por aqui: com `-u NONE` o Vim fica sem
+            \\" `ttimeout`, e depois de um `Esc` espera ate `timeoutlen` (1 s) por uma
+            \\" sequencia de tecla sem rodar timer -- o nome digitado so ganharia o
+            \\" destaque um segundo depois.
+            \\let s:lstf_collision_delay = 100
+            \\let s:lstf_collision_timer = -1
+            \\function! s:lstf_collisions_schedule() abort
+            \\  if get(w:, 'lstf_collision_key', []) ==# [bufnr('%'), b:changedtick] | return | endif
+            \\  if !has('timers') | call s:lstf_update_collisions() | return | endif
+            \\  if s:lstf_collision_timer != -1 | call timer_stop(s:lstf_collision_timer) | endif
+            \\  let s:lstf_collision_win = win_getid()
+            \\  let s:lstf_collision_timer = timer_start(s:lstf_collision_delay,
+            \\    \ function('s:lstf_collisions_fire'))
+            \\endfunction
+            \\
+            \\function! s:lstf_collisions_fire(timer) abort
+            \\  let s:lstf_collision_timer = -1
+            \\  " Os destaques sao da janela (`matchaddpos`). Se o foco saiu dela, o
+            \\  " `WinEnter` refaz ao voltar.
+            \\  if win_getid() != s:lstf_collision_win || !exists('b:lstf_prefix') | return | endif
+            \\  let l:mode = mode()
+            \\  " No insert nao havia varredura antes e continua nao havendo: o
+            \\  " `InsertLeave` varre ao sair. Linha de comando, operador pendente e
+            \\  " afins: tenta depois, para nao redesenhar por baixo do que se digita.
+            \\  if l:mode =~# '^[iR]' | return | endif
+            \\  if l:mode !=# 'n' && l:mode !~# "^[vV\x16]"
+            \\    call s:lstf_collisions_schedule()
+            \\    return
+            \\  endif
+            \\  call s:lstf_collisions_if_changed()
+            \\endfunction
+            \\
             \\function! s:lstf_update_collisions() abort
             \\  for l:match in get(w:, 'lstf_collision_matches', [])
             \\    silent! call matchdelete(l:match)
@@ -1395,28 +1474,39 @@ pub const State = struct {
             \\  call s:lstf_annotations_clear()
             \\  let w:lstf_collision_matches = []
             \\  let b:lstf_collision_count = 0
+            \\  let w:lstf_collision_key = [bufnr('%'), b:changedtick]
+            \\  " Sem edicao o buffer e a listagem lida do disco, onde cada caminho
+            \\  " aparece uma vez: nao ha o que procurar. E o caso de toda abertura
+            \\  " de pasta, e de um `u` que volte ao estado lido.
+            \\  if !&modified | redrawstatus | return | endif
+            \\  " Primeira linha de cada caminho; a lista de usos so nasce quando o
+            \\  " caminho se repete. Montar um dicionario por linha era o grosso do
+            \\  " custo em pasta grande, e colisao e excecao. As chaves de `l:primeira`
+            \\  " sao tambem os nomes ja ocupados, para o sufixo previsto nao cair em
+            \\  " cima de outro.
+            \\  let l:primeira = {}
             \\  let l:paths = {}
-            \\  " Nomes ja ocupados por qualquer linha, para o sufixo previsto nao
-            \\  " cair em cima de outro; IDs vistos, para saber qual linha e a
-            \\  " primeira de um ID repetido (essa e a que fica).
-            \\  let l:tomado = {}
+            \\  " IDs vistos, para saber qual linha e a primeira de um ID repetido
+            \\  " (essa e a que fica).
             \\  let l:vistos = {}
             \\  let l:cache = {}
-            \\  " IDs que vieram da listagem deste buffer. Um ID fora daqui e linha
-            \\  " colada de outra janela.
-            \\  let l:proprios = {}
-            \\  for l:orig in get(b:, 'lstf_entry_lines', [])
-            \\    let l:oid = matchstr(l:orig, '^/\d\+')
-            \\    if !empty(l:oid) | let l:proprios[l:oid] = 1 | endif
-            \\  endfor
             \\  let l:start = s:lstf_content_start()
             \\  if l:start <= 0 | redrawstatus | return | endif
-            \\  for l:lnum in range(l:start, line('$'))
-            \\    let l:line = getline(l:lnum)
+            \\  let l:prefixes = get(b:, 'lstf_prefix', {})
+            \\  let l:lnum = l:start - 1
+            \\  for l:line in getline(l:start, '$')
+            \\    let l:lnum += 1
             \\    let l:id = matchstr(l:line, '^/\d\+')
             \\    if !empty(l:id)
-            \\      let l:path = s:lstf_entry_path(l:line)
-            \\      let l:col = s:lstf_name_start(l:line) + 1
+            \\      " O mesmo que `s:lstf_entry_path` daria para uma linha com ID. O
+            \\      " prefixo vai inline: chamar `s:lstf_name_start` por linha pesava.
+            \\      let l:prefix = get(l:prefixes, l:id, '')
+            \\      if !empty(l:prefix) && strpart(l:line, 0, len(l:prefix)) ==# l:prefix
+            \\        let l:col = len(l:prefix) + 1
+            \\      else
+            \\        let l:col = s:lstf_name_start(l:line) + 1
+            \\      endif
+            \\      let l:path = l:col > 0 ? strpart(l:line, l:col - 1) : ''
             \\    else
             \\      if l:line =~# '^\s*$' || l:line =~# '^[:#]' | continue | endif
             \\      let l:raw = substitute(l:line, '^\s*', '', '')
@@ -1425,21 +1515,33 @@ pub const State = struct {
             \\      let l:col = match(l:line, '\S') + 1
             \\    endif
             \\    if empty(l:path) || l:col <= 0 | continue | endif
-            \\    let l:tomado[l:path] = 1
             \\    let l:primeiro = !has_key(l:vistos, l:id)
             \\    if !empty(l:id) | let l:vistos[l:id] = 1 | endif
-            \\    if !has_key(l:paths, l:path) | let l:paths[l:path] = [] | endif
-            \\    call add(l:paths[l:path], {'line': l:lnum, 'col': l:col, 'len': len(l:path),
-            \\      \ 'id': l:id, 'primeiro': l:primeiro})
+            \\    let l:use = [l:lnum, l:col, l:id, l:primeiro]
+            \\    if has_key(l:paths, l:path)
+            \\      call add(l:paths[l:path], l:use)
+            \\    elseif has_key(l:primeira, l:path)
+            \\      let l:paths[l:path] = [l:primeira[l:path], l:use]
+            \\    else
+            \\      let l:primeira[l:path] = l:use
+            \\    endif
+            \\  endfor
+            \\  if empty(l:paths) | redrawstatus | return | endif
+            \\  " IDs que vieram da listagem deste buffer. Um ID fora daqui e linha
+            \\  " colada de outra janela.
+            \\  let l:proprios = {}
+            \\  for l:orig in get(b:, 'lstf_entry_lines', [])
+            \\    let l:oid = matchstr(l:orig, '^/\d\+')
+            \\    if !empty(l:oid) | let l:proprios[l:oid] = 1 | endif
             \\  endfor
             \\  for l:path in keys(l:paths)
             \\    let l:uses = l:paths[l:path]
-            \\    if len(l:uses) < 2 | continue | endif
             \\    let b:lstf_collision_count += len(l:uses)
-            \\    for l:use in l:uses
+            \\    for [l:ln, l:co, l:uid, l:prim] in l:uses
             \\      call add(w:lstf_collision_matches,
-            \\        \ matchaddpos('LstfCollision', [[l:use.line, l:use.col, l:use.len]], 20))
-            \\      call s:lstf_prever(l:use, l:path, l:proprios, l:tomado, l:cache)
+            \\        \ matchaddpos('LstfCollision', [[l:ln, l:co, len(l:path)]], 20))
+            \\      call s:lstf_prever({'line': l:ln, 'id': l:uid, 'primeiro': l:prim},
+            \\        \ l:path, l:proprios, l:primeira, l:cache)
             \\    endfor
             \\  endfor
             \\  redrawstatus
@@ -1651,9 +1753,8 @@ pub const State = struct {
             \\endfunction
             \\
             \\function! LstfStatusline() abort
-            \\  let l:start = s:lstf_content_start()
-            \\  let l:total = l:start > 0 ? len(filter(getline(l:start, '$'), 'v:val =~# ''^/\d\+\s\+''')) : 0
-            \\  let l:current = l:start > 0 && line('.') >= l:start ? len(filter(getline(l:start, line('.')), 'v:val =~# ''^/\d\+\s\+''')) : 0
+            \\  let l:total = len(s:lstf_scan().lines)
+            \\  let l:current = s:lstf_entries_upto(line('.'))
             \\  let l:m = mode(1)
             \\  let l:mode = l:m =~# '^[iR]' ? 'EDIT' : (l:m =~# '^[vV]' || l:m ==# "\<C-V>") ? 'VISUAL' : 'NORMAL'
             \\  let l:mode_hl = l:mode ==# 'EDIT' ? 'LstfStatusModeEdit' : l:mode ==# 'VISUAL' ? 'LstfStatusModeVisual' : 'LstfStatusModeNormal'
@@ -2034,7 +2135,9 @@ pub const State = struct {
             \\    autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
             \\    autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
             \\    autocmd InsertLeave <buffer> call s:lstf_restore_header()
-            \\    autocmd TextChanged,InsertLeave <buffer> call s:lstf_update_collisions()
+            \\    autocmd TextChanged <buffer> call s:lstf_collisions_schedule()
+            \\    autocmd InsertLeave <buffer> call s:lstf_collisions_if_changed()
+            \\    autocmd WinEnter <buffer> call s:lstf_collisions_if_changed()
             \\    " Salvar alteracoes comuns aplica pela sessao viva; diretivas e o
             \\    " fallback fecham todas as janelas da instancia controlada.
             \\    autocmd BufWritePost <buffer> call s:lstf_after_save()
