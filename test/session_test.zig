@@ -161,4 +161,11 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "'title': ' Bookmarks '") != null);
     try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> m :call LstfBookmark()<CR>") != null);
     try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> b :call LstfBookmarks()<CR>") != null);
+
+    // Busca e troca so no nome; colunas repostas em todas as linhas mudadas
+    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_name_pattern(pat)") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_name_cmd(cmd)") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "let l:first = max([1, line(\"'[\")])") != null);
+    // Moldura pintada sem trocar de janela, para nao encerrar o modo visual
+    try testing.expect(std.mem.indexOf(u8, script, "win_execute(s:lstf_header_win") != null);
 }

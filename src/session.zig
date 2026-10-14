@@ -201,6 +201,7 @@ pub const State = struct {
             \\    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretorio)',
             \\    \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
             \\    \ '  • So o nome e editavel: cabecalho e colunas voltam sozinhos',
+            \\    \ '  • / ? :s :g       : buscam e trocam so no nome (\%>0v: linha toda)',
             \\    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar sao seguros)',
             \\    \ '',
             \\    \ '  Diretivas (escreva no buffer e salve):',
@@ -1286,9 +1287,22 @@ pub const State = struct {
             \\  if col('.') <= l:start | call cursor(line('.'), l:start + 1) | endif
             \\endfunction
             \\
+            \\" Repoe as linhas da ultima mudanca (`'[`..`']`), nao so a do cursor:
+            \\" um `:%s` que passasse pelas colunas deixava todas alteradas menos a
+            \\" ultima -- e, no ID oculto, `/0001` virando `/0002` e remocao mais copia.
             \\function! s:lstf_restore_columns() abort
             \\  if !exists('b:lstf_prefix') | return | endif
-            \\  let l:line = getline('.')
+            \\  let l:first = max([1, line("'[")])
+            \\  let l:last = min([line('$'), max([l:first, line("']")])])
+            \\  let l:view = winsaveview()
+            \\  for l:lnum in range(l:first, l:last)
+            \\    call s:lstf_restore_line(l:lnum)
+            \\  endfor
+            \\  call winrestview(l:view)
+            \\endfunction
+            \\
+            \\function! s:lstf_restore_line(lnum) abort
+            \\  let l:line = getline(a:lnum)
             \\  let l:id = matchstr(l:line, '^\/\d\+')
             \\  if empty(l:id) || !has_key(b:lstf_prefix, l:id) | return | endif
             \\  let l:want = b:lstf_prefix[l:id]
@@ -1299,10 +1313,8 @@ pub const State = struct {
             \\    let l:name = matchstr(l:line, '.*│\s*\S*\s*\zs.*')
             \\  endif
             \\  if empty(l:name) | let l:name = matchstr(l:line, '^\/\d\+\s\+\zs.*') | endif
-            \\  let l:view = winsaveview()
             \\  silent! undojoin
-            \\  call setline(line('.'), l:want . l:name)
-            \\  call winrestview(l:view)
+            \\  call setline(a:lnum, l:want . l:name)
             \\endfunction
             \\
             \\function! s:lstf_capture_prefixes() abort
@@ -1671,12 +1683,25 @@ pub const State = struct {
             \\  return ['╭─ ', ' ', l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
             \\endfunction
             \\
+            \\" Pinta pela `win_execute`, que nao troca de janela: o `win_gotoid` encerra
+            \\" o modo visual, e um `$` no bloco que role a lista na horizontal
+            \\" redesenha a moldura -- a selecao sumia e o `:` saia sem `'<,'>`.
             \\function! s:lstf_draw_frame() abort
             \\  if !exists('s:lstf_header_win') || win_id2win(s:lstf_header_win) == 0 | return | endif
-            \\  let l:cur = win_getid()
             \\  let l:where = s:lstf_frame_location()
             \\  let s:lstf_frame_shown = l:where
+            \\  if exists('*win_execute')
+            \\    call win_execute(s:lstf_header_win, 'call s:lstf_paint_frame(l:where)')
+            \\    return
+            \\  endif
+            \\  let l:cur = win_getid()
             \\  noautocmd call win_gotoid(s:lstf_header_win)
+            \\  call s:lstf_paint_frame(l:where)
+            \\  noautocmd call win_gotoid(l:cur)
+            \\endfunction
+            \\
+            \\function! s:lstf_paint_frame(where) abort
+            \\  let l:where = a:where
             \\  let s:lstf_frame_width = winwidth(0)
             \\  let l:parts = s:lstf_frame_parts(s:lstf_frame_width, l:where)
             \\  let l:trow = s:lstf_titles_row(s:lstf_frame_width)
@@ -1699,7 +1724,6 @@ pub const State = struct {
             \\  let l:at += len(l:parts[2]) + len(l:parts[3])
             \\  if len(l:parts[4]) > 0 | call add(l:spots, [1, l:at, len(l:parts[4])]) | endif
             \\  if !empty(l:spots) | call matchaddpos('LstfPath', l:spots, 10) | endif
-            \\  noautocmd call win_gotoid(l:cur)
             \\endfunction
             \\
             \\" Janela de duas linhas no topo: moldura e titulos, que a
@@ -2280,9 +2304,49 @@ pub const State = struct {
             \\" do buffer; as funcoes abaixo idem, e por isso vivem fora de
             \\" s:lstf_setup_buffer() -- Vim nao aceita definicao aninhada.
             \\
+            \\" Busca e troca so no nome. A grade tem largura fixa por buffer e o
+            \\" conceal nao muda a coluna virtual, entao `\%>Nv` com N = largura do
+            \\" prefixo exclui ID e colunas em toda linha de entrada. `^` no inicio
+            \\" vira o comeco do nome. Padrao vazio repete o ultimo, que ja veio
+            \\" restrito; padrao que comeca por coluna explicita (`\%>0v`, `\%5v`)
+            \\" e escolha de quem digitou -- e o escape para buscar na linha inteira.
+            \\function! s:lstf_name_pattern(pat) abort
+            \\  if empty(a:pat) || a:pat =~# '^\\%[<>]\=\d\+[vc]' | return a:pat | endif
+            \\  let l:prefix = values(get(b:, 'lstf_prefix', {}))
+            \\  if empty(l:prefix) | return a:pat | endif
+            \\  let l:width = strdisplaywidth(l:prefix[0])
+            \\  if a:pat[0] ==# '^'
+            \\    return '\%' . (l:width + 1) . 'v' . a:pat[1:]
+            \\  endif
+            \\  return '\%>' . l:width . 'v' . a:pat
+            \\endfunction
+            \\
+            \\" `[range]s/pad/`, `[range]g/pad/`, `v/pad/`: o padrao entra logo
+            \\" depois do delimitador. So o primeiro comando da linha -- o `s` de
+            \\" dentro de um `:g` tem as colunas repostas pelo `TextChanged`.
+            \\function! s:lstf_name_cmd(cmd) abort
+            \\  let l:m = matchlist(a:cmd, '^\(\%([%.$,;0-9+\- \t]\|''[a-z<>]\)*\)\(s\%[ubstitute]\|g\%[lobal]!\=\|v\%[global]\)\s*\([^[:alnum:][:space:]\\"|]\)\(.*\)$')
+            \\  if empty(l:m) | return '' | endif
+            \\  let l:delim = l:m[3]
+            \\  let l:rest = l:m[4]
+            \\  let l:end = match(l:rest, '\%(^\|[^\\]\)\%(\\\\\)*\zs\V' . escape(l:delim, '\'))
+            \\  let l:pat = l:end < 0 ? l:rest : strpart(l:rest, 0, l:end)
+            \\  let l:new = s:lstf_name_pattern(l:pat)
+            \\  if l:new ==# l:pat | return '' | endif
+            \\  return l:m[1] . l:m[2] . l:delim . l:new . strpart(l:rest, len(l:pat))
+            \\endfunction
+            \\
             \\function! s:lstf_cmd_cr() abort
+            \\  if getcmdtype() =~# '^[/?]$' && exists('b:lstf_prefix')
+            \\    let l:new = s:lstf_name_pattern(getcmdline())
+            \\    if l:new !=# getcmdline() | return "\x15" . l:new . "\r" | endif
+            \\  endif
             \\  if getcmdtype() ==# ':'
             \\    let l:cmd = substitute(getcmdline(), '^\s*', '', '')
+            \\    if exists('b:lstf_prefix')
+            \\      let l:new = s:lstf_name_cmd(l:cmd)
+            \\      if !empty(l:new) | return "\x15" . l:new . "\r" | endif
+            \\    endif
             \\    if l:cmd =~# '^cd\%(\s.*\|\)$'
             \\      return "\x15Cd" . l:cmd[2:] . "\r"
             \\    elseif l:cmd =~# '^home$'
