@@ -365,19 +365,66 @@ pub const State = struct {
             \\  endif
             \\endfunction
             \\
+            \\function! s:lstf_root_dir(dir) abort
+            \\  let l:dir = substitute(a:dir, '/\+$', '', '')
+            \\  if empty(l:dir) | return a:dir | endif
+            \\  let l:home = substitute($HOME, '/\+$', '', '')
+            \\  let l:vcs = ['.git', '.hg', '.svn', '.jj', '.fossil']
+            \\  let l:cur = l:dir
+            \\  while !empty(l:cur) && l:cur !=# '/' && l:cur !=# l:home
+            \\    for l:m in l:vcs
+            \\      if isdirectory(l:cur . '/' . l:m) || filereadable(l:cur . '/' . l:m)
+            \\        return l:cur
+            \\      endif
+            \\    endfor
+            \\    let l:parent = fnamemodify(l:cur, ':h')
+            \\    if l:parent ==# l:cur | break | endif
+            \\    let l:cur = l:parent
+            \\  endwhile
+            \\  let l:markers = [
+            \\    \ 'build.zig.zon', 'build.zig', 'Cargo.toml', 'go.mod',
+            \\    \ 'pyproject.toml', 'package.json', 'Makefile', 'CMakeLists.txt', 'flake.nix'
+            \\    \ ]
+            \\  let l:cur = l:dir
+            \\  while !empty(l:cur) && l:cur !=# '/' && l:cur !=# l:home
+            \\    for l:m in l:markers
+            \\      if filereadable(l:cur . '/' . l:m) || isdirectory(l:cur . '/' . l:m)
+            \\        return l:cur
+            \\      endif
+            \\    endfor
+            \\    let l:parent = fnamemodify(l:cur, ':h')
+            \\    if l:parent ==# l:cur | break | endif
+            \\    let l:cur = l:parent
+            \\  endwhile
+            \\  return l:dir
+            \\endfunction
+            \\
+            \\function! s:lstf_rel_path(entry, dir, root) abort
+            \\  let l:dir = substitute(a:dir, '/\+$', '', '')
+            \\  if empty(a:root) || a:root ==# l:dir
+            \\    return a:entry
+            \\  endif
+            \\  if stridx(l:dir, a:root . '/') == 0
+            \\    let l:sub = strpart(l:dir, len(a:root) + 1)
+            \\    return simplify(l:sub . '/' . a:entry)
+            \\  endif
+            \\  return a:entry
+            \\endfunction
+            \\
             \\function! LstfYank(...) abort
             \\  let l:abs = a:0 > 0 ? a:1 : 0
             \\  let l:entry = s:lstf_entry_path()
             \\  if empty(l:entry)
             \\    return
             \\  endif
+            \\  let l:dir = s:lstf_dir()
             \\  if l:abs
             \\    " `s:lstf_dir()`, nao `s:lstf_location()`: o segundo e o caminho de
             \\    " exibicao -- com `~` nao expandido e, com ocultos ligados, o sufixo
             \\    " `[all]` colado no meio. Caminho absoluto tem de ser caminho.
-            \\    let l:path = simplify(s:lstf_dir() . '/' . l:entry)
+            \\    let l:path = simplify(l:dir . '/' . l:entry)
             \\  else
-            \\    let l:path = l:entry
+            \\    let l:path = s:lstf_rel_path(l:entry, l:dir, s:lstf_root_dir(l:dir))
             \\  endif
             \\  call s:lstf_set_clipboard(l:path)
             \\  let b:lstf_notice = 'caminho copiado: ' . l:path
@@ -423,13 +470,14 @@ pub const State = struct {
             \\function! s:lstf_yank_visual(abs) range abort
             \\  let l:paths = []
             \\  let l:loc = s:lstf_dir()
+            \\  let l:root = a:abs ? '' : s:lstf_root_dir(l:loc)
             \\  for l:lnum in range(a:firstline, a:lastline)
             \\    let l:entry = s:lstf_entry_path(getline(l:lnum))
             \\    if empty(l:entry) | continue | endif
             \\    if a:abs
             \\      call add(l:paths, simplify(l:loc . '/' . l:entry))
             \\    else
-            \\      call add(l:paths, l:entry)
+            \\      call add(l:paths, s:lstf_rel_path(l:entry, l:loc, l:root))
             \\    endif
             \\  endfor
             \\  if !empty(l:paths)
