@@ -780,7 +780,7 @@ fn serveEditorRound(s: *Session, child: *std.process.Child) !?u8 {
     var path_buf: [108]u8 = undefined;
     const sock_path = std.fmt.bufPrint(&path_buf, "{s}/live.sock", .{s.state.path}) catch return null;
     var z_buf: [109]u8 = undefined;
-    const sock_z = std.fmt.bufPrintZ(&z_buf, "{s}", .{sock_path}) catch unreachable;
+    const sock_z = std.mem.printSentinel(&z_buf, "{s}", .{sock_path}, 0) catch unreachable;
 
     _ = linux.unlink(sock_z);
     const fd = linux.socket(linux.AF.UNIX, linux.SOCK.STREAM | linux.SOCK.CLOEXEC, 0);
@@ -825,12 +825,13 @@ fn serveEditorRound(s: *Session, child: *std.process.Child) !?u8 {
             }
         }
 
-        var status: u32 = 0;
+        var status: i32 = 0;
         const wrc = linux.wait4(child.id.?, &status, linux.W.NOHANG, null);
         switch (linux.errno(wrc)) {
             .SUCCESS => if (wrc != 0) {
                 // Processo colhido: decodifica o desfecho.
-                if (linux.W.IFEXITED(status)) return linux.W.EXITSTATUS(status);
+                const wait_status: u32 = @bitCast(status);
+                if (linux.W.IFEXITED(wait_status)) return linux.W.EXITSTATUS(wait_status);
                 return 1;
             },
             .CHILD => return 1,

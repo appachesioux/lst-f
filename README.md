@@ -115,7 +115,7 @@ mostra a ajuda, `Esc` cancela.
 
 - Vim ou Neovim (prioridade para `vim`) ou `--editor <cmd>` — é a tela, não é opcional
 - `fzf` 0.17 ou mais novo, só para o `:find`
-- Zig 0.16.x para compilar
+- Zig 0.17.x para compilar
 
 Os binários de runtime (`vim`, `nvim`, `fzf`) podem estar instalados no `$PATH` do sistema ou simplesmente colocados na mesma pasta do binário `lst-f` (modo bundle portátil, sem instalação e sem `sudo`).
 
