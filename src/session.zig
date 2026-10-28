@@ -202,6 +202,10 @@ pub const State = struct {
             \\    \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
             \\    \ '  • So o nome e editavel: cabecalho e colunas voltam sozinhos',
             \\    \ '  • / ? :s :g       : buscam e trocam so no nome (\%>0v: linha toda)',
+            \\    \ '  • :sort / :sort name: ordena pelo nome (ignora maiusculas/minusculas)',
+            \\    \ '  • :sort size     : ordena pelo tamanho real em bytes',
+            \\    \ '  • :sort! / :sort! size: inverte a ordem; pastas ficam no topo',
+            \\    \ '  • Ordenacao respeita selecao visual e continua ao atualizar/navegar',
             \\    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar sao seguros)',
             \\    \ '',
             \\    \ '  Diretivas (escreva no buffer e salve):',
@@ -2326,6 +2330,9 @@ pub const State = struct {
             \\    redrawstatus!
             \\    return
             \\  endif
+            \\  if exists('s:lstf_sort_mode')
+            \\    call LstfSort(1, line('$'), s:lstf_sort_mode, s:lstf_sort_reverse)
+            \\  endif
             \\  let b:lstf_entry_lines = s:lstf_entry_lines()
             \\  call s:lstf_follow_scroll()
             \\  call s:lstf_restore_cursor()
@@ -2384,6 +2391,71 @@ pub const State = struct {
             \\  return l:m[1] . l:m[2] . l:delim . l:new . strpart(l:rest, len(l:pat))
             \\endfunction
             \\
+            \\" Ordena as linhas existentes: IDs e edicoes pendentes viajam juntos.
+            \\function! s:lstf_sort_compare(mode, reverse, a, b) abort
+            \\  if a:a.dir != a:b.dir | return a:b.dir - a:a.dir | endif
+            \\  let l:cmp = 0
+            \\  if a:mode ==# 'size' && !a:a.dir
+            \\    let l:cmp = a:a.size == a:b.size ? 0 : (a:a.size < a:b.size ? -1 : 1)
+            \\  endif
+            \\  if l:cmp == 0
+            \\    let l:an = tolower(a:a.name)
+            \\    let l:bn = tolower(a:b.name)
+            \\    let l:cmp = l:an ==# l:bn ? (a:a.name ==# a:b.name ? 0 : (a:a.name <# a:b.name ? -1 : 1)) : (l:an <# l:bn ? -1 : 1)
+            \\  endif
+            \\  return a:reverse ? -l:cmp : l:cmp
+            \\endfunction
+            \\
+            \\function! LstfSort(first, last, arg, reverse) abort
+            \\  let l:mode = empty(a:arg) ? 'name' : a:arg
+            \\  if index(['name', 'size'], l:mode) < 0
+            \\    echoerr 'Use :sort [name|size] ou :sort! [name|size]'
+            \\    return
+            \\  endif
+            \\  let l:lines = getline(a:first, a:last)
+            \\  let l:items = []
+            \\  let l:slots = []
+            \\  let l:header = len(get(b:, 'lstf_header', []))
+            \\  for l:i in range(len(l:lines))
+            \\    let l:line = l:lines[l:i]
+            \\    if a:first + l:i <= l:header || l:line =~# '^[:#]' || l:line =~# '^\s*$' | continue | endif
+            \\    let l:name = s:lstf_entry_path(l:line)
+            \\    let l:id = matchstr(l:line, '^/\d\+')
+            \\    let l:original = get(get(b:, 'lstf_original_path', {}), l:id, '')
+            \\    let l:dir = empty(l:original) ? l:name =~# '/$' : l:original =~# '/$'
+            \\    " O caminho original sobrevive a renomeios ainda nao aplicados.
+            \\    let l:size = l:mode ==# 'size' && !l:dir && !empty(l:original)
+            \\      \ ? getfsize(s:lstf_dir() . '/' . l:original) : -1
+            \\    call add(l:items, {'line': l:line, 'name': l:name, 'dir': l:dir, 'size': l:size})
+            \\    call add(l:slots, l:i)
+            \\  endfor
+            \\  call sort(l:items, function('s:lstf_sort_compare', [l:mode, a:reverse]))
+            \\  for l:i in range(len(l:slots))
+            \\    let l:lines[l:slots[l:i]] = l:items[l:i].line
+            \\  endfor
+            \\  let l:view = winsaveview()
+            \\  let l:modified = &l:modified
+            \\  if l:lines !=# getline(a:first, a:last)
+            \\    call setline(a:first, l:lines)
+            \\  endif
+            \\  if !l:modified
+            \\    setlocal nomodified
+            \\    let b:lstf_entry_lines = s:lstf_entry_lines()
+            \\  endif
+            \\  call winrestview(l:view)
+            \\  call s:lstf_keep_cursor_in_name()
+            \\  if a:first == 1 && a:last == line('$')
+            \\    let s:lstf_sort_mode = l:mode
+            \\    let s:lstf_sort_reverse = a:reverse
+            \\  endif
+            \\endfunction
+            \\
+            \\" Apenas nossas formas passam por Sort; flags e padroes nativos ficam livres.
+            \\function! s:lstf_sort_cmd(cmd) abort
+            \\  let l:m = matchlist(a:cmd, '^\(\%([%.$,;0-9+\- \t]\|''[a-z<>]\)*\)sort\(!\=\)\s*\(name\|size\)\=\s*$')
+            \\  return empty(l:m) ? '' : l:m[1] . 'Sort' . l:m[2] . ' ' . l:m[3]
+            \\endfunction
+            \\
             \\function! s:lstf_cmd_cr() abort
             \\  if getcmdtype() =~# '^[/?]$' && exists('b:lstf_prefix')
             \\    let l:new = s:lstf_name_pattern(getcmdline())
@@ -2392,6 +2464,8 @@ pub const State = struct {
             \\  if getcmdtype() ==# ':'
             \\    let l:cmd = substitute(getcmdline(), '^\s*', '', '')
             \\    if exists('b:lstf_prefix')
+            \\      let l:new = s:lstf_sort_cmd(l:cmd)
+            \\      if !empty(l:new) | return "\x15" . l:new . "\r" | endif
             \\      let l:new = s:lstf_name_cmd(l:cmd)
             \\      if !empty(l:new) | return "\x15" . l:new . "\r" | endif
             \\    endif
@@ -2501,6 +2575,7 @@ pub const State = struct {
             \\  cnoreabbrev <expr> <buffer> theme getcmdtype() ==# ':' && getcmdline() =~# '^theme\%(\s.*\|\)$' ? 'Theme' : 'theme'
             \\  cnoreabbrev <expr> <buffer> light getcmdtype() ==# ':' && getcmdline() ==# 'light' ? 'Light' : 'light'
             \\  cnoreabbrev <expr> <buffer> dark getcmdtype() ==# ':' && getcmdline() ==# 'dark' ? 'Dark' : 'dark'
+            \\  command! -buffer -range=% -bang -nargs=? Sort call LstfSort(<line1>, <line2>, <q-args>, <bang>0)
             \\  command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
             \\  cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
             \\  command! -buffer -nargs=? Sh call LstfShell(<q-args>)

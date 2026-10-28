@@ -5,7 +5,7 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.8.23 ─╮   ← moldura
+╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.10.28 ─╮   ← moldura
 
 ──────────────────────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos
@@ -72,6 +72,7 @@ que você acabou de entrar por SSH.
 | `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor (:copy) |
 | `:abspath` / `:realpath`             | copia o caminho absoluto do arquivo sob o cursor |
 | `yl` (também em modo visual)          | copia a linha de link pronta; `p` cola onde criar |
+| `:sort [name\|size]`               | ordena pelo nome (padrão) ou tamanho; `:sort!` inverte |
 | `:hidden`                            | alterna exibição de arquivos ocultos       |
 | `:trash`                             | abre a lixeira (remoção lá dentro é definitiva) |
 | `:theme [light|dark]`                | alterna ou define tema claro/escuro (`:light`, `:dark`) |
@@ -92,6 +93,16 @@ numerada para escolher o destino (`Enter` ou o número confirma, `0`, `Esc` ou `
 A visita entra no histórico, então `<` volta de onde você veio.
 
 Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
+
+No buffer da listagem, `:sort` e `:sort name` ordenam pelo nome, ignorando
+maiúsculas e minúsculas; `:sort size` usa o tamanho real em bytes. `:sort!` e
+`:sort! size` invertem a ordem, mantendo diretórios no topo. Nomes desempatam
+tamanhos iguais. A escolha continua ativa ao atualizar ou navegar na sessão;
+um intervalo ou seleção visual ordena apenas as linhas selecionadas.
+As linhas completas são preservadas, incluindo edições ainda não salvas.
+Arquivos novos ou indisponíveis ficam antes dos arquivos com tamanho conhecido
+na ordem crescente. Pastas são ordenadas por nome, sem somar seu conteúdo.
+Outras opções, como `:sort n`, continuam usando o comando nativo do Vim.
 
 Em terminais estreitos, o nome editável pode ficar fora da área visível; use `zl` e `zh` para rolar horizontalmente.
 

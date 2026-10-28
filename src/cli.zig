@@ -158,6 +158,12 @@ pub fn printHelp(w: *Io.Writer) !void {
         \\  -h, --help         esta ajuda
         \\  -V, --version      versao
         \\
+        \\comandos de ordenacao no editor:
+        \\  :sort, :sort name  ordena pelo nome (ignora maiusculas/minusculas)
+        \\  :sort size         ordena pelo tamanho real em bytes
+        \\  :sort!, :sort! size inverte a ordem; pastas ficam no topo
+        \\  Respeita selecao visual; a escolha continua ao atualizar/navegar.
+        \\
         \\diretivas, escritas no proprio buffer:
         \\  :cd <dir>          entra no diretorio (.. sobe)
         \\  :hidden            alterna exibicao de arquivos ocultos
