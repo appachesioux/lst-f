@@ -27,6 +27,11 @@ test "opcao explicita vence e argumentos sao preservados" {
     try testing.expectEqual(@as(usize, 2), e.argv.len);
 }
 
+fn writeExec(dir: Io.Dir, io: Io, name: []const u8) !void {
+    const f = try dir.createFile(io, name, .{ .permissions = .fromMode(0o755) });
+    f.close(io);
+}
+
 test "busca automatica: vim e escolhido mesmo com nvim no PATH" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
@@ -35,8 +40,8 @@ test "busca automatica: vim e escolhido mesmo com nvim no PATH" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(io, .{ .sub_path = "vim", .data = "" });
-    try tmp.dir.writeFile(io, .{ .sub_path = "nvim", .data = "" });
+    try writeExec(tmp.dir, io, "vim");
+    try writeExec(tmp.dir, io, "nvim");
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -56,7 +61,7 @@ test "busca automatica: vim e escolhido mesmo com nvim no PATH" {
     try testing.expectEqualStrings("vim", e.name());
 }
 
-test "busca automatica nao escolhe nvim" {
+test "busca automatica cai para nvim quando vim nao existe e respeita LST_F_EDITOR" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -64,7 +69,7 @@ test "busca automatica nao escolhe nvim" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(io, .{ .sub_path = "nvim", .data = "" });
+    try writeExec(tmp.dir, io, "nvim");
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -77,7 +82,16 @@ test "busca automatica nao escolhe nvim" {
     });
     defer map.deinit();
 
-    try testing.expectError(error.NoEditor, resolve(a, io, &map, null));
+    const e = try resolve(a, io, &map, null);
+    try testing.expectEqualStrings("nvim", e.name());
+
+    var map_env = try mapWith(testing.allocator, &.{
+        .{ "PATH", tmp_path },
+        .{ "LST_F_EDITOR", "nano" },
+    });
+    defer map_env.deinit();
+    const e2 = try resolve(a, io, &map_env, null);
+    try testing.expectEqualStrings("nano", e2.name());
 }
 
 test "editor sem vim nem nvim no PATH" {
@@ -125,7 +139,7 @@ test "editores que nao seguram o terminal sao recusados" {
     _ = try resolve(a, io, &map, "hx");
 }
 
-test "which localiza binarios no PATH e caminhos diretos" {
+test "which localiza binarios executaveis no PATH e rejeita diretorios e nao-executaveis" {
     var threaded: Io.Threaded = .init(testing.allocator, .{});
     defer threaded.deinit();
     const io = threaded.io();
@@ -133,7 +147,9 @@ test "which localiza binarios no PATH e caminhos diretos" {
     var tmp = testing.tmpDir(.{ .iterate = true });
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile(io, .{ .sub_path = "fzf", .data = "" });
+    try writeExec(tmp.dir, io, "fzf");
+    try tmp.dir.writeFile(io, .{ .sub_path = "semexec", .data = "" });
+    try tmp.dir.createDir(io, "pasta_vim", .default_dir);
 
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();
@@ -149,6 +165,8 @@ test "which localiza binarios no PATH e caminhos diretos" {
     const fzf_cand = which(a, io, &map, "fzf");
     try testing.expect(fzf_cand != null);
     try testing.expect(std.mem.endsWith(u8, fzf_cand.?, "fzf"));
+    try testing.expect(which(a, io, &map, "semexec") == null);
+    try testing.expect(which(a, io, &map, "pasta_vim") == null);
 }
 
 test "parseOsc11Response identifica tema claro (Latte) e escuro (Macchiato)" {

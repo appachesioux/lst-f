@@ -1050,3 +1050,43 @@ test "linha yankada colada varias vezes continua toda copia" {
     try testing.expectEqual(@as(usize, 2), p.copies.len);
     for (p.copies) |c| try testing.expect(!c.cut);
 }
+
+test "parseBuffer preserva nomes com divisor ' │ ' e acentos no inicio" {
+    var f = Fixture.init();
+    defer f.deinit();
+
+    const names = [_][]const u8{
+        "ação.txt",
+        "a │ b.txt",
+        "x │ é.txt",
+        "árvore.txt",
+        "ção.md",
+        "com  espacos.txt",
+    };
+    const disp_with_icon = "- │ rw-r--r-- │          │      100B │ 2026-11-22 10:00 │ \xef\x85\x9b";
+    const disp_no_icon = "- │ rw-r--r-- │          │      100B │ 2026-11-22 10:00 │ ";
+
+    for ([_][]const u8{ disp_with_icon, disp_no_icon }) |disp| {
+        var originals: [names.len]Original = undefined;
+        for (names, 0..) |n, i| {
+            originals[i] = .{ .id = @intCast(i + 1), .path = n, .kind = .file, .display = disp };
+        }
+        var buf: std.Io.Writer.Allocating = .init(f.a());
+        try plan.writeBuffer(f.a(), &buf.writer, .{}, &originals);
+
+        // Tanto com originals quanto sem originals (fallback heuristico),
+        // o round-trip deve devolver exatamente cada nome.
+        const doc1 = (try plan.parseBufferWithOriginals(f.a(), buf.written(), &.{}, &originals)).ok;
+        try testing.expectEqual(names.len, doc1.edits.len);
+        for (names, 0..) |n, i| try testing.expectEqualStrings(n, doc1.edits[i].path);
+
+        const doc2 = (try plan.parseBuffer(f.a(), buf.written(), &.{})).ok;
+        try testing.expectEqual(names.len, doc2.edits.len);
+        for (names, 0..) |n, i| try testing.expectEqualStrings(n, doc2.edits[i].path);
+    }
+
+    // Linha nova sem ID nao passa por extractPath: 'foo │ bar.txt' cria 'foo │ bar.txt'.
+    const doc_new = (try plan.parseBuffer(f.a(), "foo │ bar.txt\n", &.{})).ok;
+    try testing.expectEqual(@as(usize, 1), doc_new.creates.len);
+    try testing.expectEqualStrings("foo │ bar.txt", doc_new.creates[0].path);
+}

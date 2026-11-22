@@ -1,7 +1,9 @@
-" Run after: zig build dump-helper > /tmp/lstf-helper.vim
+" Run via: zig build test-vim
+" Or manually after: zig build dump-helper > /tmp/lstf-helper.vim
 " vim -Nu NONE -i NONE -n -es -S test/sort_test.vim
 " nvim --headless -u NONE -i NONE -n -S test/sort_test.vim
 set nomore
+let s:helper = empty($LST_F_HELPER) ? '/tmp/lstf-helper.vim' : $LST_F_HELPER
 let s:root = tempname()
 call mkdir(s:root, 'p')
 let $LST_F_STATE = s:root
@@ -16,7 +18,7 @@ call mkdir(s:root . '/folder')
 call writefile([s:root], s:root . '/base')
 call setline(1, [s:large, s:small, s:close, s:dir])
 setlocal nomodified
-source /tmp/lstf-helper.vim
+execute 'source ' . fnameescape(s:helper)
 
 " Exercise the real command-line mapping, not just the implementation.
 call feedkeys(":sort\<CR>", 'xt')
@@ -28,6 +30,28 @@ call feedkeys(":sort size\<CR>", 'xt')
 call assert_equal([s:dir, s:small, s:close, s:large], getline(1, '$'))
 call feedkeys(":sort! size\<CR>", 'xt')
 call assert_equal([s:dir, s:large, s:close, s:small], getline(1, '$'))
+
+" Editing a previous command can leave the cursor before its argument.
+" Enter must replace the entire command line, including text after the cursor.
+call histadd(':', 'sort size')
+try
+  call feedkeys(":\<Up>\<Home>\<Right>\<Right>\<Right>\<Right>!\<CR>", 'xt')
+catch
+  call assert_report('sort edited in history: ' . v:exception)
+endtry
+call assert_equal([s:dir, s:large, s:close, s:small], getline(1, '$'))
+
+" Repeating the rewritten command from history also accepts trailing spaces.
+try
+  call feedkeys(":\<Up> \<CR>", 'xt')
+catch
+  call assert_report('sort repeated from history: ' . v:exception)
+endtry
+call assert_equal([s:dir, s:large, s:close, s:small], getline(1, '$'))
+call feedkeys(":sort\<CR>", 'xt')
+call feedkeys(":\<Up>\<CR>", 'xt')
+call assert_equal([s:dir, s:small, s:close, s:large], getline(1, '$'))
+call feedkeys(":sort! size\<CR>", 'xt')
 
 " Rename pending: use the original file for exact size, preserve the full line.
 let s:renamed = substitute(s:large, 'zebra$', 'aardvark', '')
@@ -61,6 +85,24 @@ call assert_equal(['# header', s:dir, s:small, s:close, s:large], getline(1, '$'
 call assert_false(&modified)
 call feedkeys(":sort! size\<CR>", 'xt')
 call assert_equal(['# header', s:dir, s:large, s:close, s:small], getline(1, '$'))
+
+" :sort time / :sort modified / :sort ext aceitos sem erro.
+call feedkeys(":sort modified\<CR>", 'xt')
+call assert_equal(5, line('$'))
+call feedkeys(":sort! time\<CR>", 'xt')
+call assert_equal(5, line('$'))
+call feedkeys(":sort ext\<CR>", 'xt')
+call assert_equal(5, line('$'))
+
+" Teclas nativas do Vim ficam livres no modo padrao (fora de LST_F_KEYMAP=classic).
+for s:k in ['.', 'r', '<C-r>', 'b', 'm', 'q', '~', '<C-a>', '?']
+  call assert_equal('', maparg(s:k, 'n', 0, 0), 'tecla nativa nao deve estar remapeada: ' . s:k)
+endfor
+call assert_true(!empty(maparg('g.', 'n', 0, 0)))
+call assert_true(!empty(maparg('<C-l>', 'n', 0, 0)))
+call assert_true(!empty(maparg('gm', 'n', 0, 0)))
+call assert_true(!empty(maparg('gb', 'n', 0, 0)))
+call assert_true(!empty(maparg('K', 'n', 0, 0)))
 
 " Native options still use Vim's sort; normal text buffers are unaffected.
 new

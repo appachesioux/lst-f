@@ -154,13 +154,16 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     try testing.expect(std.mem.indexOf(u8, script, "highlight LstfStatusModeVisual") != null);
     try testing.expect(std.mem.indexOf(u8, script, "l:mode_hl") != null);
 
-    // Bookmarks em popup interativo (:bookmark, :bookmarks, m, b)
+    // Bookmarks em popup interativo (:bookmark, :bookmarks, gm, gb; m/b no modo classic)
     try testing.expect(std.mem.indexOf(u8, script, "function! LstfBookmark()") != null);
     try testing.expect(std.mem.indexOf(u8, script, "function! LstfBookmarks()") != null);
     try testing.expect(std.mem.indexOf(u8, script, "function! LstfBookmarkSelect(") != null);
     try testing.expect(std.mem.indexOf(u8, script, "'title': ' Bookmarks '") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> m :call LstfBookmark()<CR>") != null);
-    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> b :call LstfBookmarks()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> gm :call LstfBookmark()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> gb :call LstfBookmarks()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> K :call LstfPreview()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "nnoremap <buffer> <silent> g. :call LstfToggleHidden()<CR>") != null);
+    try testing.expect(std.mem.indexOf(u8, script, "s:lstf_keymap_classic") != null);
 
     // Busca e troca so no nome; colunas repostas em todas as linhas mudadas
     try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_name_pattern(pat)") != null);

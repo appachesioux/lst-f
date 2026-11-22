@@ -761,3 +761,71 @@ test "movimento entre filesystems copia e apaga a origem, e o undo devolve" {
     try testing.expect(!h.exists("destino/a.txt"));
     try testing.expectEqualStrings("conteudo A", try h.read("origem/a.txt"));
 }
+
+test "copia de symlink preserva o link sem seguir o alvo" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.dir().createDirPath(io, "pasta_alvo");
+    try h.touch("pasta_alvo/segredo.txt", "nao duplicar");
+    try h.dir().symLink(io, "pasta_alvo", "link_pasta", .{});
+    try h.dir().symLink(io, "inexistente", "link_quebrado", .{});
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+        .copies = &.{
+            .{ .id = 1, .from = "link_pasta", .to = "link_pasta_copia", .kind = .symlink },
+            .{ .id = 2, .from = "link_quebrado", .to = "link_quebrado_copia", .kind = .symlink },
+        },
+    };
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure == null);
+
+    const st1 = try h.dir().statFile(io, "link_pasta_copia", .{ .follow_symlinks = false });
+    try testing.expectEqual(Io.File.Kind.sym_link, st1.kind);
+    const st2 = try h.dir().statFile(io, "link_quebrado_copia", .{ .follow_symlinks = false });
+    try testing.expectEqual(Io.File.Kind.sym_link, st2.kind);
+
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, null);
+    try testing.expectEqual(@as(usize, 0), errors.len);
+    try testing.expect(!h.exists("link_pasta_copia"));
+    try testing.expect(!h.exists("link_quebrado_copia"));
+    try testing.expect(h.exists("pasta_alvo/segredo.txt"));
+}
+
+test "undo de copia nao apaga pasta modificada apos a copia" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    var h = Harness.init(io);
+    defer h.deinit();
+
+    try h.dir().createDirPath(io, "orig");
+    try h.touch("orig/a.txt", "v1");
+
+    const p: plan.Plan = .{
+        .mkdirs = &.{},
+        .renames = &.{},
+        .removes = &.{},
+        .moves = &.{},
+        .unchanged = 0,
+        .copies = &.{.{ .id = 1, .from = "orig", .to = "copia", .kind = .dir }},
+    };
+    const outcome = try apply(h.a(), io, h.dir(), p, null);
+    try testing.expect(outcome.failure == null);
+    try testing.expect(h.exists("copia/a.txt"));
+
+    // Usuario adiciona trabalho novo dentro da copia antes do :undo.
+    try h.touch("copia/trabalho_novo.txt", "importante");
+
+    const errors = try revert(h.a(), io, h.dir(), outcome.applied, null);
+    try testing.expect(errors.len > 0);
+    try testing.expect(h.exists("copia/trabalho_novo.txt"));
+}

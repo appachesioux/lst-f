@@ -55,7 +55,9 @@ pub const Browse = struct {
     editor: ?[]const u8 = null,
     /// Abre direto no buscador, com o termo ja digitado.
     find: ?[]const u8 = null,
-    options: explorer.Options = .{},
+    /// Arquivo onde gravar o diretorio final ao sair (integracao `cd` no shell).
+    cwd_file: ?[]const u8 = null,
+    options: explorer.Options = .{ .icons = true },
     theme: ThemePreference = .auto,
 };
 
@@ -65,6 +67,7 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
     var browse: Browse = .{};
     browse.options.color = color_default;
     var saw_path = false;
+    var excludes: std.ArrayList([]const u8) = .empty;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
@@ -113,6 +116,14 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             i += 1;
             if (i >= args.len) return error.MissingValue;
             browse.editor = args[i];
+        } else if (std.mem.eql(u8, arg, "--cwd-file")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            browse.cwd_file = args[i];
+        } else if (std.mem.eql(u8, arg, "--exclude")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            excludes.append(arena, args[i]) catch return error.BadValue;
         } else if (std.mem.eql(u8, arg, "--find") or std.mem.eql(u8, arg, "-f")) {
             // O termo e opcional: `--find` sozinho abre o buscador na arvore.
             if (i + 1 < args.len and !std.mem.startsWith(u8, args[i + 1], "-")) {
@@ -133,59 +144,76 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             saw_path = true;
         }
     }
+    if (excludes.items.len > 0) {
+        browse.options.exclude = excludes.toOwnedSlice(arena) catch return error.BadValue;
+    }
     return .{ .browse = browse };
 }
 
 pub fn printHelp(w: *Io.Writer) !void {
     try w.print(
-        \\{s} v{s} -- explora e altera o filesystem no terminal
+        \\{s} v{s} — explora e altera o filesystem no terminal
         \\
-        \\uso: lst-f [opcoes] [diretorio]
+        \\uso: lst-f [opções] [diretório]
         \\
-        \\A tela e o buffer do seu Vim ou Neovim. Cada linha e uma entrada, com um
-        \\ID a esquerda. Edite o caminho para renomear ou mover; apague a linha
-        \\para remover. O ID casa a linha com a entrada, entao reordenar, rodar
-        \\:sort ou recolar linhas e inofensivo.
+        \\A tela é o buffer do seu Vim ou Neovim. Cada linha é uma entrada, com um
+        \\ID oculto à esquerda. Edite o caminho para renomear ou mover; apague a
+        \\linha para mandar à lixeira. O ID casa a linha com a entrada, então
+        \\reordenar, rodar :sort ou recolar linhas é seguro.
         \\
-        \\  -a, --all, --hidden  mostra arquivos e diretorios ocultos
-        \\  --find [termo]     abre direto no buscador fuzzy da arvore
-        \\  --editor <cmd>     editor a usar (padrao: vim; nvim so se explicito)
-        \\  --max-depth <n>    profundidade maxima da busca recursiva
-        \\  --icons            emite icones na busca
-        \\  --no-color         desliga as cores
-        \\  --light, --dark    forca tema claro ou escuro (padrao: auto-detectado)
-        \\  --theme <modo>     define tema: auto, light ou dark
-        \\  -h, --help         esta ajuda
-        \\  -V, --version      versao
+        \\  -a, --all, --hidden  mostra arquivos e diretórios ocultos
+        \\  --find [termo]       abre direto no buscador fuzzy da árvore
+        \\  --editor <cmd>       editor a usar (padrão: $LST_F_EDITOR, vim, nvim)
+        \\  --cwd-file <arq>     grava o diretório final ao sair (para wrapper cd)
+        \\  --max-depth <n>      profundidade máxima da busca recursiva
+        \\  --exclude <nome>     ignora diretório no :find (repetível)
+        \\  --icons / --no-icons liga ou desliga ícones Nerd Font (padrão: ligado; LST_F_ICONS=0)
+        \\  --no-color           desliga as cores
+        \\  --light, --dark      força tema claro ou escuro (padrão: auto-detectado)
+        \\  --theme <modo>       define tema: auto, light ou dark
+        \\  -h, --help           esta ajuda
+        \\  -V, --version        versão
         \\
-        \\comandos de ordenacao no editor:
-        \\  :sort, :sort name  ordena pelo nome (ignora maiusculas/minusculas)
-        \\  :sort size         ordena pelo tamanho real em bytes
-        \\  :sort!, :sort! size inverte a ordem; pastas ficam no topo
-        \\  Respeita selecao visual; a escolha continua ao atualizar/navegar.
+        \\comandos no editor:
+        \\  :w                   aplica alterações (com confirmação) ou atualiza a lista
+        \\  :q / :wq / :x        sai da sessão (:cq aborta sem aplicar nada)
+        \\  :sort [name|size|time|ext]  ordena (use :sort! para inverter)
+        \\  :filter [padrão]     filtra a pasta atual sem apagar arquivos (:filter! limpa)
+        \\  :compact             alterna colunas compactas (útil em splits estreitos)
+        \\  :cd [dir], :home     navega entre diretórios
+        \\  :trash               abre a lixeira (remoção lá dentro é definitiva)
+        \\  :find [termo]        busca fuzzy recursiva com o fzf
+        \\  :sh [dir]            abre terminal / shell no diretório
+        \\  :hidden              alterna exibição de arquivos ocultos
+        \\  :theme [light|dark]  alterna ou define o tema
+        \\  :back / :forward     andam pelo histórico de pastas da sessão
+        \\  :bookmark(s)         marca/abre pastas favoritas
+        \\  :undo                desfaz a última operação aplicada (pilha por janela)
         \\
-        \\diretivas, escritas no proprio buffer:
-        \\  :cd <dir>          entra no diretorio (.. sobe)
-        \\  :hidden            alterna exibicao de arquivos ocultos
-        \\  :find [termo]      busca fuzzy na arvore com o fzf; o que voce marcar
-        \\                     vira o conteudo do buffer
-        \\  :sh [dir]          abre terminal / shell no diretorio (:shell, :terminal)
-        \\  :undo              desfaz a ultima operacao aplicada nesta sessao
-        \\  :quit              sai (salvar sem mudancas tambem sai; :cq aborta)
-        \\  .                  alterna exibicao de arquivos ocultos
-        \\  F4                 abre terminal / shell no diretorio atual
-        \\  Enter              abre o arquivo da linha ou entra no diretorio
-        \\  nome -> alvo       em linha nova cria symlink (nome => alvo cria hardlink)
-        \\  yl                 copia a linha de link pronta da entrada sob o cursor;
-        \\                     p cola onde o link deve nascer
+        \\atalhos no buffer (defina LST_F_KEYMAP=classic para os antigos):
+        \\  Enter / -            entra no diretório (ou abre arquivo) / sobe ao pai
+        \\  g.                   alterna exibição de arquivos ocultos
+        \\  gh                   vai para HOME (~)
+        \\  Ctrl+L               recarrega a lista atual
+        \\  K ou gp              preview flutuante do item sob o cursor
+        \\  gc                   alterna modo compacto de colunas
+        \\  Ctrl+P               abre a busca fuzzy (fzf) na árvore inteira
+        \\  Ctrl+S / Tab         abre/alterna split lado a lado / percorre janelas
+        \\  < e >                voltam e avançam no histórico
+        \\  \                    árvore visual sob demanda (Enter navega até a pasta)
+        \\  gm / gb              marca pasta / abre bookmarks
+        \\  gyr / gya / gyl      copia caminho relativo / absoluto / linha de link
+        \\  F1 ou g?             ajuda          F2 ou cob  alterna tema
+        \\  F4                   abre shell     gq / ZZ    fecha split / sai
+        \\  yy / dd / p          copia / recorta ou remove / cola (entre pastas também)
         \\
-        \\no buscador:
-        \\  Tab                marca / desmarca      Enter  aceita a marcacao
-        \\  Ctrl+A             marca / desmarca tudo
-        \\  {s}              abre e fecha o preview (comeca fechado)
-        \\  {s}                 esta ajuda            Esc    cancela
+        \\no buscador (fzf):
+        \\  Tab                  marca / desmarca      Enter  aceita a marcação
+        \\  Ctrl+A               marca / desmarca tudo
+        \\  {s}                abre e fecha o preview (começa fechado)
+        \\  {s}                   esta ajuda            Esc    cancela
         \\
-        \\Precisa do fzf ({d}.{d}+) e do Vim no PATH (ou --editor <cmd>).
+        \\Precisa do fzf ({d}.{d}+) e de Vim ou Neovim no PATH (ou --editor <cmd>).
         \\
     , .{
         build_options.app_name,
@@ -398,10 +426,14 @@ const View = struct {
     /// da outra e efeito invisivel. Um buffer novo herda de quem o abriu, para
     /// que ligar `.` e navegar continue valendo o caminho todo.
     show_hidden: bool = false,
-    /// Ultima operacao aplicada a partir deste buffer, para o `:undo`. E do
-    /// buffer, nao da sessao: com duas janelas abertas, `:undo` numa delas
-    /// desfazendo o que aconteceu na outra seria um efeito invisivel.
-    undo: ?Undo = null,
+    /// Pilha de operacoes aplicadas neste buffer, para `:undo` multinivel.
+    undo_stack: std.ArrayList(Undo) = .empty,
+    /// Filtro nao-destrutivo ativo nesta janela (`:filter <padrao>`).
+    filter: ?[]const u8 = null,
+    /// Modo compacto de colunas (`T │ NAME`) para janelas estreitas / splits.
+    compact: bool = false,
+    /// Se a ultima listagem foi interrompida por erro de leitura.
+    incomplete: bool = false,
     /// Base dos IDs deste buffer e quantos estao reservados a partir dela.
     /// IDs sao unicos na sessao inteira, nao por buffer: um `yy` numa janela
     /// seguido de `p` na outra nao pode casar com uma entrada de outra pasta.
@@ -481,6 +513,11 @@ const Session = struct {
     /// Buffer que esta nessa lista nao e relistado nem regravado: o texto na
     /// tela e a verdade dele ate o `:w`.
     dirty: []const u8 = "",
+    /// Hash do ultimo diff exibido no popup de confirmacao, para detectar se o
+    /// plano mudou entre a aprovacao e a aplicacao.
+    last_preview_hash: ?u64 = null,
+    /// Arquivo opcional para gravar o diretorio final ao sair (`--cwd-file`).
+    cwd_file: ?[]const u8 = null,
     /// Onde a remocao guarda o que sai, uma so para a sessao e para o usuario.
     /// O caminho e sempre conhecido; a pasta abre na primeira remocao, para nao
     /// criar nada em `~` numa sessao que so navega.
@@ -540,8 +577,17 @@ fn runSession(
     try environ.put("FZF_DEFAULT_OPTS", "");
     try environ.put("FZF_DEFAULT_OPTS_FILE", "");
 
+    var effective_opts = opts.options;
+    if (environ.get("LST_F_ICONS")) |val| {
+        if (std.mem.eql(u8, val, "0") or std.ascii.eqlIgnoreCase(val, "false") or std.ascii.eqlIgnoreCase(val, "off")) {
+            effective_opts.icons = false;
+        } else if (std.mem.eql(u8, val, "1") or std.ascii.eqlIgnoreCase(val, "true") or std.ascii.eqlIgnoreCase(val, "on")) {
+            effective_opts.icons = true;
+        }
+    }
+
     const helper_path = try std.fmt.allocPrint(arena, "{s}/helper.vim", .{state.path});
-    try state.writeHelperScript(io, build_options.app_name, build_options.version);
+    try state.writeHelperScriptWithOptions(io, build_options.app_name, build_options.version, effective_opts.icons);
 
     // Um arquivo de buffer por diretorio aberto: e o que permite duas
     // janelas com dois diretorios diferentes (Fase 1 da revisao de UX).
@@ -570,7 +616,7 @@ fn runSession(
         .out = out,
         .environ = environ,
         .tty = Tty.open(arena, io),
-        .options = opts.options,
+        .options = effective_opts,
         .editor_spec = opts.editor,
         .editor_name = editorLabel(initial_editor),
         .background = bg,
@@ -581,8 +627,12 @@ fn runSession(
         .view = initial_view,
         .views = views,
         .trash_path = trash,
+        .cwd_file = opts.cwd_file,
     };
     defer if (s.trash) |*t| t.close(io);
+    defer if (s.cwd_file) |cf| {
+        Io.Dir.cwd().writeFile(io, .{ .sub_path = cf, .data = s.view.dir }) catch {};
+    };
 
     pruneTrash(&s);
 
@@ -659,7 +709,7 @@ fn loop(s: *Session) !void {
             s.arena,
             .limited(64 * 1024 * 1024),
         );
-        const parsed = try plan.parseBuffer(s.arena, text, s.view.header_lines);
+        const parsed = try plan.parseBufferWithOriginals(s.arena, text, s.view.header_lines, s.view.entries);
         switch (parsed) {
             .invalid => |problems| {
                 try reportProblems(s, problems);
@@ -745,6 +795,10 @@ fn loop(s: *Session) !void {
                 }
                 try loadListing(s);
             },
+            .filter => |pat| {
+                s.view.filter = pat;
+                try loadListing(s);
+            },
             .find => |query| {
                 if (!try runFind(s, query)) try loadListing(s);
             },
@@ -810,9 +864,22 @@ fn serveEditorRound(s: *Session, child: *std.process.Child) !?u8 {
     // outro usuario local conectaria e navegaria na sessao alheia.
     _ = linux.fchmodat(linux.AT.FDCWD, sock_z, 0o600);
 
+    // pidfd_open permite esperar pelo editor no mesmo poll() do socket,
+    // eliminando wakeups de 120 ms em idle e dando saida instantanea.
+    const pidfd_rc = linux.pidfd_open(child.id.?, 0);
+    const pidfd: ?i32 = if (linux.errno(pidfd_rc) == .SUCCESS) @intCast(pidfd_rc) else null;
+    defer if (pidfd) |pfd| {
+        _ = linux.close(pfd);
+    };
+
     while (true) {
-        var fds = [_]linux.pollfd{.{ .fd = listener, .events = linux.POLL.IN, .revents = 0 }};
-        const prc = linux.poll(&fds, fds.len, 120);
+        var fds = [_]linux.pollfd{
+            .{ .fd = listener, .events = linux.POLL.IN, .revents = 0 },
+            .{ .fd = pidfd orelse -1, .events = linux.POLL.IN, .revents = 0 },
+        };
+        const nfds: usize = if (pidfd != null) 2 else 1;
+        const timeout_ms: i32 = if (pidfd != null) -1 else 120;
+        const prc = linux.poll(&fds, nfds, timeout_ms);
         switch (linux.errno(prc)) {
             .SUCCESS => {},
             .INTR => continue,
@@ -926,6 +993,29 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         } else {
             ok = true;
         }
+    } else if (std.mem.eql(u8, cmd, "tree")) {
+        try writeTree(s);
+        ok = true;
+    } else if (std.mem.eql(u8, cmd, "preview-entry")) {
+        try writeEntryPreview(s, arg);
+        ok = true;
+    } else if (std.mem.eql(u8, cmd, "filter")) {
+        s.view.filter = if (arg.len == 0) null else try s.arena.dupe(u8, arg);
+        loadListing(s) catch {
+            s.notice = "não consegui listar o diretório";
+        };
+        s.notice = if (s.view.filter) |flt|
+            try std.fmt.allocPrint(s.arena, "filtro: {s}", .{flt})
+        else
+            "filtro removido";
+        ok = true;
+    } else if (std.mem.eql(u8, cmd, "compact")) {
+        s.view.compact = !s.view.compact;
+        loadListing(s) catch {
+            s.notice = "não consegui listar o diretório";
+        };
+        s.notice = if (s.view.compact) "modo compacto ligado" else "modo completo ligado";
+        ok = true;
     } else if (std.mem.eql(u8, cmd, "theme")) {
         const next_bg: editor_mod.Background = if (std.mem.eql(u8, arg, "light"))
             .light
@@ -963,6 +1053,8 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         !isDirty(s, s.view.dir) and
         !std.mem.eql(u8, cmd, "apply") and
         !std.mem.eql(u8, cmd, "preview") and
+        !std.mem.eql(u8, cmd, "preview-entry") and
+        !std.mem.eql(u8, cmd, "tree") and
         !std.mem.eql(u8, cmd, "theme")) try writeBuffer(s);
 
     if (ok) {
@@ -993,17 +1085,21 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
 /// pipeline da volta externa e, no sucesso, deixamos no disco a listagem nova
 /// que o editor recarregara com `:edit!`.
 fn applySavedBufferLive(s: *Session) !?[]const u8 {
+    var req_arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer req_arena_state.deinit();
+    const req = req_arena_state.allocator();
+
     const text = try Io.Dir.cwd().readFileAlloc(
         s.io,
         s.view.buffer_path,
-        s.arena,
+        req,
         .limited(64 * 1024 * 1024),
     );
-    const parsed = try plan.parseBuffer(s.arena, text, s.view.header_lines);
+    const parsed = try plan.parseBufferWithOriginals(s.arena, text, s.view.header_lines, s.view.entries);
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
     if (document.directive == null or document.directive.? != .refresh) {
-        return "diretiva requer a volta completa da sessao";
+        return "diretiva requer a volta completa da sessão";
     }
 
     const built = try buildPlan(s, document);
@@ -1017,7 +1113,19 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
 
     const p = copy_resolved.plan;
     if (!p.isEmpty()) {
-        if (!s.state.takeApproval(s.io)) return "alteracoes nao foram confirmadas";
+        if (!s.state.takeApproval(s.io)) return "alterações não foram confirmadas";
+        if (s.last_preview_hash) |expected_hash| {
+            var base_dir = try openBase(s);
+            defer base_dir.close(s.io);
+            const missing = try missingDirs(s, base_dir, p.mkdirs);
+            var check_out: std.Io.Writer.Allocating = .init(req);
+            try writeDiff(s, &check_out.writer, base_dir, p, missing);
+            const actual_hash = std.hash.Wyhash.hash(0, check_out.written());
+            s.last_preview_hash = null;
+            if (actual_hash != expected_hash) {
+                return "o plano mudou no disco desde a confirmação; revise com :w";
+            }
+        }
         if (try applyApprovedLive(s, p)) |message| return message;
         s.reload_others = try refreshMovedSources(s, p.copies, try std.fmt.allocPrint(
             s.arena,
@@ -1050,6 +1158,8 @@ fn refreshMovedSources(s: *Session, copies: []const plan.Copy, note: []const u8)
         const abs = c.from_abs orelse continue;
         const dir = std.fs.path.dirname(abs) orelse continue;
         if ((try seen.getOrPut(s.arena, dir)).found_existing) continue;
+        // Nao sobrescrever uma janela que tem outras edicoes pendentes.
+        if (isDirty(s, dir)) continue;
         const v = s.views.get(dir) orelse continue;
         s.view = v;
         // O recado da pasta de origem e outro: aqui a linha sumiu, nao chegou.
@@ -1065,13 +1175,17 @@ fn refreshMovedSources(s: *Session, copies: []const plan.Copy, note: []const u8)
 /// antes do `:w`, mas nao altera o filesystem. A lista humana vai para um
 /// arquivo de estado porque a resposta curta do socket carrega so o veredito.
 fn previewProposedBuffer(s: *Session) !?[]const u8 {
+    var req_arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer req_arena_state.deinit();
+    const req = req_arena_state.allocator();
+
     const text = s.state.dir.readFileAlloc(
         s.io,
         "proposal",
-        s.arena,
+        req,
         .limited(64 * 1024 * 1024),
-    ) catch return "nao foi possivel ler a proposta do buffer";
-    const parsed = try plan.parseBuffer(s.arena, text, s.view.header_lines);
+    ) catch return "não foi possível ler a proposta do buffer";
+    const parsed = try plan.parseBufferWithOriginals(req, text, s.view.header_lines, s.view.entries);
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
 
@@ -1085,6 +1199,7 @@ fn previewProposedBuffer(s: *Session) !?[]const u8 {
 
     const p = copy_resolved.plan;
     if (p.isEmpty()) {
+        s.last_preview_hash = null;
         try s.state.dir.writeFile(s.io, .{ .sub_path = "preview", .data = "" });
         return null;
     }
@@ -1092,10 +1207,25 @@ fn previewProposedBuffer(s: *Session) !?[]const u8 {
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
     const missing = try missingDirs(s, base_dir, p.mkdirs);
-    var preview_out: std.Io.Writer.Allocating = .init(s.arena);
+    var preview_out: std.Io.Writer.Allocating = .init(req);
     try writeDiff(s, &preview_out.writer, base_dir, p, missing);
+    s.last_preview_hash = std.hash.Wyhash.hash(0, preview_out.written());
     try s.state.dir.writeFile(s.io, .{ .sub_path = "preview", .data = preview_out.written() });
     return null;
+}
+
+fn writeEntryPreview(s: *Session, rel_path: []const u8) !void {
+    var req_arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer req_arena_state.deinit();
+    const req = req_arena_state.allocator();
+
+    var base_dir = try openBase(s);
+    defer base_dir.close(s.io);
+    var out: std.Io.Writer.Allocating = .init(req);
+    if (rel_path.len > 0) {
+        try preview.render(req, s.io, &out.writer, base_dir, rel_path);
+    }
+    try s.state.dir.writeFile(s.io, .{ .sub_path = "entry_preview", .data = out.written() });
 }
 
 fn describeProblems(s: *Session, problems: []const plan.Problem) ![]const u8 {
@@ -1124,6 +1254,14 @@ fn formatFsError(err: anyerror) []const u8 {
     };
 }
 
+fn pushUndo(s: *Session, applied: fsops.Applied) !void {
+    if (applied.isEmpty()) return;
+    if (s.view.undo_stack.items.len >= 20) {
+        _ = s.view.undo_stack.orderedRemove(0);
+    }
+    try s.view.undo_stack.append(s.arena, .{ .base = s.view.dir, .applied = applied });
+}
+
 fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
@@ -1135,7 +1273,7 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     if (p.removes.len > 0) {
         retention = retentionFor(s) catch |err| return try std.fmt.allocPrint(
             s.arena,
-            "a lixeira nao pode receber ({s}): remocao recusada",
+            "a lixeira não pode receber ({s}): remoção recusada",
             .{formatFsError(err)},
         );
     }
@@ -1150,9 +1288,7 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
         });
     }
 
-    if (!outcome.applied.isEmpty()) {
-        s.view.undo = .{ .base = s.view.dir, .applied = outcome.applied };
-    }
+    try pushUndo(s, outcome.applied);
     s.notice = try appliedNotice(s, outcome.applied);
     return null;
 }
@@ -1170,6 +1306,57 @@ fn writeCursorNameHint(s: *Session) void {
 // Conteudo do buffer
 // ---------------------------------------------------------------------------
 
+fn globMatchIgnoreCase(pattern: []const u8, text: []const u8) bool {
+    var pi: usize = 0;
+    var ti: usize = 0;
+    var star_p: ?usize = null;
+    var star_t: usize = 0;
+    while (ti < text.len) {
+        if (pi < pattern.len and (pattern[pi] == '?' or std.ascii.toLower(pattern[pi]) == std.ascii.toLower(text[ti]))) {
+            pi += 1;
+            ti += 1;
+        } else if (pi < pattern.len and pattern[pi] == '*') {
+            star_p = pi;
+            pi += 1;
+            star_t = ti;
+        } else if (star_p) |sp| {
+            pi = sp + 1;
+            star_t += 1;
+            ti = star_t;
+        } else {
+            return false;
+        }
+    }
+    while (pi < pattern.len and pattern[pi] == '*') pi += 1;
+    return pi == pattern.len;
+}
+
+pub fn matchesFilter(pattern: []const u8, name: []const u8) bool {
+    if (pattern.len == 0) return true;
+    if (std.mem.indexOfAny(u8, pattern, "*?") != null) {
+        return globMatchIgnoreCase(pattern, name);
+    }
+    // Sem curingas: busca por substring caixa-insensivel.
+    if (pattern.len > name.len) return false;
+    var i: usize = 0;
+    while (i + pattern.len <= name.len) : (i += 1) {
+        if (std.ascii.eqlIgnoreCase(name[i .. i + pattern.len], pattern)) return true;
+    }
+    return false;
+}
+
+fn writeEntryDisplay(w: *Io.Writer, e: explorer.Entry, icons: bool, compact: bool) Io.Writer.Error!void {
+    if (compact) {
+        try w.writeByte(explorer.kindChar(e));
+        try w.writeAll(" │ ");
+        if (icons) {
+            try w.writeAll(explorer.getIcon(e.path, e.kind == .dir, e.symlink, e.mode & 0o111 != 0));
+        }
+        return;
+    }
+    try explorer.writeTableDetailsWithOptions(w, e, icons);
+}
+
 const Collector = struct {
     session: *Session,
     entries: std.ArrayList(plan.Original) = .empty,
@@ -1182,6 +1369,9 @@ const Collector = struct {
         const c: *Collector = @ptrCast(@alignCast(ctx));
         if (index >= c.high) c.high = index + 1;
         if (e.parent) return; // `..` nao e entrada editavel; para subir existe `:cd ..`
+        if (c.session.view.filter) |flt| {
+            if (!matchesFilter(flt, std.fs.path.basename(e.path))) return;
+        }
         // O Vim nao preserva bytes invalidos no round-trip: o ID estaria certo e
         // o destino, corrompido. A entrada aparece, mas fora da edicao.
         if (!e.utf8_ok) {
@@ -1189,11 +1379,11 @@ const Collector = struct {
             return;
         }
         var display: std.Io.Writer.Allocating = .init(c.session.arena);
-        try explorer.writeTableDetails(&display.writer, e);
+        try writeEntryDisplay(&display.writer, e, c.session.options.icons, c.session.view.compact);
         try c.entries.append(c.session.arena, .{
             .id = c.session.view.id_base + index,
             .path = e.path,
-            .kind = e.kind,
+            .kind = if (e.symlink) .symlink else e.kind,
             .display = display.written(),
         });
     }
@@ -1226,7 +1416,7 @@ fn idsInBuffer(s: *Session, v: *View) !?std.AutoHashMapUnmanaged(u32, void) {
         s.arena,
         .limited(64 * 1024 * 1024),
     ) catch return null;
-    const parsed = try plan.parseBuffer(s.arena, text, v.header_lines);
+    const parsed = try plan.parseBufferWithOriginals(s.arena, text, v.header_lines, v.entries);
     if (parsed == .invalid) return null;
     var set: std.AutoHashMapUnmanaged(u32, void) = .empty;
     for (parsed.ok.edits) |e| try set.put(s.arena, e.id, {});
@@ -1308,12 +1498,16 @@ fn buildPlan(s: *Session, document: plan.Document) !plan.Result {
 
 fn loadListing(s: *Session) !void {
     var collector: Collector = .{ .session = s };
+    var incomplete = false;
     var options = s.options;
     options.recursive = false;
     options.show_hidden = s.view.show_hidden;
+    options.use_ctime = inTrash(s, s.view.dir);
+    options.incomplete = &incomplete;
     try explorer.enumerate(s.arena, s.io, s.view.dir, options, collector.sink());
     s.view.entries = try collector.entries.toOwnedSlice(s.arena);
     s.view.unlistable = try collector.unlistable.toOwnedSlice(s.arena);
+    s.view.incomplete = incomplete;
     reserveIds(s, collector.high);
 }
 
@@ -1353,10 +1547,13 @@ fn writeBuffer(s: *Session) !void {
     defer file.close(s.io);
     var buffer: [64 * 1024]u8 = undefined;
     var writer: Io.File.Writer = .init(file, s.io, &buffer);
-    const location = try std.fmt.allocPrint(s.arena, "{s}{s}", .{
-        abbreviateHome(s.arena, s.environ, s.view.dir),
-        if (s.view.show_hidden) "  [all]" else "",
-    });
+    const location = blk: {
+        var loc_buf: std.Io.Writer.Allocating = .init(s.arena);
+        try loc_buf.writer.writeAll(abbreviateHome(s.arena, s.environ, s.view.dir));
+        if (s.view.show_hidden) try loc_buf.writer.writeAll("  [all]");
+        if (s.view.filter) |flt| try loc_buf.writer.print("  [filtro: {s}]", .{flt});
+        break :blk loc_buf.written();
+    };
     // A sessao viva recarrega o buffer sem reabrir o editor: o lado do Vim
     // le daqui o diretorio corrente para sincronizar cwd e moldura. Global
     // para o self-exec de preview do fzf; os sidecars por buffer sao o que o
@@ -1364,21 +1561,30 @@ fn writeBuffer(s: *Session) !void {
     try s.state.writeBase(s.io, s.view.dir);
     try s.state.dir.writeFile(s.io, .{ .sub_path = "location", .data = location });
     try s.environ.put(session.env_location, location);
+    var notes: std.ArrayList([]const u8) = .empty;
+    if (s.view.incomplete) {
+        try notes.append(s.arena, "leitura interrompida — listagem pode estar incompleta");
+    }
     const header: plan.BufferHeader = .{
         .scope = null,
         .unlistable = s.view.unlistable,
-        .notes = &.{},
+        .notes = notes.items,
     };
     s.view.header_lines = try plan.headerLines(s.arena, header);
     try s.state.writeHeader(s.io, s.arena, s.view.header_lines);
-    try s.state.writeTitles(s.io, explorer.table_titles);
+    const titles: []const u8 = if (s.view.compact)
+        "T │ NAME"
+    else if (inTrash(s, s.view.dir))
+        explorer.table_titles_trash
+    else
+        explorer.table_titles;
+    try s.state.writeTitles(s.io, titles);
     try plan.writeBuffer(s.arena, &writer.interface, header, s.view.entries);
     try writer.interface.flush();
     try writeViewSidecars(s, location);
     // O aviso ja esta no arquivo que sera aberto agora; a proxima navegacao
     // parte de uma tela limpa.
     s.notice = null;
-    try writeTree(s);
 }
 
 /// Sidecars de um buffer de diretorio: o que o helper precisa para desenhar
@@ -1405,49 +1611,86 @@ fn editorLabel(editor: editor_mod.Editor) []const u8 {
     return if (std.mem.indexOf(u8, name, "nvim") != null) "Neovim" else "Vim";
 }
 
-const TreeWriter = struct {
-    writer: *Io.Writer,
-    count: usize = 0,
+const TreeEntry = struct {
+    path: []const u8,
+    is_dir: bool,
+    symlink: bool,
+};
+
+const TreeCollector = struct {
+    arena: Allocator,
+    items: std.ArrayList(TreeEntry) = .empty,
+    truncated: bool = false,
 
     const limit: usize = 2_000;
     const LimitReached = error{TreeLimitReached};
 
     fn emit(ctx: *anyopaque, _: u32, e: explorer.Entry) anyerror!void {
-        const t: *TreeWriter = @ptrCast(@alignCast(ctx));
+        const t: *TreeCollector = @ptrCast(@alignCast(ctx));
         if (e.parent) return;
-        if (t.count >= limit) return LimitReached.TreeLimitReached;
-        t.count += 1;
-        const depth = std.mem.count(u8, e.path, "/");
-        try t.writer.splatBytesAll("│   ", depth);
-        try t.writer.writeAll("├── ");
-        try t.writer.writeAll(std.fs.path.basename(e.path));
-        if (e.kind == .dir) try t.writer.writeByte('/');
-        if (e.symlink) try t.writer.writeAll(" @");
-        try t.writer.writeByte('\n');
+        if (t.items.items.len >= limit) {
+            t.truncated = true;
+            return LimitReached.TreeLimitReached;
+        }
+        try t.items.append(t.arena, .{
+            .path = e.path,
+            .is_dir = e.kind == .dir,
+            .symlink = e.symlink,
+        });
     }
 
-    fn sink(t: *TreeWriter) explorer.Sink {
+    fn sink(t: *TreeCollector) explorer.Sink {
         return .{ .ctx = t, .func = emit };
     }
 };
 
-/// Produz uma arvore visual pelo mesmo enumerador que aplica os limites de
-/// profundidade, symlinks e pontos de montagem da CLI.
+/// Produz uma arvore visual sob demanda (quando `\` e pressionado), usando uma
+/// arena local descartada ao fim e fechando ramos com `└──`.
 fn writeTree(s: *Session) !void {
+    var local_arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer local_arena_state.deinit();
+    const local = local_arena_state.allocator();
+
     var tree = try s.state.treeFile(s.io);
     defer tree.close(s.io);
     var buffer: [64 * 1024]u8 = undefined;
     var writer: Io.File.Writer = .init(tree, s.io, &buffer);
     const w = &writer.interface;
-    try w.print("{s}\n", .{abbreviateHome(s.arena, s.environ, s.view.dir)});
+    try w.print("{s}\n", .{abbreviateHome(local, s.environ, s.view.dir)});
     var options = s.options;
     options.recursive = true;
     options.show_hidden = s.view.show_hidden;
-    var out: TreeWriter = .{ .writer = w };
-    explorer.enumerate(s.arena, s.io, s.view.dir, options, out.sink()) catch |err| {
-        if (err != TreeWriter.LimitReached.TreeLimitReached) return err;
-        try w.print("… arvore truncada em {d} entradas\n", .{TreeWriter.limit});
+    var col: TreeCollector = .{ .arena = local };
+    explorer.enumerate(local, s.io, s.view.dir, options, col.sink()) catch |err| {
+        if (err != TreeCollector.LimitReached.TreeLimitReached) return err;
     };
+
+    const items = col.items.items;
+    for (items, 0..) |item, i| {
+        const depth = std.mem.count(u8, item.path, "/");
+        const parent = std.fs.path.dirname(item.path) orelse "";
+        var is_last = true;
+        for (items[i + 1 ..]) |next| {
+            const next_depth = std.mem.count(u8, next.path, "/");
+            if (next_depth < depth) break;
+            if (next_depth == depth) {
+                const next_parent = std.fs.path.dirname(next.path) orelse "";
+                if (std.mem.eql(u8, next_parent, parent)) {
+                    is_last = false;
+                    break;
+                }
+            }
+        }
+        try w.splatBytesAll("│   ", depth);
+        try w.writeAll(if (is_last) "└── " else "├── ");
+        try w.writeAll(std.fs.path.basename(item.path));
+        if (item.is_dir) try w.writeByte('/');
+        if (item.symlink) try w.writeAll(" @");
+        try w.writeByte('\n');
+    }
+    if (col.truncated) {
+        try w.print("… árvore truncada em {d} entradas\n", .{TreeCollector.limit});
+    }
     try w.flush();
 }
 
@@ -1693,21 +1936,46 @@ const Feed = struct {
     }
 };
 
+const default_find_excludes = [_][]const u8{ ".git", "node_modules", ".zig-cache", "target", "__pycache__" };
+const default_find_max_entries: u32 = 200_000;
+
+fn resolveFindExcludes(arena: Allocator, s: *Session) ![]const []const u8 {
+    if (s.options.exclude.len > 0) return s.options.exclude;
+    if (s.environ.get("LST_F_EXCLUDE")) |raw| {
+        var list: std.ArrayList([]const u8) = .empty;
+        var it = std.mem.splitScalar(u8, raw, ',');
+        while (it.next()) |part| {
+            const trimmed = std.mem.trim(u8, part, " \t");
+            if (trimmed.len > 0) try list.append(arena, trimmed);
+        }
+        return list.toOwnedSlice(arena);
+    }
+    return &default_find_excludes;
+}
+
 /// Abre o fzf sobre a arvore a partir do diretorio corrente. O que for marcado
 /// vira o conteudo do buffer. Devolve `false` quando nada foi escolhido.
 fn runFind(s: *Session, query: []const u8) !bool {
     if (s.features.version.major == 0 and s.features.version.minor == 0) {
-        s.notice = "o fzf nao esta disponivel; a busca depende dele";
+        s.notice = "o fzf não está disponível; a busca depende dele";
         return false;
     }
 
+    var find_arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer find_arena_state.deinit();
+    const find_arena = find_arena_state.allocator();
+
     try s.state.writeBase(s.io, s.view.dir);
 
+    var capped = false;
     var options = s.options;
     options.recursive = true;
     options.show_hidden = s.view.show_hidden;
+    options.exclude = try resolveFindExcludes(find_arena, s);
+    options.max_entries = default_find_max_entries;
+    options.incomplete = &capped;
 
-    var runner = try fzf.start(s.arena, s.io, .{
+    var runner = try fzf.start(find_arena, s.io, .{
         .features = s.features,
         .header = try findHeader(s),
         .prompt = "find> ",
@@ -1725,15 +1993,15 @@ fn runFind(s: *Session, query: []const u8) !bool {
         .records = runner.writer(),
         .list = &list_writer.interface,
         .options = options,
-        .arena = s.arena,
+        .arena = find_arena,
     };
     // Streaming: o fzf ja mostra as primeiras entradas enquanto a arvore ainda
     // esta sendo percorrida.
-    explorer.enumerate(s.arena, s.io, s.view.dir, options, feed.sink()) catch {};
+    explorer.enumerate(find_arena, s.io, s.view.dir, options, feed.sink()) catch {};
     list_writer.interface.flush() catch {};
     list_file.close(s.io);
 
-    const selection = try runner.finish(s.arena);
+    const selection = try runner.finish(find_arena);
     if (selection.aborted) return false;
     if (std.mem.eql(u8, selection.key, fzf.Keys.help)) {
         try s.out.writeByte('\n');
@@ -1748,16 +2016,17 @@ fn runFind(s: *Session, query: []const u8) !bool {
     for (selection.indices) |index| {
         if (index >= feed.paths.items.len) continue;
         const e = feed.paths.items[index];
+        const owned_path = try s.arena.dupe(u8, e.path);
         if (!e.utf8_ok) {
-            try unlistable.append(s.arena, e.path);
+            try unlistable.append(s.arena, owned_path);
             continue;
         }
         var display: std.Io.Writer.Allocating = .init(s.arena);
-        try explorer.writeTableDetails(&display.writer, e);
+        try writeEntryDisplay(&display.writer, e, s.options.icons, s.view.compact);
         try entries.append(s.arena, .{
             .id = s.view.id_base + index,
-            .path = e.path,
-            .kind = e.kind,
+            .path = owned_path,
+            .kind = if (e.symlink) .symlink else e.kind,
             .display = display.written(),
         });
     }
@@ -1767,9 +2036,16 @@ fn runFind(s: *Session, query: []const u8) !bool {
     s.view.unlistable = try unlistable.toOwnedSlice(s.arena);
     reserveIds(s, feed.high);
     s.notice = if (query.len > 0)
-        try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s))", .{ query, s.view.entries.len })
+        try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s)){s}", .{
+            query,
+            s.view.entries.len,
+            if (capped) " [truncado]" else "",
+        })
     else
-        try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s))", .{s.view.entries.len});
+        try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s)){s}", .{
+            s.view.entries.len,
+            if (capped) " [truncado]" else "",
+        });
     return true;
 }
 
@@ -1823,7 +2099,14 @@ fn writeEllipsized(w: *Io.Writer, text: []const u8, width: usize) !void {
     try w.writeAll(text[text.len - (width - 1) ..]);
 }
 
-fn abbreviateHome(_: Allocator, _: *const std.process.Environ.Map, path: []const u8) []const u8 {
+pub fn abbreviateHome(arena: Allocator, environ: *const std.process.Environ.Map, path: []const u8) []const u8 {
+    const raw_home = environ.get("HOME") orelse return path;
+    const home = std.mem.trimEnd(u8, raw_home, "/");
+    if (home.len == 0) return path;
+    if (std.mem.eql(u8, path, home)) return "~";
+    if (std.mem.startsWith(u8, path, home) and path.len > home.len and path[home.len] == '/') {
+        return std.fmt.allocPrint(arena, "~{s}", .{path[home.len..]}) catch path;
+    }
     return path;
 }
 
@@ -1835,11 +2118,11 @@ fn openBase(s: *Session) !Io.Dir {
     return Io.Dir.cwd().openDir(s.io, s.view.dir, .{ .iterate = true });
 }
 
-/// Criacao que colide com o que ja esta no disco sem estar na listagem
-/// (dotfile com `show_hidden` desligado, entrada de outro filtro). Pegar aqui
-/// evita que a falha aconteca no meio da aplicacao e arraste tudo no rollback.
+/// Criacao ou renomeacao que colide com o que ja esta no disco sem estar na
+/// listagem (dotfile com `show_hidden` desligado, entrada filtrada). Pegar
+/// aqui evita que a falha aconteca no meio da aplicacao e arraste tudo no rollback.
 fn checkCreatesOnDisk(s: *Session, p: plan.Plan) ![]const plan.Problem {
-    if (p.creates.len == 0) return &.{};
+    if (p.creates.len == 0 and p.moves.len == 0) return &.{};
 
     var base_dir = try openBase(s);
     defer base_dir.close(s.io);
@@ -1853,7 +2136,21 @@ fn checkCreatesOnDisk(s: *Session, p: plan.Plan) ![]const plan.Problem {
         if (vacatedByMove(p, c.path)) continue;
         try out.append(s.arena, .{ .create_exists = .{ .line = c.line, .path = c.path } });
     }
+    for (p.moves) |m| {
+        if (vacatedByMove(p, m.to) or vacatedByEarlyRemove(p, m.to)) continue;
+        // Troca so de caixa em fs case-insensitive: o plano ja passa por temporario.
+        if (std.ascii.eqlIgnoreCase(m.from, m.to)) continue;
+        _ = base_dir.statFile(s.io, m.to, .{ .follow_symlinks = false }) catch continue;
+        try out.append(s.arena, .{ .dest_occupied = .{ .id = m.id, .path = m.to } });
+    }
     return out.toOwnedSlice(s.arena);
+}
+
+fn vacatedByEarlyRemove(p: plan.Plan, path: []const u8) bool {
+    for (p.removes[0..p.removes_before]) |rm| {
+        if (std.mem.eql(u8, rm.path, path)) return true;
+    }
+    return false;
 }
 
 fn vacatedByMove(p: plan.Plan, path: []const u8) bool {
@@ -1997,15 +2294,15 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
 
     if (!approved_in_editor and (p.moves.len > 0 or p.creates.len > 0 or p.copies.len > 0 or missing.len > 0)) {
         const question = if (p.moves.len == 0 and p.copies.len == 0)
-            "Apply creations?"
+            "Aplicar criações?"
         else if (p.creates.len == 0 and p.copies.len == 0)
-            "Apply renames and moves?"
+            "Aplicar renomeações e movimentos?"
         else if (p.moves.len == 0 and p.creates.len == 0)
-            "Apply copies?"
+            "Aplicar cópias?"
         else if (p.creates.len == 0)
-            "Apply renames, moves, and copies?"
+            "Aplicar renomeações, movimentos e cópias?"
         else
-            "Apply creations, renames, moves, and copies?";
+            "Aplicar criações, renomeações, movimentos e cópias?";
         if (!try confirm(s, question)) {
             effective.moves = &.{};
             effective.renames = &.{};
@@ -2017,7 +2314,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
 
     var retention: ?fsops.Retention = null;
     if (p.removes.len > 0) {
-        if (approved_in_editor or try confirm(s, "Confirm removals?")) {
+        if (approved_in_editor or try confirm(s, "Confirmar remoções?")) {
             retention = retentionFor(s) catch |err| blk: {
                 if (err == error.TrashUnavailable) {
                     try s.out.print(
@@ -2053,9 +2350,7 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
         return false;
     }
 
-    if (!outcome.applied.isEmpty()) {
-        s.view.undo = .{ .base = s.view.dir, .applied = outcome.applied };
-    }
+    try pushUndo(s, outcome.applied);
     s.notice = try appliedNotice(s, outcome.applied);
     return true;
 }
@@ -2168,7 +2463,7 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
         if (!c.implicit) asked += 1;
     }
     if (asked > 0) {
-        try w.print("Create ({d}):\n", .{asked});
+        try w.print("Criar ({d}):\n", .{asked});
         for (p.creates) |c| {
             if (c.implicit) continue;
             if (c.kind == .symlink) {
@@ -2188,17 +2483,17 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
     // Movimento vindo de outra pasta e copia sao secoes separadas: o que muda
     // entre eles e se a origem continua existindo, e essa e justamente a
     // pergunta que o usuario faz ao olhar o preview.
-    try writeCopySection(s, w, p.copies, true, "Move from another folder");
-    try writeCopySection(s, w, p.copies, false, "Copy");
+    try writeCopySection(s, w, p.copies, true, "Mover de outra pasta");
+    try writeCopySection(s, w, p.copies, false, "Copiar");
 
     if (missing.len > 0) {
-        try w.print("Create parent directory ({d}):\n", .{missing.len});
+        try w.print("Criar diretório-pai ({d}):\n", .{missing.len});
         for (missing) |d| try w.print("  {s}/\n", .{d});
         try w.writeAll("\n");
     }
 
     if (p.moves.len > 0) {
-        try w.print("Rename or move ({d}):\n", .{p.moves.len});
+        try w.print("Renomear ou mover ({d}):\n", .{p.moves.len});
         var width: usize = 0;
         for (p.moves) |m| width = @max(width, m.from.len);
         width = @min(width, 48);
@@ -2213,7 +2508,7 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
     if (p.removes.len > 0) {
         if (inTrash(s, s.view.dir)) {
             // Aqui a remocao nao tem para onde ir -- isto ja e a lixeira.
-            try w.print("Remove ({d})  ->  definitivo: isto e a lixeira\n", .{p.removes.len});
+            try w.print("Remover ({d})  ->  definitivo: isto é a lixeira\n", .{p.removes.len});
         } else if (trashIsElsewhere(s)) {
             // Outro filesystem: `rename` nao atravessa, entao a lixeira recebe
             // uma copia. O volume aparece porque "apagar" deixa de ser
@@ -2222,20 +2517,20 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
             for (p.removes) |rm| total += fsops.entrySize(s.io, base_dir, rm.path, rm.kind);
             var size_buf: [16]u8 = undefined;
             try w.print(
-                "Remove ({d})  ->  lixeira {s}, apagada apos 30 dias\n" ++
-                    "              copia de {s}: a lixeira esta em outro filesystem\n",
+                "Remover ({d})  ->  lixeira {s}, apagada após 30 dias\n" ++
+                    "              cópia de {s}: a lixeira está em outro filesystem\n",
                 .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path), explorer.sizeText(&size_buf, total) },
             );
         } else {
             try w.print(
-                "Remove ({d})  ->  lixeira {s}, apagada apos 30 dias\n",
+                "Remover ({d})  ->  lixeira {s}, apagada após 30 dias\n",
                 .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path) },
             );
         }
         for (p.removes) |rm| {
             if (rm.kind == .dir) {
                 const count = fsops.subtreeCount(s.io, base_dir, rm.path);
-                try w.print("  {s}/  ({d} item(s) in subtree)\n", .{ rm.path, count });
+                try w.print("  {s}/  ({d} item(ns) na subárvore)\n", .{ rm.path, count });
             } else {
                 try w.print("  {s}\n", .{rm.path});
             }
@@ -2370,13 +2665,14 @@ fn pruneTrash(s: *Session) void {
 }
 
 fn undoLast(s: *Session) !void {
-    const u = s.view.undo orelse {
-        s.notice = "nada para desfazer nesta sessao";
+    if (s.view.undo_stack.items.len == 0) {
+        s.notice = "nada para desfazer nesta sessão";
         return;
-    };
+    }
+    const u = s.view.undo_stack.items[s.view.undo_stack.items.len - 1];
 
     var base_dir = Io.Dir.cwd().openDir(s.io, u.base, .{ .iterate = true }) catch {
-        s.notice = "o diretorio da ultima operacao nao esta mais acessivel";
+        s.notice = "o diretório da última operação não está mais acessível";
         return;
     };
     defer base_dir.close(s.io);
@@ -2391,10 +2687,10 @@ fn undoLast(s: *Session) !void {
         // O movimento vindo de outra pasta voltou para la: aquele buffer
         // tambem mudou, e nao e o que esta em foco.
         _ = try refreshMovedSources(s, u.applied.copied, "devolvido pelo :undo");
-        s.view.undo = null;
-        s.notice = "ultima operacao desfeita";
+        _ = s.view.undo_stack.pop();
+        s.notice = "última operação desfeita";
     } else {
-        try s.out.writeAll("\nO undo nao conseguiu desfazer tudo:\n");
+        try s.out.writeAll("\nO undo não conseguiu desfazer tudo:\n");
         for (errors) |e| try s.out.print("  {s}\n", .{e});
     }
     if (errors.len > 0) try pause(s);
@@ -2425,7 +2721,7 @@ const Tty = struct {
 
 fn confirm(s: *Session, question: []const u8) !bool {
     const tty = s.tty orelse return false;
-    try s.out.print("{s} [y/N] ", .{question});
+    try s.out.print("{s} [s/N] ", .{question});
     try s.out.flush();
     const answer = tty.line(s.arena, s.io) orelse return false;
     const trimmed = std.mem.trim(u8, answer, " \t\r");
@@ -2435,7 +2731,7 @@ fn confirm(s: *Session, question: []const u8) !bool {
 
 fn pause(s: *Session) !void {
     const tty = s.tty orelse return;
-    try s.out.writeAll("\n[Press Enter to return to the list] ");
+    try s.out.writeAll("\n[Pressione Enter para voltar à lista] ");
     try s.out.flush();
     _ = tty.line(s.arena, s.io);
 }

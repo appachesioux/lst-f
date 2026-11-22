@@ -40,7 +40,9 @@ pub fn resolveExecutable(arena: Allocator, io: Io, environ: ?*const std.process.
 
 /// Uma deteccao por execucao, via `fzf --version`.
 pub fn detect(gpa: Allocator, io: Io, environ: ?*const std.process.Environ.Map) !Features {
-    const exe = resolveExecutable(gpa, io, environ);
+    var local_arena: std.heap.ArenaAllocator = .init(gpa);
+    defer local_arena.deinit();
+    const exe = resolveExecutable(local_arena.allocator(), io, environ);
     const result = std.process.run(gpa, io, .{
         .argv = &.{ exe, "--version" },
         .stdout_limit = .limited(1024),
@@ -302,7 +304,7 @@ pub fn writeColumnTitles(w: *Io.Writer, options: explorer.Options) Io.Writer.Err
     try w.writeAll(columns.gap);
     try explorer.writeRightPadded(w, "SIZE", columns.size);
     try w.writeAll(columns.gap);
-    try explorer.writePadded(w, "SAVED", columns.time);
+    try explorer.writePadded(w, "MODIFIED", columns.time);
     try w.writeAll(columns.gap);
     if (options.icons) try w.writeAll("   ");
     try w.writeAll("NAME");

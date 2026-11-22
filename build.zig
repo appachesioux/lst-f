@@ -67,4 +67,33 @@ pub fn build(b: *std.Build) void {
     const dump = b.addExecutable(.{ .name = "dump-helper", .root_module = dump_mod });
     const dump_run = b.addRunArtifact(dump);
     b.step("dump-helper", "Imprime o helper.vim gerado").dependOn(&dump_run.step);
+
+    // Testa o helper.vim real no Vim e/ou Neovim headless usando arquivo temporario exclusivo.
+    const vim_test = b.addSystemCommand(&.{
+        "sh",
+        "-eu",
+        "-c",
+        \\tmp="$(mktemp -d "${TMPDIR:-/tmp}/lstf-vim-test.XXXXXX")"
+        \\trap 'rm -rf "$tmp"' EXIT
+        \\helper="$tmp/helper.vim"
+        \\"$1" > "$helper"
+        \\export LST_F_HELPER="$helper"
+        \\ran=0
+        \\if command -v vim >/dev/null 2>&1; then
+        \\  vim -Nu NONE -i NONE -n -es -S test/sort_test.vim
+        \\  ran=1
+        \\fi
+        \\if command -v nvim >/dev/null 2>&1; then
+        \\  nvim --headless -u NONE -i NONE -n -S test/sort_test.vim
+        \\  ran=1
+        \\fi
+        \\if [ "$ran" -eq 0 ]; then
+        \\  echo "nenhum vim ou nvim encontrado no PATH" >&2
+        \\  exit 1
+        \\fi
+    ,
+        "--",
+    });
+    vim_test.addArtifactArg(dump);
+    b.step("test-vim", "Roda a suite de testes VimL no Vim e Neovim").dependOn(&vim_test.step);
 }

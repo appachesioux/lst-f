@@ -44,6 +44,14 @@ pub const MovedOut = struct {
     kind: plan.Kind,
 };
 
+/// Metadados registrados logo apos uma copia, para que o `:undo` nao apague
+/// trabalho feito pelo usuario depois da copia.
+pub const CopiedMeta = struct {
+    mtime_s: i64,
+    size: u64,
+    count: u32,
+};
+
 /// O que efetivamente aconteceu no disco. Serve ao rollback e ao undo.
 pub const Applied = struct {
     created_dirs: []const []const u8 = &.{},
@@ -51,8 +59,14 @@ pub const Applied = struct {
     /// renomeacoes: podem estar ocupando um nome que precisa voltar.
     created: []const plan.Create = &.{},
     renames: []const plan.Rename = &.{},
-    /// Copias materializadas; o undo as remove.
+    /// Copias materializadas; o undo as remove (se intactas).
     copied: []const plan.Copy = &.{},
+    /// Metadados das copias no momento em que foram concluidas (mesmo indice que `copied`).
+    copied_meta: []const CopiedMeta = &.{},
+    /// Caminhos de destino em `copied` que o rollback nao pode apagar (por
+    /// exemplo, quando a exclusao da origem em movimento cross-device falhou
+    /// parcialmente e o destino e a unica copia integra).
+    preserve_copies: []const []const u8 = &.{},
     removed: []const Removed = &.{},
     /// Quantas remocoes (prefixo de `removed`) aconteceram antes das
     /// renomeacoes; o rollback as restaura depois de desfazer os renames.
@@ -216,6 +230,8 @@ pub fn apply(
     var renamed: std.ArrayList(plan.Rename) = .empty;
     var removed: std.ArrayList(Removed) = .empty;
     var copied: std.ArrayList(plan.Copy) = .empty;
+    var copied_meta: std.ArrayList(CopiedMeta) = .empty;
+    var preserve_copies: std.ArrayList([]const u8) = .empty;
     var moved_out: std.ArrayList(MovedOut) = .empty;
 
     var failure: ?Outcome.Failure = null;
@@ -351,12 +367,17 @@ pub fn apply(
                 break;
             };
             try copied.append(arena, c);
+            try copied_meta.append(arena, snapshotMeta(io, base, c.to, c.kind));
             // Movimento entre filesystems: a copia ja esta aqui, falta tirar a
             // origem de la. Sai por `unlink`, sem passar pela lixeira: o
             // arquivo esta no destino, nao foi perdido -- e e de la que o undo
             // o traz de volta.
             if (c.cut and c.cross_device) {
                 if (try removeSource(arena, io, c, &moved_out)) |f| {
+                    // A exclusao da origem pode ter apagado parte da arvore
+                    // antes de falhar: preservar a copia completa no destino
+                    // garante que ao menos uma copia integra sobreviva.
+                    try preserve_copies.append(arena, c.to);
                     failure = f;
                     break;
                 }
@@ -379,6 +400,8 @@ pub fn apply(
         .created = try new_entries.toOwnedSlice(arena),
         .renames = try renamed.toOwnedSlice(arena),
         .copied = try copied.toOwnedSlice(arena),
+        .copied_meta = try copied_meta.toOwnedSlice(arena),
+        .preserve_copies = try preserve_copies.toOwnedSlice(arena),
         .removed = try removed.toOwnedSlice(arena),
         .removed_before = removed_before,
         .moved_out = try moved_out.toOwnedSlice(arena),
@@ -441,7 +464,8 @@ fn removeIntoTrash(
     const name = std.fs.path.basename(rm.path);
     var attempt: u32 = 0;
     while (attempt < 100) : (attempt += 1) {
-        const stored = try freeName(arena, io, t.dir, name, rm.kind == .dir);
+        const stored = (try freeName(arena, io, t.dir, name, rm.kind == .dir)) orelse
+            return .{ .phase = "remover", .detail = rm.path, .err = error.PathAlreadyExists };
         base.renamePreserve(rm.path, t.dir, stored, io) catch |err| switch (err) {
             // Corrida com outra sessao mandando o mesmo nome para ca: tenta o
             // sufixo seguinte. `renamePreserve` e RENAME_NOREPLACE, entao
@@ -475,20 +499,33 @@ fn removeIntoTrash(
 
 /// Nome livre na lixeira: o original, ou `nome-01`, `nome-02`... -- o sufixo da
 /// copia (`plan.suffixed`), para nao haver duas convencoes de nome no projeto.
+/// Retorna `null` se todos os sufixos ate `-99` estiverem ocupados.
 fn freeName(
     arena: Allocator,
     io: Io,
     trash: Io.Dir,
     name: []const u8,
     is_dir: bool,
-) Allocator.Error![]const u8 {
+) Allocator.Error!?[]const u8 {
     var candidate = name;
     var n: u32 = 1;
-    while (n < 100) : (n += 1) {
+    while (n <= 100) : (n += 1) {
         _ = trash.statFile(io, candidate, .{ .follow_symlinks = false }) catch return candidate;
+        if (n == 100) return null;
         candidate = try plan.suffixed(arena, name, n, is_dir);
     }
-    return candidate;
+    return null;
+}
+
+fn copySymlink(io: Io, src_root: Io.Dir, dst_root: Io.Dir, from: []const u8, to: []const u8) !void {
+    var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    const n = try src_root.readLink(io, from, &buf);
+    try dst_root.symLink(io, buf[0..n], to, .{});
+}
+
+fn dirPermissions(io: Io, root: Io.Dir, path: []const u8) Io.File.Permissions {
+    const st = root.statFile(io, path, .{ .follow_symlinks = false }) catch return .default_dir;
+    return st.permissions;
 }
 
 /// Copia para a lixeira quando ela esta em outro filesystem, e so entao apaga a
@@ -504,35 +541,38 @@ fn copyIntoTrash(
     stored: []const u8,
 ) !void {
     const temp = try std.fmt.allocPrint(arena, "{s}{s}", .{ t.temp_prefix, stored });
-    errdefer deleteEntry(io, t.dir, temp, rm.kind) catch {};
-    if (rm.kind == .dir) {
-        try t.dir.createDir(io, temp, .default_dir);
-        try copyDirRecursive(arena, io, base, t.dir, rm.path, temp);
-    } else {
-        try base.copyFile(rm.path, t.dir, temp, io, .{ .replace = false });
+    var published = false;
+    errdefer if (!published) deleteEntry(io, t.dir, temp, rm.kind) catch {};
+    switch (rm.kind) {
+        .dir => {
+            try t.dir.createDir(io, temp, dirPermissions(io, base, rm.path));
+            try copyDirRecursive(arena, io, base, t.dir, rm.path, temp);
+        },
+        .symlink => try copySymlink(io, base, t.dir, rm.path, temp),
+        else => try base.copyFile(rm.path, t.dir, temp, io, .{ .replace = false }),
     }
     try t.dir.renamePreserve(temp, t.dir, stored, io);
-    // A copia esta inteira na lixeira: agora a origem pode sair.
-    deleteEntry(io, base, rm.path, rm.kind) catch |err| {
-        // Origem intacta e copia na lixeira: apagar a copia deixa o estado
-        // como estava, que e o desfecho certo para quem falhou aqui.
-        deleteEntry(io, t.dir, stored, rm.kind) catch {};
-        return err;
-    };
+    published = true;
+    // A copia esta inteira na lixeira: agora a origem pode sair. Se a exclusao
+    // da origem falhar no meio de uma arvore, preservamos a copia completa na
+    // lixeira em vez de apaga-la, garantindo que ao menos uma copia integra exista.
+    try deleteEntry(io, base, rm.path, rm.kind);
 }
 
 /// Copia para `c.to` dentro do diretorio-base. Arquivo e copia de bytes
-/// (`replace=false` recusa sobrescrever); diretorio e recursivo. A origem e o
-/// proprio base, exceto quando `from_abs` esta presente: linha colada de outro
-/// buffer de diretorio, cuja origem vive fora daqui.
+/// (`replace=false` recusa sobrescrever); diretorio e recursivo; symlink e
+/// recriado sem seguir o alvo. A origem e o proprio base, exceto quando
+/// `from_abs` esta presente: linha colada de outro buffer de diretorio.
 fn copyEntry(arena: Allocator, io: Io, base: Io.Dir, c: plan.Copy) !void {
     const src = if (c.from_abs != null) Io.Dir.cwd() else base;
     const from = c.from_abs orelse c.from;
     switch (c.kind) {
         .dir => {
-            try base.createDir(io, c.to, .default_dir);
+            try base.createDir(io, c.to, dirPermissions(io, src, from));
+            errdefer base.deleteTree(io, c.to) catch {};
             try copyDirRecursive(arena, io, src, base, from, c.to);
         },
+        .symlink => try copySymlink(io, src, base, from, c.to),
         else => {
             try src.copyFile(from, base, c.to, io, .{ .replace = false });
         },
@@ -547,11 +587,14 @@ fn copyEntry(arena: Allocator, io: Io, base: Io.Dir, c: plan.Copy) !void {
 fn restoreMovedOut(arena: Allocator, io: Io, base: Io.Dir, mv: MovedOut) !void {
     var dir = try Io.Dir.cwd().openDir(io, mv.dir, .{});
     defer dir.close(io);
-    if (mv.kind == .dir) {
-        try dir.createDir(io, mv.name, .default_dir);
-        try copyDirRecursive(arena, io, base, dir, mv.to, mv.name);
-    } else {
-        try base.copyFile(mv.to, dir, mv.name, io, .{ .replace = false });
+    switch (mv.kind) {
+        .dir => {
+            try dir.createDir(io, mv.name, dirPermissions(io, base, mv.to));
+            errdefer dir.deleteTree(io, mv.name) catch {};
+            try copyDirRecursive(arena, io, base, dir, mv.to, mv.name);
+        },
+        .symlink => try copySymlink(io, base, dir, mv.to, mv.name),
+        else => try base.copyFile(mv.to, dir, mv.name, io, .{ .replace = false }),
     }
 }
 
@@ -597,24 +640,40 @@ fn copyDirRecursive(arena: Allocator, io: Io, src_root: Io.Dir, base: Io.Dir, fr
     defer src.close(io);
 
     var it = src.iterate();
-    while (it.next(io) catch null) |e| {
+    while (try it.next(io)) |e| {
         const child_from = try std.fmt.allocPrint(arena, "{s}/{s}", .{ from, e.name });
         const child_to = try std.fmt.allocPrint(arena, "{s}/{s}", .{ to, e.name });
         switch (e.kind) {
             .directory => {
-                try base.createDir(io, child_to, .default_dir);
+                try base.createDir(io, child_to, dirPermissions(io, src_root, child_from));
                 try copyDirRecursive(arena, io, src_root, base, child_from, child_to);
             },
-            .sym_link => {
-                var buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-                const n = try src_root.readLink(io, child_from, &buf);
-                try base.symLink(io, buf[0..n], child_to, .{});
-            },
-            else => {
-                try src_root.copyFile(child_from, base, child_to, io, .{ .replace = false });
-            },
+            .sym_link => try copySymlink(io, src_root, base, child_from, child_to),
+            .file => try src_root.copyFile(child_from, base, child_to, io, .{ .replace = false }),
+            else => return error.UnsupportedFileType,
         }
     }
+}
+
+fn snapshotMeta(io: Io, base: Io.Dir, path: []const u8, kind: plan.Kind) CopiedMeta {
+    const st = base.statFile(io, path, .{ .follow_symlinks = false }) catch return .{ .mtime_s = 0, .size = 0, .count = 0 };
+    if (kind == .dir) {
+        return .{
+            .mtime_s = st.mtime.toSeconds(),
+            .size = entrySize(io, base, path, .dir),
+            .count = subtreeCount(io, base, path),
+        };
+    }
+    return .{
+        .mtime_s = st.mtime.toSeconds(),
+        .size = st.size,
+        .count = 0,
+    };
+}
+
+fn copyModified(io: Io, base: Io.Dir, path: []const u8, kind: plan.Kind, expected: CopiedMeta) bool {
+    const cur = snapshotMeta(io, base, path, kind);
+    return cur.mtime_s != expected.mtime_s or cur.size != expected.size or cur.count != expected.count;
 }
 
 /// Desfaz `applied` em ordem reversa. Serve ao rollback de falha e ao undo da
@@ -699,6 +758,7 @@ pub fn revert(
     // daquela pasta. Antes de apagar a copia, porque e a copia que ainda
     // carrega o conteudo caso a volta falhe.
     var kept: std.StringHashMapUnmanaged(void) = .empty;
+    for (applied.preserve_copies) |p_to| try kept.put(arena, p_to, {});
     var m = applied.moved_out.len;
     while (m > 0) {
         m -= 1;
@@ -743,6 +803,16 @@ pub fn revert(
                 ));
             };
             continue;
+        }
+        if (!cp.cut and k < applied.copied_meta.len) {
+            if (copyModified(io, base, cp.to, cp.kind, applied.copied_meta[k])) {
+                try errors.append(arena, try std.fmt.allocPrint(
+                    arena,
+                    "{s} foi mantido: modificado após a cópia",
+                    .{cp.to},
+                ));
+                continue;
+            }
         }
         if (cp.kind == .dir) {
             base.deleteTree(io, cp.to) catch |err| try errors.append(arena, try std.fmt.allocPrint(
@@ -832,11 +902,14 @@ fn restoreRemovals(
 
 fn restoreRemoval(arena: Allocator, io: Io, base: Io.Dir, trash: Io.Dir, rm: Removed) !void {
     if (!rm.copied) return trash.renamePreserve(rm.stored, base, rm.path, io);
-    if (rm.kind == .dir) {
-        try base.createDir(io, rm.path, .default_dir);
-        try copyDirRecursive(arena, io, trash, base, rm.stored, rm.path);
-    } else {
-        try trash.copyFile(rm.stored, base, rm.path, io, .{ .replace = false });
+    switch (rm.kind) {
+        .dir => {
+            try base.createDir(io, rm.path, dirPermissions(io, trash, rm.stored));
+            errdefer base.deleteTree(io, rm.path) catch {};
+            try copyDirRecursive(arena, io, trash, base, rm.stored, rm.path);
+        },
+        .symlink => try copySymlink(io, trash, base, rm.stored, rm.path),
+        else => try trash.copyFile(rm.stored, base, rm.path, io, .{ .replace = false }),
     }
     // A copia voltou inteira: agora a da lixeira pode sair.
     try deleteEntry(io, trash, rm.stored, rm.kind);

@@ -1,0 +1,2614 @@
+set nocompatible
+" A busca do Vim segue a mesma regra do fzf: minusculas ignoram
+" caixa; uma maiuscula torna a consulta sensivel a caixa.
+set ignorecase smartcase incsearch
+" Formato do cursor por modo (barra vertical no insert, sublinhado no replace, bloco no normal).
+" No Neovim o &guicursor cuida disso; no Vim puro em terminal (iniciado com -u NONE)
+" as sequencias precisam ser configuradas explicitamente via termcap.
+if has('nvim')
+  set guicursor=n-v-c-sm:block,i-ci-ve:ver25,r-cr-o:hor20
+elseif exists('+t_SI') && &term !~# 'dumb'
+  let &t_SI = "\<Esc>[6 q"
+  let &t_SR = "\<Esc>[4 q"
+  let &t_EI = "\<Esc>[2 q"
+  let &t_ti = &t_ti . "\<Esc>[2 q"
+  let &t_te = &t_te . "\<Esc>[0 q"
+endif
+let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
+  \ ? get(readfile($LST_F_STATE . '/titles'), 0, '') : ''
+let s:lstf_identity = '{{IDENTITY}}'
+let s:lstf_icons = {{ICONS}}
+let s:lstf_keymap_classic = ($LST_F_KEYMAP ==# 'classic')
+" Sem titulos nao ha grade para descrever, e a janela de cabecalho
+" nao chega a existir.
+let s:lstf_frame = !empty(s:lstf_titles)
+function! LstfHelp() abort
+  let l:title = ' {{IDENTITY}} — Ajuda (F1) '
+  let l:lines = [
+    \ '',
+    \ '  • Edite o caminho e use :w: renomeia ou move (cria os pais que faltarem)',
+    \ '  • Antes de aplicar, um popup mostra a lista completa de alterações',
+    \ '  • :w sem edição apenas atualiza a lista e mantém a sessão aberta',
+    \ '  • Apague a linha  : manda para a lixeira (:trash abre, 30 dias)',
+    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretório)',
+    \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
+    \ '  • Só o nome é editável: cabeçalho e colunas voltam sozinhos',
+    \ '  • / ? :s :g       : buscam e trocam só no nome (\%>0v: linha toda)',
+    \ '  • :sort [name|size|time|ext] : ordena (use :sort! para inverter)',
+    \ '  • :filter [pad]   : filtra a listagem sem remover arquivos (:filter! limpa)',
+    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar são seguros)',
+    \ '',
+    \ '  Diretivas e comandos:',
+    \ '    :cd [dir]      Entra no diretório (.. sobe, sem arg ou ~ vai para HOME)',
+    \ '    :home          Vai direto para o diretório HOME (~)',
+    \ '    :trash         Abre a lixeira (remoção lá dentro é definitiva)',
+    \ '    :find [termo]  Busca recursiva fuzzy na árvore com fzf',
+    \ '    :filter [pad]  Filtra a pasta atual sem apagar linhas (:filter! limpa)',
+    \ '    :compact       Alterna colunas compactas (útil em splits estreitos)',
+    \ '    :sh [dir]      Abre terminal / shell no diretório (:shell, :terminal)',
+    \ '    :hidden        Alterna exibição de arquivos ocultos',
+    \ '    :theme [modo]  Alterna ou define tema: light ou dark (:light, :dark)',
+    \ '    :back/:forward Andam pelos diretórios visitados na sessão',
+    \ '    :bookmark      Marca/desmarca a pasta selecionada ou atual',
+    \ '    :bookmarks     Escolhe uma pasta marcada para visitar',
+    \ '    :undo          Desfaz a última operação aplicada (pilha por janela)',
+    \ '    :quit / :q     Sai da sessão (:cq aborta sem aplicar nada)',
+    \ '',
+    \ '  Atalhos no buffer (estilo Vim/oil; LST_F_KEYMAP=classic mantém antigos):',
+    \ '    g.             Alterna exibição de arquivos ocultos',
+    \ '    gh             Vai direto para o diretório HOME (~)',
+    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na árvore inteira',
+    \ '    Enter          Abre arquivo ou entra no diretório da linha',
+    \ '    -              Sobe para o diretório-pai',
+    \ '    Ctrl+L         Recarrega (refresh) a lista atual',
+    \ '    K ou gp        Preview flutuante do arquivo/pasta sob o cursor',
+    \ '    gc             Alterna modo compacto de colunas',
+    \ '    gyr / gyp / yr Copia caminho relativo para o clipboard',
+    \ '    gya / yA       Copia caminho absoluto para o clipboard',
+    \ '    gyl            Copia a linha de link pronta; p cola onde criar',
+    \ '    < e >          Voltam e avançam nos diretórios visitados',
+    \ '    \              Mostra a árvore visual (Enter navega até a pasta)',
+    \ '    F1 ou g?       Esta ajuda',
+    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
+    \ '    F4             Abre terminal / shell no diretório atual',
+    \ '    gm / gb        Marca pasta / abre bookmarks',
+    \ '    Ctrl+S         Abre o split; depois alterna entre as pastas',
+    \ '    Tab            Percorre as janelas abertas',
+    \ '    yy / dd / p    Copia / recorta ou remove / cola (entre pastas também)',
+    \ '    gq             Fecha primeiro o split, mantendo a pasta principal',
+    \ '    ZZ / :q        Sai da sessão',
+    \ '    (Teclas nativas ., r, Ctrl+R, b, m, q, ~, Ctrl+A, ? ficam livres!)',
+    \ '    :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
+    \ '    F1 ou ?        Abre este popup de ajuda',
+    \ '',
+    \ '  Em terminal estreito, zl/zh rolam horizontalmente',
+    \ '',
+    \ '  Pressione q, <Esc> ou <Enter> para fechar este popup',
+    \ ''
+  \ ]
+
+  if has('nvim')
+    let l:buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+    let l:max_w = 72
+    for l:line in l:lines
+      let l:max_w = max([l:max_w, strdisplaywidth(l:line) + 4])
+    endfor
+    let l:width = min([l:max_w, &columns - 4])
+    let l:height = min([len(l:lines), &lines - 4])
+    let l:row = max([1, (&lines - l:height) / 2 - 1])
+    let l:col = max([1, (&columns - l:width) / 2])
+    let l:opts = {
+      \ 'relative': 'editor',
+      \ 'row': l:row,
+      \ 'col': l:col,
+      \ 'width': l:width,
+      \ 'height': l:height,
+      \ 'style': 'minimal',
+      \ 'border': 'rounded',
+      \ 'title': l:title,
+      \ 'title_pos': 'center'
+    \ }
+    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+    call setwinvar(l:win, '&winhighlight',
+      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
+    let l:close_cmd = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
+    for l:k in ['q', '<Esc>', '<CR>', '<Space>', '<F1>', '?']
+      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close_cmd
+    endfor
+  elseif exists('*popup_create')
+    let l:win = popup_create(l:lines, {
+      \ 'title': l:title,
+      \ 'border': [],
+      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+      \ 'padding': [0, 1, 0, 1],
+      \ 'pos': 'center',
+      \ 'mapping': 0,
+      \ 'filter': function('s:lstf_popup_filter'),
+      \ 'close': 'none',
+      \ 'highlight': 'LstfPopup',
+      \ 'borderhighlight': ['LstfPopupBorder']
+    \ })
+  endif
+endfunction
+
+function! s:lstf_popup_filter(winid, key) abort
+  if a:key ==# 'q' || a:key ==# "\<Esc>" || a:key ==# "\<CR>" || a:key ==# ' ' || a:key ==# "\<F1>" || a:key ==# '?'
+    call popup_close(a:winid)
+    return 1
+  endif
+  return popup_filter_menu(a:winid, a:key)
+endfunction
+
+function! s:lstf_tree_filter(winid, key) abort
+  if a:key ==# "\<CR>"
+    let l:lnum = line('.', a:winid)
+    call popup_close(a:winid)
+    call s:lstf_tree_enter(get(s:, 'lstf_tree_lines', []), l:lnum)
+    return 1
+  endif
+  if a:key ==# 'q' || a:key ==# "\<Esc>" || (len(a:key) == 1 && char2nr(a:key) == 92)
+    call popup_close(a:winid)
+    return 1
+  endif
+  return popup_filter_menu(a:winid, a:key)
+endfunction
+
+function! s:lstf_entry_path(...) abort
+  let l:line = a:0 > 0 ? a:1 : getline('.')
+  if l:line !~# '^/\d\+\s\+'
+    if l:line =~# '^[:#]' || l:line =~# '^\s*$' | return '' | endif
+    let l:raw = substitute(substitute(l:line, '^\s*', '', ''), '\s*$', '', '')
+    let l:arrow = match(l:raw, '\s->\s\|\s=>\s')
+    return l:arrow >= 0 ? substitute(strpart(l:raw, 0, l:arrow), '\s*$', '', '') : l:raw
+  endif
+  let l:start = s:lstf_name_start(l:line)
+  if l:start > 0
+    return strpart(l:line, l:start)
+  endif
+  let l:body = substitute(l:line, '^/\d\+\s\+', '', '')
+  let l:sep = strridx(l:body, ' │ ')
+  if l:sep >= 0
+    let l:res = strpart(l:body, l:sep + 5)
+    return substitute(l:res, '^\s*\S*\s*', '', '')
+  endif
+  let l:sep2 = stridx(l:body, '  │  ')
+  if l:sep2 >= 0
+    return strpart(l:body, l:sep2 + 7)
+  endif
+  return l:body
+endfunction
+
+" `linewise` muda o tipo do registro, nao o texto: a linha de link precisa
+" colar como linha (`p` do Vim), enquanto um caminho copiado para outro
+" programa continua sendo texto no meio da linha.
+function! s:lstf_set_clipboard(text, ...) abort
+  let l:type = a:0 > 0 && a:1 ? 'V' : 'v'
+  call setreg('"', a:text, l:type)
+  " Vim sem +clipboard nao tem os registros @+ e @*: E354.
+  if has('clipboard')
+    call setreg('+', a:text, l:type)
+    call setreg('*', a:text, l:type)
+  endif
+  if executable('wl-copy') && (!empty($WAYLAND_DISPLAY) || !empty($WAYLAND_SOCKET))
+    call system('wl-copy', a:text)
+  elseif executable('xclip') && !empty($DISPLAY)
+    call system('xclip -selection clipboard', a:text)
+  elseif executable('xsel') && !empty($DISPLAY)
+    call system('xsel --clipboard --input', a:text)
+  elseif executable('pbcopy')
+    call system('pbcopy', a:text)
+  elseif executable('clip.exe')
+    call system('clip.exe', a:text)
+  elseif executable('wl-copy')
+    call system('wl-copy', a:text)
+  endif
+endfunction
+
+function! s:lstf_root_dir(dir) abort
+  let l:dir = substitute(a:dir, '/\+$', '', '')
+  if empty(l:dir) | return a:dir | endif
+  let l:home = substitute($HOME, '/\+$', '', '')
+  let l:vcs = ['.git', '.hg', '.svn', '.jj', '.fossil']
+  let l:cur = l:dir
+  while !empty(l:cur) && l:cur !=# '/' && l:cur !=# l:home
+    for l:m in l:vcs
+      if isdirectory(l:cur . '/' . l:m) || filereadable(l:cur . '/' . l:m)
+        return l:cur
+      endif
+    endfor
+    let l:parent = fnamemodify(l:cur, ':h')
+    if l:parent ==# l:cur | break | endif
+    let l:cur = l:parent
+  endwhile
+  let l:markers = [
+    \ 'build.zig.zon', 'build.zig', 'Cargo.toml', 'go.mod',
+    \ 'pyproject.toml', 'package.json', 'Makefile', 'CMakeLists.txt', 'flake.nix'
+    \ ]
+  let l:cur = l:dir
+  while !empty(l:cur) && l:cur !=# '/' && l:cur !=# l:home
+    for l:m in l:markers
+      if filereadable(l:cur . '/' . l:m) || isdirectory(l:cur . '/' . l:m)
+        return l:cur
+      endif
+    endfor
+    let l:parent = fnamemodify(l:cur, ':h')
+    if l:parent ==# l:cur | break | endif
+    let l:cur = l:parent
+  endwhile
+  return l:dir
+endfunction
+
+function! s:lstf_rel_path(entry, dir, root) abort
+  let l:dir = substitute(a:dir, '/\+$', '', '')
+  if empty(a:root) || a:root ==# l:dir
+    return a:entry
+  endif
+  if stridx(l:dir, a:root . '/') == 0
+    let l:sub = strpart(l:dir, len(a:root) + 1)
+    return simplify(l:sub . '/' . a:entry)
+  endif
+  return a:entry
+endfunction
+
+function! LstfYank(...) abort
+  let l:abs = a:0 > 0 ? a:1 : 0
+  let l:entry = s:lstf_entry_path()
+  if empty(l:entry)
+    return
+  endif
+  let l:dir = s:lstf_dir()
+  if l:abs
+    " `s:lstf_dir()`, nao `s:lstf_location()`: o segundo e o caminho de
+    " exibicao -- com `~` nao expandido e, com ocultos ligados, o sufixo
+    " `[all]` colado no meio. Caminho absoluto tem de ser caminho.
+    let l:path = simplify(l:dir . '/' . l:entry)
+  else
+    let l:path = s:lstf_rel_path(l:entry, l:dir, s:lstf_root_dir(l:dir))
+  endif
+  call s:lstf_set_clipboard(l:path)
+  let b:lstf_notice = 'caminho copiado: ' . l:path
+  redrawstatus!
+endfunction
+
+" A linha de criacao pronta, para o `p` nativo colar onde o link deve
+" nascer -- nesta pasta ou na outra janela. O alvo vai absoluto porque a
+" linha viaja para outro diretorio; trocar `->` por `=>` faz hardlink, que
+" ja e a sintaxe. Sai daqui uma linha de texto: nada toca o disco antes do
+" `:w`, e o nome continua editavel.
+function! s:lstf_link_line(entry, dir) abort
+  return fnamemodify(a:entry, ':t') . ' -> ' . simplify(a:dir . '/' . a:entry)
+endfunction
+
+function! LstfYankLink() abort
+  let l:entry = s:lstf_entry_path()
+  if empty(l:entry)
+    return
+  endif
+  let l:line = s:lstf_link_line(l:entry, s:lstf_dir())
+  call s:lstf_set_clipboard(l:line, 1)
+  let b:lstf_notice = 'linha de link copiada: ' . l:line
+  redrawstatus!
+endfunction
+
+function! s:lstf_yank_link_visual() range abort
+  let l:lines = []
+  let l:dir = s:lstf_dir()
+  for l:lnum in range(a:firstline, a:lastline)
+    let l:entry = s:lstf_entry_path(getline(l:lnum))
+    if empty(l:entry) | continue | endif
+    call add(l:lines, s:lstf_link_line(l:entry, l:dir))
+  endfor
+  if empty(l:lines) | return | endif
+  call s:lstf_set_clipboard(join(l:lines, "\n"), 1)
+  let b:lstf_notice = len(l:lines) == 1
+    \ ? ('linha de link copiada: ' . l:lines[0])
+    \ : (len(l:lines) . ' linhas de link copiadas')
+  redrawstatus!
+endfunction
+
+function! s:lstf_yank_visual(abs) range abort
+  let l:paths = []
+  let l:loc = s:lstf_dir()
+  let l:root = a:abs ? '' : s:lstf_root_dir(l:loc)
+  for l:lnum in range(a:firstline, a:lastline)
+    let l:entry = s:lstf_entry_path(getline(l:lnum))
+    if empty(l:entry) | continue | endif
+    if a:abs
+      call add(l:paths, simplify(l:loc . '/' . l:entry))
+    else
+      call add(l:paths, s:lstf_rel_path(l:entry, l:loc, l:root))
+    endif
+  endfor
+  if !empty(l:paths)
+    let l:text = join(l:paths, "\n")
+    call s:lstf_set_clipboard(l:text)
+    let b:lstf_notice = len(l:paths) == 1 ? ('caminho copiado: ' . l:paths[0]) : (len(l:paths) . ' caminhos copiados')
+    redrawstatus!
+  endif
+endfunction
+
+function! s:lstf_is_binary(path) abort
+  let l:ext = tolower(fnamemodify(a:path, ':e'))
+  if empty(l:ext)
+    return 0
+  endif
+  let l:bin_exts = [
+    \ 'pdf', 'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'odt', 'ods', 'odp', 'epub',
+    \ 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'ico', 'webp', 'svg', 'tif', 'tiff', 'psd', 'raw', 'heic', 'avif',
+    \ 'mp3', 'mp4', 'avi', 'mkv', 'mov', 'flac', 'wav', 'ogg', 'webm', 'm4a', 'aac', 'wma', 'wmv',
+    \ 'zip', 'tar', 'gz', 'bz2', 'xz', '7z', 'rar', 'zst', 'lz4',
+    \ 'exe', 'dll', 'so', 'dylib', 'o', 'a', 'lib', 'bin', 'dat',
+    \ 'ttf', 'otf', 'woff', 'woff2',
+    \ 'class', 'pyc', 'wasm', 'sqlite', 'db'
+    \ ]
+  return index(l:bin_exts, l:ext) >= 0
+endfunction
+
+function! s:lstf_open_external(path) abort
+  if (empty($DISPLAY) && empty($WAYLAND_DISPLAY)) || !executable('xdg-open')
+    return 0
+  endif
+  if has('nvim')
+    call jobstart(['xdg-open', a:path], {'detach': v:true})
+  elseif exists('*job_start')
+    call job_start(['xdg-open', a:path], {'stoponexit': ''})
+  else
+    call system('xdg-open ' . shellescape(a:path) . ' >/dev/null 2>&1 &')
+  endif
+  let b:lstf_notice = 'aberto via xdg-open'
+  redrawstatus!
+  return 1
+endfunction
+
+function! LstfOpen() abort
+  let l:path = s:lstf_entry_path()
+  if empty(l:path)
+    return
+  endif
+  if isdirectory(l:path)
+    let $LST_F_LIVE_ARG = l:path
+    call s:lstf_nav('enter', ':cd ' . l:path)
+    unlet $LST_F_LIVE_ARG
+  elseif s:lstf_is_binary(l:path)
+    if s:lstf_open_external(l:path)
+      return
+    endif
+    call LstfPreview()
+  else
+    call s:lstf_write_directive(':open ' . l:path)
+  endif
+endfunction
+
+function! LstfPreview() abort
+  let l:path = s:lstf_entry_path()
+  if empty(l:path)
+    return
+  endif
+  let $LST_F_LIVE_ARG = l:path
+  let l:res = s:lstf_live('preview-entry')
+  unlet $LST_F_LIVE_ARG
+  if !l:res[0]
+    let b:lstf_notice = l:res[1]
+    redrawstatus!
+    return
+  endif
+  let l:pfile = $LST_F_STATE . '/entry_preview'
+  let l:lines = filereadable(l:pfile) ? readfile(l:pfile) : ['(sem preview)']
+  if empty(l:lines) | let l:lines = ['(vazio)'] | endif
+  let l:title = ' Preview: ' . fnamemodify(l:path, ':t') . ' '
+  if has('nvim')
+    let l:buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+    let l:width = min([max([56, max(map(copy(l:lines), 'strdisplaywidth(v:val) + 4'))]), &columns - 4])
+    let l:height = min([len(l:lines) + 1, &lines - 4])
+    let l:win = nvim_open_win(l:buf, v:true, {
+      \ 'relative': 'editor',
+      \ 'row': max([1, (&lines - l:height) / 2 - 1]),
+      \ 'col': max([1, (&columns - l:width) / 2]),
+      \ 'width': l:width,
+      \ 'height': l:height,
+      \ 'style': 'minimal',
+      \ 'border': 'rounded',
+      \ 'title': l:title,
+      \ 'title_pos': 'center'
+    \ })
+    call setwinvar(l:win, '&winhighlight', 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
+    let l:close = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
+    for l:k in ['q', '<Esc>', '<CR>', 'K']
+      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close
+    endfor
+  elseif exists('*popup_create')
+    call popup_create(l:lines, {
+      \ 'title': l:title,
+      \ 'border': [],
+      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+      \ 'padding': [0, 1, 0, 1],
+      \ 'pos': 'center',
+      \ 'maxwidth': &columns - 4,
+      \ 'maxheight': &lines - 4,
+      \ 'mapping': 0,
+      \ 'filter': function('s:lstf_popup_filter'),
+      \ 'close': 'none',
+      \ 'highlight': 'LstfPopup',
+      \ 'borderhighlight': ['LstfPopupBorder']
+    \ })
+  else
+    echo join(l:lines, "\n")
+  endif
+endfunction
+
+function! LstfFilter(pattern) abort
+  let $LST_F_LIVE_ARG = trim(a:pattern)
+  let l:dir_arg = empty($LST_F_LIVE_ARG) ? ':filter!' : ':filter ' . $LST_F_LIVE_ARG
+  call s:lstf_nav('filter', l:dir_arg)
+  unlet $LST_F_LIVE_ARG
+endfunction
+
+function! LstfToggleCompact() abort
+  call s:lstf_nav('compact', ':refresh')
+endfunction
+
+" Buffer com edicao pendente que nao e o desta janela -- inclusive um que
+" ficou carregado sem janela, que o `quitall` conta igual. Devolve a pasta
+" dele, para o recado; vazio quando nao ha.
+function! s:lstf_pending_elsewhere() abort
+  for l:info in getbufinfo({'bufloaded': 1})
+    if l:info.bufnr == bufnr('%') || !l:info.changed | continue | endif
+    if !empty(getbufvar(l:info.bufnr, '&buftype')) | continue | endif
+    let l:dir = getbufvar(l:info.bufnr, 'lstf_dir', '')
+    return fnamemodify(empty(l:dir) ? l:info.name : l:dir, ':t')
+  endfor
+  return ''
+endfunction
+
+function! s:lstf_write_directive(directive) abort
+  " Toda diretiva encerra esta instancia (o laco externo assume o terminal)
+  " e o `quitall` de `s:lstf_after_save` recusa sair com outro buffer
+  " modificado: dava E162 com o erro na tela, a diretiva ja gravada e a
+  " instancia viva -- e o `:w` seguinte repetia, porque a diretiva ficava
+  " no buffer. Recusar antes de gravar nada deixa o estado intacto e diz o
+  " que falta. Vale para `:q` e para as outras (`:open`, `:find`, `:sh`, e
+  " a navegacao adiada), que caem no mesmo `quitall`.
+  let l:pendente = s:lstf_pending_elsewhere()
+  if !empty(l:pendente)
+    let b:lstf_notice = 'edicao pendente em ' . l:pendente
+      \ . ': aplique ali, ou :cq sai sem aplicar'
+    redrawstatus!
+    return
+  endif
+  " Atalhos podem ser repetidos antes que o Vim feche. Uma unica
+  " diretiva e valida; remover as anteriores evita travar o parser.
+  for l:lnum in reverse(range(1, line('$')))
+    if getline(l:lnum) =~# '^:'
+      execute l:lnum . 'delete _'
+    endif
+  endfor
+  call append('$', a:directive)
+  let l:lnum = line('$')
+  try
+    write
+  finally
+    " Gravacao recusada (plano invalido, confirmacao negada): a diretiva
+    " nao chegou ao disco e nao pode ficar no texto, senao o proximo `:w`
+    " que passar a executa -- aplica e ainda troca de pasta.
+    if &modified && getline(l:lnum) ==# a:directive
+      silent! undojoin
+      execute l:lnum . 'delete _'
+    endif
+  endtry
+endfunction
+
+" Diretorio deste buffer. E a ancora unica de tudo que acontece
+" aqui dentro: caminho relativo, destino de copia, moldura, cwd.
+" Por buffer, nunca global -- com duas janelas abertas nao existe
+" "o" diretorio corrente, existe o de cada uma.
+function! s:lstf_dir() abort
+  if exists('b:lstf_dir') && !empty(b:lstf_dir) | return b:lstf_dir | endif
+  if filereadable($LST_F_STATE . '/base')
+    return get(readfile($LST_F_STATE . '/base'), 0, '')
+  endif
+  return getcwd()
+endfunction
+
+" Sidecar deste buffer: o pai grava `<arquivo>.dir`, `.location` e
+" `.header` ao lado do conteudo. Tenta o nome como o Vim o guarda e
+" a forma absoluta, porque o caminho de estado pode vir relativo.
+function! s:lstf_sidecar(ext) abort
+  let l:name = bufname('%')
+  if empty(l:name) | return '' | endif
+  if filereadable(l:name . a:ext) | return l:name . a:ext | endif
+  let l:abs = fnamemodify(l:name, ':p') . a:ext
+  if filereadable(l:abs) | return l:abs | endif
+  return ''
+endfunction
+
+" Caminho para exibicao (home abreviado, sufixo de ocultos). Tambem
+" por buffer: a moldura e a barra de cada janela descrevem a sua
+" propria pasta, nao a que o pai visitou por ultimo.
+function! s:lstf_location() abort
+  if exists('b:lstf_location') && !empty(b:lstf_location)
+    return b:lstf_location
+  endif
+  return empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+endfunction
+
+" Pedido ao laco vivo. O diretorio de quem pede vai por ambiente,
+" nunca por argv: caminho de arquivo e dado hostil para interpolar
+" em linha de comando. Devolve [exit_code, saida].
+" Pastas cujos buffers tem edicao pendente. O pai nao relista nem regrava
+" o arquivo de nenhuma delas: as entradas que ele tem em memoria sao as que
+" o texto na tela descreve, e mexer no arquivo debaixo de um buffer
+" modificado faria o `:w` daquela janela cair no aviso de mtime do Vim.
+function! s:lstf_dirty_dirs() abort
+  let l:dirs = []
+  for l:info in getbufinfo({'bufloaded': 1})
+    if l:info.name !~# '\.lstf$' || !l:info.changed | continue | endif
+    let l:dir = getbufvar(l:info.bufnr, 'lstf_dir', '')
+    if !empty(l:dir) | call add(l:dirs, l:dir) | endif
+  endfor
+  return join(l:dirs, "\n")
+endfunction
+
+function! s:lstf_live(cmd) abort
+  let $LST_F_LIVE_DIR = s:lstf_dir()
+  let $LST_F_LIVE_DIRTY = s:lstf_dirty_dirs()
+  let l:out = system($LST_F_SELF . ' --client ' . a:cmd)
+  let l:err = v:shell_error
+  unlet! $LST_F_LIVE_DIR
+  unlet! $LST_F_LIVE_DIRTY
+  return [l:err, substitute(l:out, "\n\\+$", '', '')]
+endfunction
+
+" Outra janela mostrando este mesmo buffer. Com ela, trocar de pasta
+" nesta nao apaga da tela a edicao pendente: ela continua visivel la, e
+" o Vim mantem o buffer carregado e modificado porque uma janela o
+" exibe -- sem depender de 'hidden', que e default no Neovim e nao no
+" Vim. E a condicao do recorte: o `dd` fica na origem enquanto esta
+" janela vai ao destino colar.
+function! s:lstf_shared_buffer() abort
+  if !exists('*win_findbuf') | return 0 | endif
+  return len(win_findbuf(bufnr('%'))) > 1
+endfunction
+
+" Navegacao viva: o pai relista, regrava e responde com o caminho do
+" buffer que esta janela deve mostrar. Navegar pode trocar de buffer
+" -- e o que permite dois diretorios lado a lado, cada janela no seu,
+" sem um "painel de destino" de categoria separada. Com edicao
+" pendente, o caminho e a diretiva antiga: ela passa pela confirmacao
+" antes de qualquer coisa -- salvo quando outra janela mostra o mesmo
+" buffer, que e o que separa os dois buffers do recorte sem perder o
+" `dd` de vista.
+function! s:lstf_nav(cmd, directive) abort
+  " `hidden` fica de fora da excecao: relista o mesmo View, e recarregar
+  " o proprio buffer descartaria a edicao em vez de leva-la para outra
+  " pasta.
+  if &modified && (a:cmd ==# 'hidden' || !s:lstf_shared_buffer())
+    call s:lstf_write_directive(a:directive)
+    return
+  endif
+  let [l:err, l:out] = s:lstf_live(a:cmd)
+  if l:err
+    let b:lstf_notice = l:out
+    redrawstatus!
+    return
+  endif
+  call s:lstf_show_buffer(l:out)
+endfunction
+
+" Todos os buffers de diretorio gravados no disco, menos o corrente
+" (que vai pelo `proposal` ou pelo proprio `:w`). E o que deixa o
+" laco enxergar o que esta pendente em cada janela: com isso o `dd`
+" numa e o `p` na outra viram um movimento, porque o laco compara o
+" texto dos dois buffers em vez de consultar um registro de recorte
+" paralelo. Sem gravar, o arquivo no disco ainda teria a linha que o
+" usuario acabou de apagar na tela.
+function! s:lstf_flush_buffers() abort
+  for l:info in getbufinfo({'bufloaded': 1})
+    if l:info.bufnr == bufnr('%') | continue | endif
+    if l:info.name !~# '\.lstf$' | continue | endif
+    " Num arquivo ao lado, nunca no do proprio buffer: `writefile()` nao
+    " atualiza o mtime que o buffer guarda, e o Vim compara os dois no
+    " `:w`. Escrevendo por cima, o `:w` seguinte daquela janela caia no
+    " aviso "file has been changed since reading it", que so aceita `y`
+    " minusculo e engole as teclas ate ser respondido.
+    if l:info.changed
+      call writefile(getbufline(l:info.bufnr, 1, '$'), l:info.name . '.pending', 'b')
+    else
+      call delete(l:info.name . '.pending')
+    endif
+  endfor
+endfunction
+
+" Recarrega as janelas que mostram um buffer que a aplicacao mexeu --
+" a pasta de onde saiu um movimento. Vem na resposta do laco, uma por
+" linha depois do buffer desta janela; nenhuma outra e tocada, para
+" nao apagar edicao pendente de quem nao entrou na operacao.
+function! s:lstf_reload_others(paths) abort
+  if !exists('*win_findbuf') | return | endif
+  let l:cur = win_getid()
+  for l:p in a:paths
+    if empty(l:p) | continue | endif
+    let l:nr = bufnr(l:p)
+    if l:nr <= 0 | continue | endif
+    for l:w in win_findbuf(l:nr)
+      if l:w == l:cur | continue | endif
+      noautocmd call win_gotoid(l:w)
+      " Este reload acontece dentro de um autocmd (BufWritePost), e
+      " autocmd aninhado nao dispara sem `nested`: o `BufReadPost`
+      " que monta o buffer nao vem sozinho. A flag diz se veio.
+      let s:lstf_opened = 0
+      silent! edit!
+      if !s:lstf_opened | call s:lstf_open_buffer() | endif
+    endfor
+  endfor
+  noautocmd call win_gotoid(l:cur)
+endfunction
+
+" Abre nesta janela o buffer que o pai acabou de gravar. Caminho igual
+" ao atual: `edit!` so rele o arquivo. Caminho novo: o `BufReadPost`
+" monta o buffer (opcoes, sintaxe, mapas e comandos locais) antes do
+" reload, exatamente como fez na abertura. Depois da primeira linha
+" vem a lista de buffers de outras janelas que tambem mudaram.
+function! s:lstf_show_buffer(reply) abort
+  let l:linhas = split(a:reply, "\n")
+  let l:target = get(l:linhas, 0, '')
+  call s:lstf_reload_others(l:linhas[1:])
+  " Navegacao que nao saiu do lugar (`<` no inicio do trilho, `:cd .`)
+  " responde com este mesmo buffer. Com edicao pendente, o `edit!` abaixo
+  " trocaria o que o usuario tem na tela por um arquivo que descreve a
+  " mesma pasta: perda sem destino nenhum.
+  if &modified && (empty(l:target)
+    \ || fnamemodify(bufname('%'), ':p') ==# fnamemodify(l:target, ':p'))
+    redrawstatus!
+    return
+  endif
+  " Depois do reload das outras: a flag e de quem esta sendo aberto
+  " agora, e cada reload la dentro mexe nela.
+  let s:lstf_opened = 0
+  if !empty(l:target) && filereadable(l:target)
+    \ && fnamemodify(bufname('%'), ':p') !=# fnamemodify(l:target, ':p')
+    silent! execute 'edit! ' . fnameescape(l:target)
+  else
+    silent! edit!
+  endif
+  if !s:lstf_opened | call s:lstf_open_buffer() | endif
+endfunction
+
+function! LstfUp() abort
+  call s:lstf_nav('up', ':cd ..')
+endfunction
+
+function! LstfCd(dir) abort
+  let l:target = empty(a:dir) ? '~' : a:dir
+  let $LST_F_LIVE_ARG = l:target
+  call s:lstf_nav('enter', ':cd ' . l:target)
+  unlet $LST_F_LIVE_ARG
+endfunction
+
+function! LstfHome() abort
+  call s:lstf_nav('home', ':home')
+endfunction
+
+" A lixeira e uma pasta como qualquer outra, entao `:trash` e o `:cd`
+" nela -- e limpar e o gesto de sempre (`<C-a>`, `d`, `:w`), que la
+" dentro apaga em definitivo. Sem comando de esvaziar, sem tela propria.
+function! LstfTrash() abort
+  if empty($LST_F_TRASH)
+    let b:lstf_notice = 'sem HOME: nao ha lixeira'
+    redrawstatus!
+    return
+  endif
+  call LstfCd($LST_F_TRASH)
+endfunction
+
+" Um caminho absoluto por linha. Bookmarks pertencem ao usuario, nao a
+" sessao volatil nem ao diretorio que esta aberto.
+function! s:lstf_bookmark_file() abort
+  if empty($HOME) | return '' | endif
+  let l:config = empty($XDG_CONFIG_HOME) ? $HOME . '/.config' : $XDG_CONFIG_HOME
+  return l:config . '/lst-f/bookmarks'
+endfunction
+
+function! s:lstf_bookmarks() abort
+  let l:file = s:lstf_bookmark_file()
+  if empty(l:file) || !filereadable(l:file) | return [] | endif
+  try
+    return uniq(sort(filter(readfile(l:file), 'v:val =~# "^/"')))
+  catch
+    return []
+  endtry
+endfunction
+
+function! LstfBookmark() abort
+  let l:file = s:lstf_bookmark_file()
+  if empty(l:file)
+    let b:lstf_notice = 'sem HOME: bookmarks indisponiveis'
+    redrawstatus!
+    return
+  endif
+  let l:entry = s:lstf_entry_path()
+  let l:selected = empty(l:entry) ? '' : simplify(s:lstf_dir() . '/' . l:entry)
+  let l:path = isdirectory(l:selected) ? l:selected : s:lstf_dir()
+  if stridx(l:path, "\n") >= 0
+    let b:lstf_notice = 'pasta com quebra de linha nao pode ser marcada'
+    redrawstatus!
+    return
+  endif
+  let l:items = s:lstf_bookmarks()
+  let l:idx = index(l:items, l:path)
+  if l:idx >= 0
+    call remove(l:items, l:idx)
+    let l:notice = 'bookmark removido: ' . l:path
+  else
+    call add(l:items, l:path)
+    call sort(l:items)
+    let l:notice = 'bookmark adicionado: ' . l:path
+  endif
+  try
+    if mkdir(fnamemodify(l:file, ':h'), 'p') == 0
+      throw 'nao consegui criar pasta de bookmarks'
+    endif
+    if writefile(l:items, l:file) != 0
+      throw 'nao consegui gravar bookmarks'
+    endif
+    let b:lstf_notice = l:notice
+  catch
+    let b:lstf_notice = 'nao consegui salvar bookmarks'
+  endtry
+  redrawstatus!
+endfunction
+
+function! LstfBookmarkSelect(idx, ...) abort
+  let l:win = a:0 > 0 ? a:1 : 0
+  let l:orig_win = a:0 > 1 ? a:2 : 0
+  if l:win > 0
+    if has('nvim')
+      silent! call nvim_win_close(l:win, v:true)
+    elseif exists('*popup_close')
+      silent! call popup_close(l:win)
+    endif
+  endif
+  if l:orig_win > 0 && win_id2win(l:orig_win) > 0
+    noautocmd call win_gotoid(l:orig_win)
+  endif
+  let l:items = s:lstf_bookmarks()
+  if a:idx < 1 || a:idx > len(l:items) | return | endif
+  let l:path = l:items[a:idx - 1]
+  if !isdirectory(l:path)
+    let b:lstf_notice = 'bookmark inacessivel: ' . l:path
+    redrawstatus!
+    return
+  endif
+  call LstfCd(l:path)
+endfunction
+
+function! s:lstf_bookmarks_filter(winid, key) abort
+  if a:key ==# 'q' || a:key ==# "\<Esc>" || a:key ==# '0'
+    call popup_close(a:winid, -1)
+    return 1
+  endif
+  if a:key =~# '^[1-9]$'
+    let l:num = str2nr(a:key)
+    let l:items = s:lstf_bookmarks()
+    if l:num <= len(l:items)
+      call popup_close(a:winid, l:num)
+      return 1
+    endif
+  endif
+  return popup_filter_menu(a:winid, a:key)
+endfunction
+
+function! s:lstf_bookmarks_cb(winid, result) abort
+  call LstfBookmarkSelect(a:result)
+endfunction
+
+function! LstfBookmarks() abort
+  let l:items = s:lstf_bookmarks()
+  if empty(l:items)
+    let b:lstf_notice = 'sem bookmarks: m marca uma pasta'
+    redrawstatus!
+    return
+  endif
+  let l:lines = []
+  for l:i in range(len(l:items))
+    call add(l:lines, printf('%d. %s', l:i + 1, l:items[l:i]))
+  endfor
+  let l:max_w = 40
+  for l:line in l:lines
+    let l:max_w = max([l:max_w, strdisplaywidth(l:line) + 4])
+  endfor
+  let l:width = min([l:max_w, &columns - 4])
+  let l:height = min([len(l:lines), &lines - 4])
+  let l:orig_win = win_getid()
+  if has('nvim')
+    let l:buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+    let l:opts = {
+      \ 'relative': 'editor',
+      \ 'row': max([1, (&lines - l:height) / 2 - 1]),
+      \ 'col': max([1, (&columns - l:width) / 2]),
+      \ 'width': l:width,
+      \ 'height': l:height,
+      \ 'style': 'minimal',
+      \ 'border': 'rounded',
+      \ 'title': ' Bookmarks ',
+      \ 'title_pos': 'center'
+    \ }
+    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+    call setwinvar(l:win, '&winhighlight',
+      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
+    call setwinvar(l:win, '&cursorline', 1)
+    call setwinvar(l:win, '&wrap', 0)
+    call setbufvar(l:buf, '&buftype', 'nofile')
+    call setbufvar(l:buf, '&bufhidden', 'wipe')
+    call setbufvar(l:buf, '&modifiable', 0)
+    let l:close = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
+    for l:k in ['q', '<Esc>', '0']
+      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close
+    endfor
+    execute 'nnoremap <buffer> <silent> <CR> :call LstfBookmarkSelect(line("."), ' . l:win . ', ' . l:orig_win . ')<CR>'
+    execute 'nnoremap <buffer> <silent> <Space> :call LstfBookmarkSelect(line("."), ' . l:win . ', ' . l:orig_win . ')<CR>'
+    for l:i in range(1, min([9, len(l:items)]))
+      execute 'nnoremap <buffer> <silent> ' . l:i . ' :call LstfBookmarkSelect(' . l:i . ', ' . l:win . ', ' . l:orig_win . ')<CR>'
+    endfor
+  elseif exists('*popup_create')
+    let l:win = popup_create(l:lines, {
+      \ 'title': ' Bookmarks ',
+      \ 'border': [],
+      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+      \ 'padding': [0, 1, 0, 1],
+      \ 'pos': 'center',
+      \ 'cursorline': v:true,
+      \ 'wrap': v:false,
+      \ 'mapping': 0,
+      \ 'filter': function('s:lstf_bookmarks_filter'),
+      \ 'callback': function('s:lstf_bookmarks_cb'),
+      \ 'close': 'none',
+      \ 'highlight': 'LstfPopup',
+      \ 'borderhighlight': ['LstfPopupBorder']
+    \ })
+  else
+    let l:menu = ['Bookmarks (0 cancela):'] + l:lines
+    let l:choice = inputlist(l:menu)
+    call LstfBookmarkSelect(l:choice)
+  endif
+endfunction
+
+function! s:lstf_cmd_find(query) abort
+  let l:dir = empty(a:query) ? ':find' : ':find ' . a:query
+  call s:lstf_write_directive(l:dir)
+endfunction
+
+function! LstfBack() abort
+  call s:lstf_nav('back', ':back')
+endfunction
+
+function! LstfForward() abort
+  call s:lstf_nav('forward', ':forward')
+endfunction
+
+function! LstfQuit() abort
+  call s:lstf_write_directive(':quit')
+endfunction
+
+function! LstfQuitPanel() abort
+  let l:wins = s:lstf_list_wins()
+  if len(l:wins) > 1
+    call s:lstf_collapse_panels(l:wins)
+  else
+    call LstfQuit()
+  endif
+endfunction
+
+function! LstfFind() abort
+  call s:lstf_write_directive(':find')
+endfunction
+
+function! LstfShell(...) abort
+  let l:dir = a:0 > 0 && !empty(a:1) ? a:1 : ''
+  call s:lstf_write_directive(empty(l:dir) ? ':sh' : ':sh ' . l:dir)
+endfunction
+
+function! LstfToggleHidden() abort
+  call s:lstf_nav('hidden', ':hidden')
+endfunction
+
+function! LstfToggleTheme(...) abort
+  let l:target = a:0 > 0 && !empty(a:1) ? tolower(a:1) : 'toggle'
+  if l:target ==# 'light'
+    let &background = 'light'
+  elseif l:target ==# 'dark'
+    let &background = 'dark'
+  elseif l:target ==# 'toggle'
+    let &background = (&background ==# 'light' ? 'dark' : 'light')
+  else
+    echoerr 'Uso: :theme [light|dark|toggle]'
+    return
+  endif
+  call s:lstf_apply_colors()
+  if exists('$LST_F_STATE') && isdirectory($LST_F_STATE)
+    call writefile([&background], $LST_F_STATE . '/theme')
+  endif
+  if exists('$LST_F_SELF') && filereadable($LST_F_SELF) && exists('$LST_F_STATE') && filereadable($LST_F_STATE . '/live.sock')
+    let $LST_F_LIVE_ARG = &background
+    silent! call system($LST_F_SELF . ' --client theme')
+    unlet! $LST_F_LIVE_ARG
+  endif
+  redraw!
+  redrawstatus!
+  echo 'Tema: ' . &background
+endfunction
+
+
+function! s:lstf_confirm_plan(plan) abort
+  " Dois desfechos, dois nomes -- a pergunta e sobre o plano inteiro, e
+  " Enter, Esc e q seguem aceitos sem estar escritos. A dica de rolagem
+  " entra so quando a lista nao cabe: num plano curto ela era ruido ao
+  " lado das duas palavras que importam.
+  " Vim/Neovim antigos ou terminais minimos conservam uma saida textual;
+  " a aplicacao nunca depende do popup para ser segura. Sem popup nao ha
+  " o que rolar nem tecla a anunciar -- o input() abaixo e a pergunta.
+  if &columns < 30 || &lines < 9 || (!has('nvim') && !exists('*popup_create'))
+    echo join([''] + a:plan, "\n")
+    let l:answer = input('Aplicar alterações no disco? [s/N] ')
+    return tolower(l:answer) =~# '^[sy]'
+  endif
+  let l:max_height = &lines - 6
+  let l:keys = len(a:plan) + 3 > l:max_height
+    \ ? '[S]im    [N]ão     j/k rolam' : '[S]im    [N]ão'
+  " As teclas vao no rodape, como numa caixa de dialogo: a acao fica
+  " onde o olho a procura. O defeito antigo (a linha de opcoes cair
+  " abaixo do corte num plano alto) nao volta porque a vista e ancorada
+  " no fim logo abaixo, quando o plano nao cabe. O plano ja abre com
+  " uma linha vazia, que serve de separador.
+  let l:lines = [''] + a:plan + ['', l:keys]
+  let l:width = 50
+  for l:line in l:lines
+    let l:width = max([l:width, strdisplaywidth(l:line) + 4])
+  endfor
+  let l:width = min([l:width, &columns - 4])
+  " Centrar as teclas na largura final, que so se conhece agora -- e
+  " depois de medir, para o proprio recuo nao alargar o popup.
+  let l:lines[-1] = repeat(' ',
+    \ max([2, (l:width - strdisplaywidth(l:keys)) / 2])) . l:keys
+  let l:height = min([len(l:lines), l:max_height])
+  let l:buf = -1
+  let l:max_topline = max([1, len(l:lines) - l:height + 1])
+  let l:topline = l:max_topline
+  if has('nvim')
+    let l:buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+    let l:win = nvim_open_win(l:buf, v:false, {
+      \ 'relative': 'editor',
+      \ 'row': max([1, (&lines - l:height) / 2 - 1]),
+      \ 'col': max([1, (&columns - l:width) / 2]),
+      \ 'width': l:width,
+      \ 'height': l:height,
+      \ 'style': 'minimal',
+      \ 'border': 'rounded',
+      \ 'title': ' Confirmar alterações ',
+      \ 'title_pos': 'center'
+    \ })
+    call setwinvar(l:win, '&winhighlight',
+      \ 'Normal:LstfConfirm,FloatBorder:LstfConfirmBorder,FloatTitle:LstfConfirmBorder')
+    " Sem isto uma entrada mais larga que a caixa quebra em duas linhas
+    " de tela para uma so linha logica: a conta de altura e topline, que
+    " e toda em linhas logicas, fica errada e o rodape sai da vista.
+    call win_execute(l:win, 'setlocal nowrap')
+  else
+    let l:win = popup_create(l:lines, {
+      \ 'title': ' Confirmar alterações ',
+      \ 'border': [],
+      \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
+      \ 'padding': [0, 1, 0, 1],
+      \ 'pos': 'center',
+      \ 'minwidth': l:width,
+      \ 'maxwidth': l:width,
+      \ 'minheight': l:height,
+      \ 'maxheight': l:height,
+      \ 'firstline': l:topline,
+      \ 'wrap': v:false,
+      \ 'mapping': 0,
+      \ 'close': 'none',
+      \ 'highlight': 'LstfConfirm',
+      \ 'borderhighlight': ['LstfConfirmBorder']
+    \ })
+  endif
+  " Plano mais alto que a caixa: ancora a vista no fim, senao as
+  " opcoes do rodape nasceriam fora da tela. k sobe para revisar.
+  if len(l:lines) > l:height && has('nvim')
+    " Neovim rola o minimo para mostrar o cursor: na ultima linha ele
+    " fica no rodape, que e onde as opcoes estao.
+    call nvim_win_set_cursor(l:win, [len(l:lines), 0])
+  endif
+  " A cor vai por matchadd na janela: um mecanismo so serve o popup do
+  " Vim e o float do Neovim, sem text property nem extmark, logo sem
+  " feature-detect. Sem isto o popup do Vim cai no Pmenu default, que e
+  " LightMagenta -- fundo rosa atras do texto todo, inclusive das teclas.
+  " Destaques, um papel cada: o cabecalho de Remove fica vermelho,
+  " que e onde a cor avisa; Yes fica verde e No vermelho, que e onde
+  " a cor aponta o que fazer. Texto colorido, nao bloco de fundo --
+  " o bloco parecia selecao. A linha de continuacao do Remove fica
+  " neutra de proposito: vermelho numa frase inteira e o problema de
+  " leitura que isto vem corrigir.
+  silent! call win_execute(l:win,
+    \ "call matchadd('LstfConfirmRemove', '^Remove\\(r\\)\\= (\\d\\+).*')")
+  silent! call win_execute(l:win,
+    \ "call matchadd('LstfConfirmYes', '\\[S\\]im\\|\\[Y\\]es')")
+  silent! call win_execute(l:win,
+    \ "call matchadd('LstfConfirmNo', '\\[N\\]ão\\|\\[N\\]o')")
+  redraw
+  let l:approved = 0
+  while 1
+    let l:key = exists('*getcharstr') ? getcharstr() : nr2char(getchar())
+    if l:key ==# 's' || l:key ==# 'S' || l:key ==# 'y' || l:key ==# 'Y' || l:key ==# "\<CR>"
+      let l:approved = 1
+      break
+    elseif l:key ==# 'n' || l:key ==# 'N' || l:key ==# 'q' || l:key ==# "\<Esc>"
+      break
+    elseif l:key ==# 'j' || l:key ==# "\<Down>"
+      if has('nvim')
+        silent! call win_execute(l:win, "normal! \<C-e>")
+      else
+        let l:topline = min([l:max_topline, l:topline + 1])
+        call popup_setoptions(l:win, {'firstline': l:topline})
+      endif
+    elseif l:key ==# 'k' || l:key ==# "\<Up>"
+      if has('nvim')
+        silent! call win_execute(l:win, "normal! \<C-y>")
+      else
+        let l:topline = max([1, l:topline - 1])
+        call popup_setoptions(l:win, {'firstline': l:topline})
+      endif
+    endif
+    redraw
+  endwhile
+  if has('nvim')
+    silent! call nvim_win_close(l:win, v:true)
+    if l:buf >= 0 | silent! call nvim_buf_delete(l:buf, {'force': v:true}) | endif
+  else
+    silent! call popup_close(l:win)
+  endif
+  redraw
+  return l:approved
+endfunction
+
+" Recusar o `:w` sem sujar a tela. O que aborta um BufWritePre e a
+" excecao, mas `throw` sai como E605 mais o traceback do autocmd em
+" vermelho e um `Press ENTER` -- tres linhas de ruido tapando o aviso
+" que a barra acabou de receber, para um desfecho normal e previsto.
+" Medido: interrupt() aborta igual (arquivo intacto, BufWritePost nao
+" roda) e nao imprime nada. E de Vim 8.0.0140, abaixo do piso, mas vai
+" por feature-detect como o resto; o throw fica de reserva.
+function! s:lstf_abort_save() abort
+  if exists('*interrupt')
+    call interrupt()
+  endif
+  throw 'lst-f: operation cancelled'
+endfunction
+
+function! s:lstf_prepare_save() abort
+  call delete($LST_F_STATE . '/approved')
+  let l:is_quitting = search('^:quit', 'nw') > 0
+  let l:entries = s:lstf_entry_lines()
+  if exists('b:lstf_entry_lines') && l:entries !=# b:lstf_entry_lines
+    call s:lstf_flush_buffers()
+    call writefile(getline(1, '$'), $LST_F_STATE . '/proposal', 'b')
+    let [l:perr, l:out] = s:lstf_live('preview')
+    if l:perr == 0
+      let l:plan = filereadable($LST_F_STATE . '/preview')
+        \ ? readfile($LST_F_STATE . '/preview') : []
+      if !empty(l:plan)
+        if !s:lstf_confirm_plan(l:plan)
+          if l:is_quitting
+            return
+          endif
+          call s:lstf_abort_save()
+        endif
+      endif
+    elseif l:perr == 2
+      let l:answer = input('Apply filesystem changes? [y/N] ')
+      if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
+        if l:is_quitting
+          return
+        endif
+        call s:lstf_abort_save()
+      endif
+    else
+      let b:lstf_notice = substitute(l:out, "\n\\+$", '', '')
+      redrawstatus!
+      if l:is_quitting
+        return
+      endif
+      call s:lstf_abort_save()
+    endif
+    call writefile(['approved'], $LST_F_STATE . '/approved')
+  endif
+  if search('^:', 'nw') == 0
+    call append('$', ':refresh')
+  endif
+  let l:start = s:lstf_content_start()
+  let l:relative_line = l:start > 0 ? max([0, line('.') - l:start]) : 0
+  call writefile([string(l:relative_line)], $LST_F_STATE . '/cursor')
+endfunction
+
+function! s:lstf_after_save() abort
+  let l:directives = filter(getline(1, '$'), 'v:val =~# "^:"')
+  " Operacoes comuns e :refresh usam a sessao viva. Diretivas que
+  " abrem outra interface (:find, :open...) continuam pela volta
+  " externa, pois precisam tomar conta do terminal.
+  if len(l:directives) == 1 && l:directives[0] ==# ':refresh'
+    call s:lstf_flush_buffers()
+    let [l:aerr, l:out] = s:lstf_live('apply')
+    if l:aerr == 0
+      call s:lstf_show_buffer(l:out)
+      redraw
+      return
+    endif
+    " Codigo 2 significa que o socket nao estava disponivel: o
+    " laco antigo ainda consegue aplicar o arquivo que foi salvo.
+    if l:aerr != 2
+      setlocal modified
+      let b:lstf_notice = l:out
+      redrawstatus!
+      return
+    endif
+  endif
+  quitall
+endfunction
+
+function! s:lstf_entry_lines() abort
+  let l:start = s:lstf_content_start()
+  if l:start <= 0 | let l:start = len(get(b:, 'lstf_header', [])) + 1 | endif
+  return filter(getline(l:start, '$'), 'v:val !~# "^:" && v:val !~# "^#"')
+endfunction
+
+" Linhas de entrada do buffer, refeitas so quando o texto muda. A barra
+" de status e redesenhada a cada tecla; varrer o buffer inteiro ali
+" pesava em pasta com milhares de entradas.
+function! s:lstf_scan() abort
+  let l:scan = get(b:, 'lstf_scan', {})
+  if get(l:scan, 'tick', -1) == b:changedtick | return l:scan | endif
+  let l:lines = filter(map(getline(1, '$'),
+    \ 'v:val =~# ''^/\d\+\s\+'' ? v:key + 1 : 0'), 'v:val > 0')
+  let b:lstf_scan = {'tick': b:changedtick, 'lines': l:lines}
+  return b:lstf_scan
+endfunction
+
+function! s:lstf_content_start() abort
+  " Do topo do buffer, nao do cursor: com 'nW' a "primeira entrada"
+  " era sempre a seguinte a ele, e o contador nascia zerado.
+  return get(s:lstf_scan().lines, 0, 0)
+endfunction
+
+" Quantas entradas ha da primeira ate `lnum`, inclusive.
+function! s:lstf_entries_upto(lnum) abort
+  let l:lines = s:lstf_scan().lines
+  let [l:lo, l:hi] = [0, len(l:lines)]
+  while l:lo < l:hi
+    let l:mid = (l:lo + l:hi) / 2
+    if l:lines[l:mid] <= a:lnum | let l:lo = l:mid + 1 | else | let l:hi = l:mid | endif
+  endwhile
+  return l:lo
+endfunction
+
+" O cabecalho e a barra de titulo desta tela, nao conteudo: se uma
+" tecla o apagar ou um :sort o deslocar, ele volta para o topo.
+function! s:lstf_restore_header() abort
+  let l:want = get(b:, 'lstf_header', [])
+  if empty(l:want) | return | endif
+  if getline(1, len(l:want)) ==# l:want | return | endif
+  let l:view = winsaveview()
+  let l:body = filter(getline(1, '$'),
+    \ 'index(l:want, v:val) < 0 && v:val !~# "^──" && v:val !~# "^T │ PERMS"')
+  silent! undojoin
+  call setline(1, l:want + l:body)
+  let l:total = len(l:want) + len(l:body)
+  if line('$') > l:total
+    silent! execute (l:total + 1) . ',$delete _'
+  endif
+  call winrestview(l:view)
+  call s:lstf_keep_cursor_below_header()
+endfunction
+
+" Nem Vim nem Neovim trancam um intervalo de linhas: 'modifiable' e
+" do buffer inteiro. O par abaixo faz o papel -- o cursor nao entra
+" no cabecalho e o que passar por cima dele volta na hora.
+function! s:lstf_keep_cursor_below_header() abort
+  let l:end = len(get(b:, 'lstf_header', []))
+  if l:end <= 0 || line('.') > l:end | return | endif
+  if line('$') <= l:end | return | endif
+  if mode() =~# "^[vV\x16]" | return | endif
+  call cursor(l:end + 1, col('.'))
+endfunction
+
+" Comeco do nome na linha: depois do ID e da grade de colunas.
+" A grade e fixa: linha que ainda comeca pelo prefixo capturado na
+" leitura tem o nome logo depois dele, sem regex.
+function! s:lstf_name_start(line) abort
+  let l:prefix = get(get(b:, 'lstf_prefix', {}), matchstr(a:line, '^/\d\+'), '')
+  if !empty(l:prefix) && strpart(a:line, 0, len(l:prefix)) ==# l:prefix
+    return len(l:prefix)
+  endif
+  return matchend(a:line, '^\/\d\+\s\+\%(.*│\s*\S*\s\+\)\?')
+endfunction
+
+" So o nome e editavel. As colunas tecnicas ja eram ignoradas pelo
+" plano; aqui elas param de ser alcancaveis pelo cursor, e o que
+" escapar (:s, colagem) volta ao lugar assim que o texto muda.
+function! s:lstf_keep_cursor_in_name() abort
+  let l:line = getline('.')
+  " Linha nova (sem ID) e editavel inteira.
+  let l:id = matchstr(l:line, '^\/\d\+')
+  if empty(l:id) || !has_key(get(b:, 'lstf_prefix', {}), l:id) | return | endif
+  let l:start = s:lstf_name_start(l:line)
+  if l:start <= 0 | return | endif
+  if col('.') <= l:start | call cursor(line('.'), l:start + 1) | endif
+endfunction
+
+" Repoe as linhas da ultima mudanca (`'[`..`']`), nao so a do cursor:
+" um `:%s` que passasse pelas colunas deixava todas alteradas menos a
+" ultima -- e, no ID oculto, `/0001` virando `/0002` e remocao mais copia.
+function! s:lstf_restore_columns() abort
+  if !exists('b:lstf_prefix') | return | endif
+  let l:first = max([1, line("'[")])
+  let l:last = min([line('$'), max([l:first, line("']")])])
+  let l:view = winsaveview()
+  for l:lnum in range(l:first, l:last)
+    call s:lstf_restore_line(l:lnum)
+  endfor
+  call winrestview(l:view)
+endfunction
+
+function! s:lstf_restore_line(lnum) abort
+  let l:line = getline(a:lnum)
+  let l:id = matchstr(l:line, '^\/\d\+')
+  if empty(l:id) || !has_key(b:lstf_prefix, l:id) | return | endif
+  let l:want = b:lstf_prefix[l:id]
+  if strpart(l:line, 0, len(l:want)) ==# l:want | return | endif
+  let l:start = s:lstf_name_start(l:line)
+  let l:name = l:start > 0 ? strpart(l:line, l:start) : ''
+  if empty(l:name)
+    let l:name = matchstr(l:line, '.*│\s*\S*\s*\zs.*')
+  endif
+  if empty(l:name) | let l:name = matchstr(l:line, '^\/\d\+\s\+\zs.*') | endif
+  silent! undojoin
+  call setline(a:lnum, l:want . l:name)
+endfunction
+
+function! s:lstf_capture_prefixes() abort
+  let b:lstf_prefix = {}
+  let b:lstf_original_path = {}
+  let b:lstf_id_width = 0
+  for l:line in getline(1, '$')
+    let l:id = matchstr(l:line, '^/\d\+')
+    if empty(l:id) | continue | endif
+    if b:lstf_id_width == 0
+      let b:lstf_id_width = matchend(l:line, '^/\d\+\s\+')
+    endif
+    let l:start = s:lstf_name_start(l:line)
+    if l:start > 0
+      let b:lstf_prefix[l:id] = strpart(l:line, 0, l:start)
+      " E o que `s:lstf_entry_path` devolveria, sem a segunda regex.
+      let b:lstf_original_path[l:id] = strpart(l:line, l:start)
+    else
+      let b:lstf_original_path[l:id] = s:lstf_entry_path(l:line)
+    endif
+  endfor
+endfunction
+
+" Identifica destinos colidentes no buffer sem mutar o texto nem fazer
+" I/O de disco. Marca visualmente todas as linhas em conflito e exibe a
+" contagem na barra de status para feedback instantaneo enquanto o usuario edita.
+" Anotacao virtual: texto que aparece ao lado da linha sem estar no
+" buffer. E o que permite mostrar o desfecho previsto de uma colisao
+" sem que a previsao vire entrada do plano -- `getline()` nao a ve,
+" o `:w` nao a grava e ela nem marca o buffer como modificado. Quando
+" a previsao erra (arquivo oculto, outra janela colando ao mesmo
+" tempo), quem corrige e o preview da confirmacao, antes do disco.
+" Neovim usa extmark; Vim 9 usa text property com `text`. Piso mais
+" antigo fica so com o destaque colorido, como antes.
+" Detectado na primeira anotacao, nao na carga: `prop_type_add` exige
+" que o grupo de destaque ja exista, e as cores sao aplicadas depois
+" daqui. -1 e "ainda nao testado".
+let s:lstf_props = -1
+function! s:lstf_props_ok() abort
+  if s:lstf_props >= 0 | return s:lstf_props | endif
+  let s:lstf_props = 0
+  if !has('nvim') && exists('*prop_type_add')
+    try
+      if empty(prop_type_get('lstfPredict'))
+        call prop_type_add('lstfPredict', {'highlight': 'LstfPredict'})
+      endif
+      let s:lstf_props = 1
+    catch
+    endtry
+  endif
+  return s:lstf_props
+endfunction
+
+function! s:lstf_annotations_clear() abort
+  if has('nvim')
+    if exists('s:lstf_ns')
+      call nvim_buf_clear_namespace(0, s:lstf_ns, 0, -1)
+    endif
+  elseif s:lstf_props_ok()
+    silent! call prop_remove({'type': 'lstfPredict', 'all': 1})
+  endif
+endfunction
+
+function! s:lstf_annotate(lnum, text) abort
+  if has('nvim')
+    if !exists('s:lstf_ns')
+      let s:lstf_ns = nvim_create_namespace('lstf_predict')
+    endif
+    call nvim_buf_set_extmark(0, s:lstf_ns, a:lnum - 1, 0,
+      \ {'virt_text': [[a:text, 'LstfPredict']], 'virt_text_pos': 'eol'})
+  elseif s:lstf_props_ok()
+    " `text` em text property so existe a partir do Vim 9.0; em vez de
+    " cravar um numero de patch, desliga na primeira recusa.
+    try
+      call prop_add(a:lnum, 0, {'type': 'lstfPredict', 'text': a:text})
+    catch
+      let s:lstf_props = 0
+    endtry
+  endif
+endfunction
+
+" Mesma forma do sufixo que o lado Zig aplica (`plan.suffixed`):
+" radical e extensao do basename, diretorio preservado, barra final
+" para diretorio.
+function! s:lstf_suffixed(path, n) abort
+  let l:dir = a:path =~# '/$'
+  let l:body = l:dir ? substitute(a:path, '/\+$', '', '') : a:path
+  let l:slash = strridx(l:body, '/')
+  let l:head = l:slash >= 0 ? strpart(l:body, 0, l:slash + 1) : ''
+  let l:base = l:slash >= 0 ? strpart(l:body, l:slash + 1) : l:body
+  let l:dot = l:dir ? -1 : strridx(l:base, '.')
+  let l:stem = l:dot > 0 ? strpart(l:base, 0, l:dot) : l:base
+  let l:ext = l:dot > 0 ? strpart(l:base, l:dot) : ''
+  return printf('%s%s-%02d%s%s', l:head, l:stem, a:n, l:ext, l:dir ? '/' : '')
+endfunction
+
+" Um ID que nao e deste buffer veio colado de outra janela. Se a linha
+" dele ainda existe la, o gesto foi `yy` (copia, resolvida por sufixo);
+" se sumiu, foi `dd` (movimento, que recusa nome ocupado). Le os outros
+" buffers -- a mesma fonte que o laco consulta no `:w`, so que em
+" memoria: nao e um estado paralelo, e o mesmo estado lido aqui.
+function! s:lstf_id_ficou_na_origem(id, cache) abort
+  " Uma varredura por rodada, e so quando ha colisao com ID de fora:
+  " o `TextChanged` dispara a cada tecla e os outros buffers podem ser
+  " listagens grandes.
+  if !has_key(a:cache, 'ids')
+    let a:cache.ids = {}
+    for l:info in getbufinfo({'bufloaded': 1})
+      if l:info.bufnr == bufnr('%') | continue | endif
+      if l:info.name !~# '\.lstf$' | continue | endif
+      for l:linha in getbufline(l:info.bufnr, 1, '$')
+        let l:oid = matchstr(l:linha, '^/\d\+')
+        if !empty(l:oid) | let a:cache.ids[l:oid] = 1 | endif
+      endfor
+    endfor
+  endif
+  return has_key(a:cache.ids, a:id)
+endfunction
+
+" Um `A`...`Esc` dispara `InsertLeave` e `TextChanged` pela mesma
+" edicao, e `InsertLeave` dispara sem edicao nenhuma: a varredura so
+" refaz quando o texto desta janela mudou desde a ultima.
+function! s:lstf_collisions_if_changed() abort
+  if get(w:, 'lstf_collision_key', []) ==# [bufnr('%'), b:changedtick] | return | endif
+  call s:lstf_update_collisions()
+endfunction
+
+" A varredura percorre o buffer inteiro e, em pasta com milhares de
+" entradas, levava 100 ms ou mais por edicao. Ela so alimenta destaque e
+" barra de status -- o `:w` valida pelo lado Zig --, entao pode esperar a
+" edicao aparecer: roda depois de uma pausa, e uma sequencia de `dd`/`.`
+" paga uma varredura so. Sem `timers` (Vim anterior ao 8.0) fica sincrona.
+" O `InsertLeave` nao passa por aqui: com `-u NONE` o Vim fica sem
+" `ttimeout`, e depois de um `Esc` espera ate `timeoutlen` (1 s) por uma
+" sequencia de tecla sem rodar timer -- o nome digitado so ganharia o
+" destaque um segundo depois.
+let s:lstf_collision_delay = 100
+let s:lstf_collision_timer = -1
+function! s:lstf_collisions_schedule() abort
+  if get(w:, 'lstf_collision_key', []) ==# [bufnr('%'), b:changedtick] | return | endif
+  if !has('timers') | call s:lstf_update_collisions() | return | endif
+  if s:lstf_collision_timer != -1 | call timer_stop(s:lstf_collision_timer) | endif
+  let s:lstf_collision_win = win_getid()
+  let s:lstf_collision_timer = timer_start(s:lstf_collision_delay,
+    \ function('s:lstf_collisions_fire'))
+endfunction
+
+function! s:lstf_collisions_fire(timer) abort
+  let s:lstf_collision_timer = -1
+  " Os destaques sao da janela (`matchaddpos`). Se o foco saiu dela, o
+  " `WinEnter` refaz ao voltar.
+  if win_getid() != s:lstf_collision_win || !exists('b:lstf_prefix') | return | endif
+  let l:mode = mode()
+  " No insert nao havia varredura antes e continua nao havendo: o
+  " `InsertLeave` varre ao sair. Linha de comando, operador pendente e
+  " afins: tenta depois, para nao redesenhar por baixo do que se digita.
+  if l:mode =~# '^[iR]' | return | endif
+  if l:mode !=# 'n' && l:mode !~# "^[vV\x16]"
+    call s:lstf_collisions_schedule()
+    return
+  endif
+  call s:lstf_collisions_if_changed()
+endfunction
+
+function! s:lstf_update_collisions() abort
+  for l:match in get(w:, 'lstf_collision_matches', [])
+    silent! call matchdelete(l:match)
+  endfor
+  call s:lstf_annotations_clear()
+  let w:lstf_collision_matches = []
+  let b:lstf_collision_count = 0
+  let w:lstf_collision_key = [bufnr('%'), b:changedtick]
+  " Sem edicao o buffer e a listagem lida do disco, onde cada caminho
+  " aparece uma vez: nao ha o que procurar. E o caso de toda abertura
+  " de pasta, e de um `u` que volte ao estado lido.
+  if !&modified | redrawstatus | return | endif
+  " Primeira linha de cada caminho; a lista de usos so nasce quando o
+  " caminho se repete. Montar um dicionario por linha era o grosso do
+  " custo em pasta grande, e colisao e excecao. As chaves de `l:primeira`
+  " sao tambem os nomes ja ocupados, para o sufixo previsto nao cair em
+  " cima de outro.
+  let l:primeira = {}
+  let l:paths = {}
+  " IDs vistos, para saber qual linha e a primeira de um ID repetido
+  " (essa e a que fica).
+  let l:vistos = {}
+  let l:cache = {}
+  let l:start = s:lstf_content_start()
+  if l:start <= 0 | redrawstatus | return | endif
+  let l:prefixes = get(b:, 'lstf_prefix', {})
+  let l:lnum = l:start - 1
+  for l:line in getline(l:start, '$')
+    let l:lnum += 1
+    let l:id = matchstr(l:line, '^/\d\+')
+    if !empty(l:id)
+      " O mesmo que `s:lstf_entry_path` daria para uma linha com ID. O
+      " prefixo vai inline: chamar `s:lstf_name_start` por linha pesava.
+      let l:prefix = get(l:prefixes, l:id, '')
+      if !empty(l:prefix) && strpart(l:line, 0, len(l:prefix)) ==# l:prefix
+        let l:col = len(l:prefix) + 1
+      else
+        let l:col = s:lstf_name_start(l:line) + 1
+      endif
+      let l:path = l:col > 0 ? strpart(l:line, l:col - 1) : ''
+    else
+      if l:line =~# '^\s*$' || l:line =~# '^[:#]' | continue | endif
+      let l:raw = substitute(l:line, '^\s*', '', '')
+      let l:arrow = match(l:raw, '\s->\s\|\s=>\s')
+      let l:path = l:arrow >= 0 ? substitute(strpart(l:raw, 0, l:arrow), '\s*$', '', '') : l:raw
+      let l:col = match(l:line, '\S') + 1
+    endif
+    if empty(l:path) || l:col <= 0 | continue | endif
+    let l:primeiro = !has_key(l:vistos, l:id)
+    if !empty(l:id) | let l:vistos[l:id] = 1 | endif
+    let l:use = [l:lnum, l:col, l:id, l:primeiro]
+    if has_key(l:paths, l:path)
+      call add(l:paths[l:path], l:use)
+    elseif has_key(l:primeira, l:path)
+      let l:paths[l:path] = [l:primeira[l:path], l:use]
+    else
+      let l:primeira[l:path] = l:use
+    endif
+  endfor
+  if empty(l:paths) | redrawstatus | return | endif
+  " IDs que vieram da listagem deste buffer. Um ID fora daqui e linha
+  " colada de outra janela.
+  let l:proprios = {}
+  for l:orig in get(b:, 'lstf_entry_lines', [])
+    let l:oid = matchstr(l:orig, '^/\d\+')
+    if !empty(l:oid) | let l:proprios[l:oid] = 1 | endif
+  endfor
+  for l:path in keys(l:paths)
+    let l:uses = l:paths[l:path]
+    let b:lstf_collision_count += len(l:uses)
+    for [l:ln, l:co, l:uid, l:prim] in l:uses
+      call add(w:lstf_collision_matches,
+        \ matchaddpos('LstfCollision', [[l:ln, l:co, len(l:path)]], 20))
+      call s:lstf_prever({'line': l:ln, 'id': l:uid, 'primeiro': l:prim},
+        \ l:path, l:proprios, l:primeira, l:cache)
+    endfor
+  endfor
+  redrawstatus
+endfunction
+
+" O desfecho previsto de uma das linhas de uma colisao, anotado ao lado
+" dela. A linha que fica e a entrada da listagem: ID deste buffer, na
+" primeira aparicao. As outras sao destino, e e nelas que o desfecho
+" muda -- copia ganha sufixo, movimento e recusado, nome novo tambem.
+" Mesma regra que o lado Zig aplica; o que o helper nao enxerga (nome
+" ocupado por arquivo oculto, outra janela colando agora) tambem nao
+" acende o destaque, entao a anotacao nao promete mais do que ja se via.
+function! s:lstf_prever(use, path, proprios, tomado, cache) abort
+  if a:use.primeiro && !empty(a:use.id) && has_key(a:proprios, a:use.id)
+    return
+  endif
+  if empty(a:use.id)
+    call s:lstf_annotate(a:use.line, '  ✗ nome ja ocupado')
+    return
+  endif
+  if !has_key(a:proprios, a:use.id) && !s:lstf_id_ficou_na_origem(a:use.id, a:cache)
+    call s:lstf_annotate(a:use.line, '  ✗ ocupado: apague a linha dele ou renomeie')
+    return
+  endif
+  let l:n = 1
+  while l:n < 100
+    let l:cand = s:lstf_suffixed(a:path, l:n)
+    if !has_key(a:tomado, l:cand)
+      let a:tomado[l:cand] = 1
+      call s:lstf_annotate(a:use.line, '  → ' . l:cand)
+      return
+    endif
+    let l:n += 1
+  endwhile
+  call s:lstf_annotate(a:use.line, '  ✗ sem nome livre com sufixo')
+endfunction
+
+" Barra de topo: os titulos das colunas sao linha de tela, nao de
+" buffer. Nao rolam com a lista, nao dao para apagar e se redesenham
+" sozinhos quando o terminal muda de tamanho.
+" A barra e da tela inteira, mas descreve a janela da lista em foco:
+" a posicao fica guardada aqui e so e atualizada de dentro dela.
+function! s:lstf_follow_scroll() abort
+  " Qual janela de lista a moldura descreve quando o foco sai delas
+  " (popup de ajuda, janela de cabecalho): a ultima que esteve em
+  " foco, nao a primeira que a sessao abriu.
+  if exists('b:lstf_dir') | let s:lstf_list_win = win_getid() | endif
+  " A moldura e texto de buffer, entao nao se reajusta sozinha quando a
+  " largura muda. A janela de cabecalho tem a largura da tela inteira,
+  " acima de todas as janelas de lista: compara com `&columns`, nunca
+  " com a largura desta janela -- com um split elas sao diferentes por
+  " definicao, e a comparacao nunca fecharia (redesenho a cada tecla).
+  " A pasta entra na condicao porque a moldura segue o foco: sem ela,
+  " o Tab entre duas listas deixaria o caminho da outra na tela.
+  if s:lstf_frame && (&columns != get(s:, 'lstf_frame_width', -1)
+    \ || s:lstf_frame_location() !=# get(s:, 'lstf_frame_shown', ''))
+    call s:lstf_draw_frame()
+  endif
+  let l:left = winsaveview().leftcol
+  let s:lstf_id_width = get(b:, 'lstf_id_width', 0)
+  if l:left == get(s:, 'lstf_leftcol', -1) | return | endif
+  let s:lstf_leftcol = l:left
+  " Os titulos sao a statusline da janela de cabecalho, que so se
+  " redesenha sob pedido: `!` alcanca a janela que nao esta em foco.
+  if s:lstf_frame
+    call s:lstf_draw_frame()
+    redrawstatus!
+  endif
+endfunction
+
+" Os titulos sao conteudo da linha 2 da janela de cabecalho (ver
+" `s:lstf_draw_frame`); a statusline desta janela virou a regra que
+" fecha a faixa por baixo -- linha propria, descolada do texto, e o
+" divisor `│` atravessa a regra para continuar nas entradas.
+function! LstfRuleBar() abort
+  if empty(s:lstf_titles) | return '' | endif
+  " Acompanha a rolagem horizontal da lista, senao as colunas sairiam
+  " do lugar assim que um nome longo empurrar a tela. O `leftcol`
+  " conta tambem os caracteres do ID, que estao no buffer mas
+  " ocultos por conceal e nao existem na barra.
+  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
+  let l:ruler = substitute(substitute(s:lstf_titles, '[^│]', '─', 'g'), '│', '┼', 'g')
+  let l:rest = strcharpart(l:ruler, max([0, l:left]))
+  " A faixa vai ate a borda da janela por conta propria: o
+  " preenchimento de `%=` sairia no grupo StatusLineNC, que e da
+  " barra de baixo tambem.
+  let l:win = exists('g:statusline_winid') ? win_id2win(g:statusline_winid) : 0
+  let l:pad = max([0, winwidth(l:win) - strdisplaywidth(l:rest)])
+  return '%#LstfFrame#' . l:rest . repeat('─', l:pad)
+endfunction
+
+" Linha de titulos como texto: devolve [linha, spans], onde spans sao
+" as posicoes em bytes de cada divisor `│` para o matchaddpos.
+function! s:lstf_titles_row(width) abort
+  if empty(s:lstf_titles) | return ['', []] | endif
+  let l:left = get(s:, 'lstf_leftcol', 0) - get(s:, 'lstf_id_width', 0)
+  let l:rest = strcharpart(s:lstf_titles, max([0, l:left]))
+  let l:out = ''
+  let l:bytes = 0
+  let l:spans = []
+  while 1
+    let l:i = match(l:rest, ' \=│ \=')
+    if l:i < 0 | break | endif
+    let l:seg = strpart(l:rest, 0, l:i)
+    let l:sep = matchstr(l:rest, ' \=│ \=')
+    call add(l:spans, [l:bytes + len(l:seg) + 1, len(l:sep)])
+    let l:out .= l:seg . l:sep
+    let l:bytes += len(l:seg) + len(l:sep)
+    let l:rest = strpart(l:rest, l:i + len(l:sep))
+  endwhile
+  let l:out .= l:rest
+  let l:pad = max([0, a:width - strdisplaywidth(l:out)])
+  return [l:out . repeat(' ', l:pad), l:spans]
+endfunction
+
+" Linha de moldura: caminho a esquerda, versao a direita, regua ligando
+" os dois -- a barra de titulo que o xpl-f desenha no topo da tela.
+" Volta em pedacos porque quem pinta e `matchaddpos`, por coluna de
+" byte: e conteudo de buffer, nao expressao de statusline.
+function! s:lstf_frame_parts(width, path) abort
+  let l:path = a:path
+  let l:icon = s:lstf_icons ? ' ' : ''
+  let l:avail = a:width - 8 - strdisplaywidth(l:icon) - strdisplaywidth(s:lstf_identity)
+  if strdisplaywidth(l:path) > l:avail
+    let l:path = l:avail > 1 ? '…' . strcharpart(l:path, strchars(l:path) - l:avail + 1) : ''
+  endif
+  let l:fill = max([0, l:avail - strdisplaywidth(l:path)])
+  return ['╭─ ', l:icon, l:path, ' ' . repeat('─', l:fill) . ' ', s:lstf_identity, ' ─╮']
+endfunction
+
+" Pinta pela `win_execute`, que nao troca de janela: o `win_gotoid` encerra
+" o modo visual, e um `$` no bloco que role a lista na horizontal
+" redesenha a moldura -- a selecao sumia e o `:` saia sem `'<,'>`.
+function! s:lstf_draw_frame() abort
+  if !exists('s:lstf_header_win') || win_id2win(s:lstf_header_win) == 0 | return | endif
+  let l:where = s:lstf_frame_location()
+  let s:lstf_frame_shown = l:where
+  if exists('*win_execute')
+    call win_execute(s:lstf_header_win, 'call s:lstf_paint_frame(l:where)')
+    return
+  endif
+  let l:cur = win_getid()
+  noautocmd call win_gotoid(s:lstf_header_win)
+  call s:lstf_paint_frame(l:where)
+  noautocmd call win_gotoid(l:cur)
+endfunction
+
+function! s:lstf_paint_frame(where) abort
+  let l:where = a:where
+  let s:lstf_frame_width = winwidth(0)
+  let l:parts = s:lstf_frame_parts(s:lstf_frame_width, l:where)
+  let l:trow = s:lstf_titles_row(s:lstf_frame_width)
+  setlocal modifiable
+  call setline(1, [join(l:parts, ''), l:trow[0]])
+  setlocal nomodifiable nomodified
+  call clearmatches()
+  call matchaddpos('LstfFrame', [[1]], -5)
+  if !empty(l:trow[0])
+    call matchaddpos('LstfTitles', [[2]], -5)
+    for l:sp in l:trow[1]
+      call matchaddpos('LstfTitlesSep', [[2, l:sp[0], l:sp[1]]], -4)
+    endfor
+  endif
+  let l:icon_at = len(l:parts[0]) + 1
+  call matchaddpos('LstfIconDir', [[1, l:icon_at, len(l:parts[1])]], 10)
+  let l:spots = []
+  let l:at = l:icon_at + len(l:parts[1])
+  if len(l:parts[2]) > 0 | call add(l:spots, [1, l:at, len(l:parts[2])]) | endif
+  let l:at += len(l:parts[2]) + len(l:parts[3])
+  if len(l:parts[4]) > 0 | call add(l:spots, [1, l:at, len(l:parts[4])]) | endif
+  if !empty(l:spots) | call matchaddpos('LstfPath', l:spots, 10) | endif
+endfunction
+
+" Janela de duas linhas no topo: moldura e titulos, que a
+" statusline dela fecha por baixo com a regra. Precisa ser
+" janela -- a `tabline` do Vim e uma linha so, e `winbar` nao existe
+" fora do Neovim.
+function! s:lstf_open_header() abort
+  if !s:lstf_frame || exists('s:lstf_header_win') | return | endif
+  " Terminal baixo demais nao tem onde por a janela: o split falharia
+  " com E36 e o erro tomaria a tela. Sem cabecalho, caminho e versao
+  " voltam para a barra de baixo.
+  if &lines < 7
+    let s:lstf_frame = 0
+    return
+  endif
+  let s:lstf_list_win = win_getid()
+  noautocmd topleft 2split __lstf_header__
+  let s:lstf_header_win = win_getid()
+  setlocal buftype=nofile bufhidden=wipe noswapfile nowrap
+  setlocal nonumber norelativenumber nocursorline winfixheight
+  setlocal signcolumn=no foldcolumn=0 colorcolumn=
+  setlocal statusline=%!LstfRuleBar()
+  nnoremap <buffer> <silent> q :call LstfQuitPanel()<CR>
+  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
+  augroup lstf_header
+    autocmd! * <buffer>
+    autocmd WinEnter <buffer> call s:lstf_leave_header()
+  augroup END
+  noautocmd call win_gotoid(s:lstf_list_win)
+  call s:lstf_draw_frame()
+endfunction
+
+" De qual janela a moldura fala. Com duas listas lado a lado o
+" cabecalho e um so, entao ele segue o foco; quando o foco esta fora
+" de uma lista (cabecalho, popup de ajuda), vale a ultima janela de
+" lista vista.
+function! s:lstf_frame_location() abort
+  if exists('b:lstf_location') && !empty(b:lstf_location)
+    return b:lstf_location
+  endif
+  if exists('s:lstf_list_win') && win_id2win(s:lstf_list_win) > 0
+    let l:loc = getbufvar(winbufnr(s:lstf_list_win), 'lstf_location')
+    if !empty(l:loc) | return l:loc | endif
+  endif
+  return empty($LST_F_LOCATION) ? getcwd() : $LST_F_LOCATION
+endfunction
+
+" O cursor nunca para no cabecalho: quem entrar volta para a lista.
+function! s:lstf_leave_header() abort
+  if winnr('$') > 1 | wincmd j | endif
+endfunction
+
+function! LstfStatusline() abort
+  let l:total = len(s:lstf_scan().lines)
+  let l:current = s:lstf_entries_upto(line('.'))
+  let l:m = mode(1)
+  let l:mode = l:m =~# '^[iR]' ? 'EDIT' : (l:m =~# '^[vV]' || l:m ==# "\<C-V>") ? 'VISUAL' : 'NORMAL'
+  let l:mode_hl = l:mode ==# 'EDIT' ? 'LstfStatusModeEdit' : l:mode ==# 'VISUAL' ? 'LstfStatusModeVisual' : 'LstfStatusModeNormal'
+  let l:name = substitute(s:lstf_entry_path(), '%', '%%', 'g')
+  let l:location = s:lstf_location()
+  let l:location = substitute(l:location, '%', '%%', 'g')
+  let l:editor = has('nvim') ? 'Neovim' : 'Vim'
+  " A pasta corrente fica junto do nome, nao na outra ponta da barra:
+  " as duas metades do caminho sob o cursor se leem de uma vez. O
+  " `%<` poe a truncagem no caminho: em terminal estreito o modo e o
+  " contador ficam, e o comeco do caminho e que some.
+  " Com a moldura no topo o caminho e a versao ja estao na tela: aqui
+  " embaixo sobrariam so tirando espaco do nome sob o cursor.
+  let l:where = s:lstf_frame ? l:name : l:location . (empty(l:name) ? '' : '  ' . l:name)
+  if len(s:lstf_list_wins()) > 1
+    let l:where = fnamemodify(s:lstf_dir(), ':t') . '/  ' . l:name
+  endif
+  let l:tag = s:lstf_frame ? '' : s:lstf_identity . '  ·  '
+  let l:av = get(b:, 'lstf_notice', '')
+  let l:aviso = empty(l:av) ? '' : '%#LstfStatusNotice# ' . substitute(l:av, '%', '%%', 'g') . ' %#LstfStatusInfo#'
+  let l:pending = &modified ? '%#LstfStatusNotice# [editado] %#LstfStatusInfo#' : ''
+  let l:sort_tag = exists('s:lstf_sort_mode') ? (' ' . s:lstf_sort_mode . (get(s:, 'lstf_sort_reverse', 0) ? '↓' : '↑') . ' ') : ''
+  let l:collisions = get(b:, 'lstf_collision_count', 0)
+  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisão: ' . l:collisions . ' %#LstfStatusInfo#' : ''
+  return '%#' . l:mode_hl . '# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:pending . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo#' . l:sort_tag . l:tag . l:editor . ' %#LstfStatusHelp# F1=Ajuda '
+endfunction
+
+function! s:lstf_tree_path_at(lines, lnum) abort
+  if a:lnum <= 1 || a:lnum > len(a:lines) | return '' | endif
+  let l:line = a:lines[a:lnum - 1]
+  if l:line !~# '/$' | return '' | endif
+  let l:depth = 0
+  let l:rest = l:line
+  while l:rest =~# '^\%(│   \|    \)'
+    let l:depth += 1
+    let l:rest = substitute(l:rest, '^\%(│   \|    \)', '', '')
+  endwhile
+  let l:name = substitute(substitute(l:rest, '^\%(├── \|└── \)', '', ''), '/$', '', '')
+  let l:parts = [l:name]
+  let l:want = l:depth - 1
+  let l:i = a:lnum - 1
+  while l:want >= 0 && l:i >= 2
+    let l:cur = a:lines[l:i - 1]
+    let l:d = 0
+    let l:r = l:cur
+    while l:r =~# '^\%(│   \|    \)'
+      let l:d += 1
+      let l:r = substitute(l:r, '^\%(│   \|    \)', '', '')
+    endwhile
+    if l:d == l:want && l:r =~# '/$'
+      let l:p = substitute(substitute(l:r, '^\%(├── \|└── \)', '', ''), '/$', '', '')
+      call insert(l:parts, l:p, 0)
+      let l:want -= 1
+    endif
+    let l:i -= 1
+  endwhile
+  return join(l:parts, '/')
+endfunction
+
+function! s:lstf_tree_enter(lines, lnum) abort
+  let l:rel = s:lstf_tree_path_at(a:lines, a:lnum)
+  if !empty(l:rel)
+    call LstfCd(l:rel)
+  endif
+endfunction
+
+function! LstfTree() abort
+  " Gera a arvore sob demanda para a pasta da janela ativa (zero custo na navegacao).
+  call s:lstf_live('tree')
+  let l:tfile = $LST_F_STATE . '/tree'
+  let l:lines = filereadable(l:tfile) ? readfile(l:tfile) : []
+  if empty(l:lines)
+    let l:lines = ['(árvore vazia)']
+  endif
+  let s:lstf_tree_lines = l:lines
+  if has('nvim')
+    let l:buf = nvim_create_buf(v:false, v:true)
+    call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
+    let l:width = min([max([50, max(map(copy(l:lines), 'strdisplaywidth(v:val) + 4'))]), &columns - 4])
+    let l:height = min([len(l:lines), &lines - 4])
+    let l:opts = {'relative': 'editor', 'row': max([1, (&lines - l:height) / 2 - 1]), 'col': max([1, (&columns - l:width) / 2]), 'width': l:width, 'height': l:height, 'style': 'minimal', 'border': 'rounded', 'title': ' Árvore (Enter entra) ', 'title_pos': 'center'}
+    let l:win = nvim_open_win(l:buf, v:true, l:opts)
+    call setwinvar(l:win, '&winhighlight',
+      \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
+    let l:close = ':lua pcall(vim.api.nvim_win_close, ' . l:win . ', true)<CR>'
+    for l:k in ['q', '<Esc>', '<Bslash>']
+      execute 'nnoremap <buffer> <silent> ' . l:k . ' ' . l:close
+    endfor
+    execute 'nnoremap <buffer> <silent> <CR> :let s:lstf_tree_pick = line(".") <Bar> lua pcall(vim.api.nvim_win_close, ' . l:win . ', true) <Bar> call <SID>lstf_tree_enter(s:lstf_tree_lines, s:lstf_tree_pick)<CR>'
+  elseif exists('*popup_create')
+    let l:win = popup_create(l:lines, {'title': ' Árvore (Enter entra) ', 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'mapping': 0, 'filter': function('s:lstf_tree_filter'), 'close': 'none', 'highlight': 'LstfPopup', 'borderhighlight': ['LstfPopupBorder']})
+  else
+    echo join(l:lines, "\n")
+  endif
+endfunction
+
+" Dois diretorios lado a lado e mecanica pura do Vim: um `:vsplit`
+" desta mesma pasta e navegar numa das janelas. A que navegar troca
+" para o buffer da outra pasta; a outra continua onde estava. Nao ha
+" painel de categoria separada, nem renderizacao propria, nem tecla
+" silenciada: e uma janela com um buffer de diretorio, como qualquer
+" outra. Fechar e o de sempre (`:close`, `<C-w>c`).
+" Janelas de lista da tela. O cabecalho nao entra: nao e buffer de
+" diretorio, logo nao tem `b:lstf_dir`.
+function! s:lstf_list_wins() abort
+  let l:out = []
+  for l:nr in range(1, winnr('$'))
+    if !empty(getbufvar(winbufnr(l:nr), 'lstf_dir', ''))
+      call add(l:out, win_getid(l:nr))
+    endif
+  endfor
+  return l:out
+endfunction
+
+" Ao fechar o split, fica na pasta da janela principal, mesmo se o
+" atalho foi pressionado no split. Uma edicao pendente em outro
+" buffer impede fechar sua ultima janela e perder a edicao de vista.
+function! s:lstf_collapse_panels(wins) abort
+  let l:dest = a:wins[0]
+  let l:buf = winbufnr(win_id2win(l:dest))
+  let l:presa = ''
+  for l:w in a:wins
+    if l:w == l:dest | continue | endif
+    let l:other = winbufnr(win_id2win(l:w))
+    if l:other != l:buf && getbufvar(l:other, '&modified')
+      let l:presa = fnamemodify(getbufvar(l:other, 'lstf_dir', ''), ':t')
+      continue
+    endif
+    noautocmd call win_gotoid(l:w)
+    silent! close
+  endfor
+  noautocmd call win_gotoid(l:dest)
+  let s:lstf_list_win = l:dest
+  if !empty(l:presa)
+    let b:lstf_notice = 'edicao pendente em ' . l:presa . ': janela mantida'
+  endif
+  call s:lstf_follow_scroll()
+  call s:lstf_draw_frame()
+  redrawstatus!
+endfunction
+
+" `:bd` aqui nao e apagar um arquivo aberto: o buffer e a pasta que a
+" janela mostra. Apagando, sobrava so a janela de cabecalho na tela --
+" sem lista, sem nenhum mapeamento (todos sao `<buffer>`) e com o laco do
+" pai esperando; so saia por `:q!`. Vira fechar o painel, e sendo o unico
+" recusa dizendo o que usar.
+function! LstfClosePanel() abort
+  let l:wins = s:lstf_list_wins()
+  if len(l:wins) <= 1
+    let b:lstf_notice = 'painel unico: :q sai do lst-f, Ctrl+S abre o segundo'
+    redrawstatus!
+    return
+  endif
+  let l:cur = win_getid()
+  let l:fica = l:wins[0] == l:cur ? l:wins[1] : l:wins[0]
+  silent! close
+  call win_gotoid(l:fica)
+  call s:lstf_follow_scroll()
+  call s:lstf_draw_frame()
+  redrawstatus!
+endfunction
+
+" Buffer que recebeu linha colada de outra pasta: tem ID que a propria
+" listagem nao tinha.
+function! s:lstf_has_import(nr) abort
+  let l:own = {}
+  for l:line in getbufvar(a:nr, 'lstf_entry_lines', [])
+    let l:id = matchstr(l:line, '^/\zs\d\+')
+    if !empty(l:id) | let l:own[str2nr(l:id)] = 1 | endif
+  endfor
+  for l:line in getbufline(a:nr, 1, '$')
+    let l:id = matchstr(l:line, '^/\zs\d\+')
+    if !empty(l:id) && !has_key(l:own, str2nr(l:id)) | return 1 | endif
+  endfor
+  return 0
+endfunction
+
+" `:wa` na ordem do recorte. O Vim grava por numero de buffer, e a origem
+" costuma vir antes (o segundo painel nasce nela e depois navega): ela
+" recusa com `claimed_elsewhere`, porque o movimento pertence ao destino,
+" e o `interrupt()` da recusa aborta o `:wa` inteiro -- o destino nunca
+" era gravado. Quem recebeu linha de outra pasta grava primeiro; o apply
+" dele recarrega a origem, que chega a sua vez sem nada pendente.
+function! LstfWriteAll(quit) abort
+  let l:cur = win_getid()
+  let l:first = []
+  let l:rest = []
+  for l:info in getbufinfo({'bufloaded': 1})
+    if l:info.name !~# '\.lstf$' || !l:info.changed | continue | endif
+    call add(s:lstf_has_import(l:info.bufnr) ? l:first : l:rest, l:info.bufnr)
+  endfor
+  for l:nr in l:first + l:rest
+    if !getbufvar(l:nr, '&modified') | continue | endif
+    let l:wins = win_findbuf(l:nr)
+    if empty(l:wins)
+      let b:lstf_notice = 'edicao pendente em '
+        \ . fnamemodify(getbufvar(l:nr, 'lstf_dir', ''), ':t')
+        \ . ' sem janela: abra a pasta para gravar'
+      redrawstatus!
+      return
+    endif
+    call win_gotoid(l:wins[0])
+    write
+    " Recusa ou confirmacao negada: para aqui, com o foco na janela que
+    " tem o recado.
+    if &modified | return | endif
+  endfor
+  call win_gotoid(l:cur)
+  if a:quit | call LstfQuit() | endif
+endfunction
+
+function! LstfSplit() abort
+  " Com o split aberto, alterna o foco entre as janelas de lista.
+  let l:wins = s:lstf_list_wins()
+  if len(l:wins) > 1
+    let l:idx = index(l:wins, win_getid())
+    call win_gotoid(l:wins[(l:idx + 1) % len(l:wins)])
+    return
+  endif
+  let l:onde = win_getid()
+  " `rightbelow`: a segunda janela abre a direita, como o usuario
+  " espera de um explorador. `noautocmd` porque o BufReadPost nao
+  " tem nada a montar aqui -- o buffer ja esta pronto.
+  noautocmd rightbelow vsplit
+  let l:nova = win_getid()
+  " O cabecalho ocupa o topo da tela inteira e as duas janelas de
+  " lista mudaram de largura sem o foco passar por nenhuma delas:
+  " a moldura so se reajusta se passarmos explicitamente.
+  call win_gotoid(l:onde)
+  call s:lstf_follow_scroll()
+  call s:lstf_draw_frame()
+  call win_gotoid(l:nova)
+  call s:lstf_follow_scroll()
+  call s:lstf_draw_frame()
+endfunction
+
+function! LstfRefresh() abort
+  let [l:err, l:out] = s:lstf_live('reload')
+  if l:err == 0
+    call s:lstf_show_buffer(l:out)
+    redraw
+    return
+  endif
+  silent! edit!
+  call s:lstf_after_reload()
+  let b:lstf_notice = 'Lista atualizada'
+  redrawstatus
+endfunction
+
+function! s:lstf_format_size(bytes) abort
+  if a:bytes < 0
+    return '-'
+  elseif a:bytes < 1024
+    return string(a:bytes) . 'B'
+  elseif a:bytes < 1048576
+    return printf('%.1fK', a:bytes / 1024.0)
+  elseif a:bytes < 1073741824
+    return printf('%.1fM', a:bytes / 1048576.0)
+  else
+    return printf('%.1fG', a:bytes / 1073741824.0)
+  endif
+endfunction
+
+" Sem isto o Vim so enxerga o lado cterm e as cores em hex ficam
+" decorativas. O servidor, que nao anuncia truecolor, segue no cterm.
+if has('termguicolors') && !has('gui_running') && ($COLORTERM ==# 'truecolor' || $COLORTERM ==# '24bit')
+  set termguicolors
+endif
+function! s:lstf_apply_colors() abort
+  if &background ==# 'light'
+    highlight LstfStatusMode cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+    highlight LstfStatusModeNormal cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+    highlight LstfStatusModeEdit cterm=bold ctermfg=0 ctermbg=3 gui=bold guifg=#202020 guibg=#df8e1d
+    highlight LstfStatusModeVisual cterm=bold ctermfg=15 ctermbg=5 gui=bold guifg=#ffffff guibg=#8839ef
+    highlight LstfStatusInfo ctermfg=0 ctermbg=NONE guifg=#4c4f69 guibg=NONE
+    highlight LstfStatusHelp cterm=bold ctermfg=15 ctermbg=4 gui=bold guifg=#ffffff guibg=#1e66f5
+    highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=3 gui=bold guifg=#202020 guibg=#df8e1d
+    highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#d20f39
+    highlight LstfStatusSuggestion cterm=bold ctermfg=15 ctermbg=2 gui=bold guifg=#ffffff guibg=#40a02b
+    highlight LstfTitles cterm=bold ctermfg=0 ctermbg=254 gui=bold guifg=#4c4f69 guibg=#dce0e8
+    highlight LstfFrame ctermfg=246 guifg=#8c8fa1 guibg=NONE
+    highlight LstfPath cterm=bold ctermfg=166 gui=bold guifg=#bc5215 guibg=NONE
+    highlight LstfTitlesSep cterm=NONE ctermfg=248 ctermbg=254 gui=NONE guifg=#9ca0b0 guibg=#dce0e8
+    highlight LstfSep ctermfg=250 guifg=#bcc0cc guibg=NONE
+    highlight LstfPopup ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
+    highlight LstfPopupBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+    highlight PopupSelected cterm=NONE ctermfg=252 ctermbg=240 gui=NONE guifg=#cdd6f4 guibg=#45475a
+    highlight LstfConfirm ctermfg=252 ctermbg=236 guifg=#cdd6f4 guibg=#2a2b3c
+    highlight LstfConfirmBorder ctermfg=245 ctermbg=236 guifg=#6c7086 guibg=#2a2b3c
+    highlight LstfConfirmRemove cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
+    highlight LstfConfirmYes cterm=bold ctermfg=10 ctermbg=236 gui=bold guifg=#a6e3a1 guibg=#2a2b3c
+    highlight LstfConfirmNo cterm=bold ctermfg=9 ctermbg=236 gui=bold guifg=#f38ba8 guibg=#2a2b3c
+    highlight CursorLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
+    highlight Visual cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
+    highlight LstfVisualLine cterm=NONE ctermbg=254 gui=NONE guibg=#ccd0da
+    highlight LstfFile ctermfg=0 guifg=#4c4f69
+    highlight LstfLinkCreate ctermfg=6 gui=italic guifg=#179299
+    highlight LstfArrow cterm=bold ctermfg=6 gui=bold guifg=#179299
+    highlight LstfCollision cterm=bold,underline ctermfg=1 gui=bold,underline guifg=#d20f39
+    highlight LstfPredict cterm=italic ctermfg=1 gui=italic guifg=#d20f39
+    highlight LstfDateRecent cterm=NONE ctermfg=130 gui=NONE guifg=#df8e1d
+    highlight LstfDateDay cterm=NONE ctermfg=28 gui=NONE guifg=#40a02b
+{{ICON_HIGHLIGHTS_LIGHT}}
+  else
+    highlight LstfStatusMode cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+    highlight LstfStatusModeNormal cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+    highlight LstfStatusModeEdit cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
+    highlight LstfStatusModeVisual cterm=bold ctermfg=0 ctermbg=13 gui=bold guifg=#1e1e2e guibg=#cba6f7
+    highlight LstfStatusInfo ctermfg=7 ctermbg=NONE guifg=#cdd6f4 guibg=NONE
+    highlight LstfStatusHelp cterm=bold ctermfg=0 ctermbg=12 gui=bold guifg=#1e1e2e guibg=#89b4fa
+    highlight LstfStatusNotice cterm=bold ctermfg=0 ctermbg=11 gui=bold guifg=#1e1e2e guibg=#f9e2af
+    highlight LstfStatusCollision cterm=bold ctermfg=15 ctermbg=1 gui=bold guifg=#ffffff guibg=#c94f6d
+    highlight LstfStatusSuggestion cterm=bold ctermfg=0 ctermbg=10 gui=bold guifg=#1e1e2e guibg=#a6e3a1
+    highlight LstfTitles cterm=bold ctermfg=15 ctermbg=236 gui=bold guifg=#cdd6f4 guibg=#2a2b3c
+    highlight LstfFrame ctermfg=245 guifg=#6c7086 guibg=NONE
+    highlight LstfPath cterm=bold ctermfg=208 gui=bold guifg=#fab387 guibg=NONE
+    highlight LstfTitlesSep cterm=NONE ctermfg=245 ctermbg=236 gui=NONE guifg=#6c7086 guibg=#2a2b3c
+    highlight LstfSep ctermfg=245 guifg=#6c7086 guibg=NONE
+    highlight LstfPopup ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
+    highlight LstfPopupBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+    highlight PopupSelected cterm=NONE ctermfg=0 ctermbg=252 gui=NONE guifg=#4c4f69 guibg=#ccd0da
+    highlight LstfConfirm ctermfg=0 ctermbg=254 guifg=#4c4f69 guibg=#dce0e8
+    highlight LstfConfirmBorder ctermfg=246 ctermbg=254 guifg=#8c8fa1 guibg=#dce0e8
+    highlight LstfConfirmRemove cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
+    highlight LstfConfirmYes cterm=bold ctermfg=2 ctermbg=254 gui=bold guifg=#40a02b guibg=#dce0e8
+    highlight LstfConfirmNo cterm=bold ctermfg=1 ctermbg=254 gui=bold guifg=#d20f39 guibg=#dce0e8
+    highlight CursorLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+    highlight Visual cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+    highlight LstfVisualLine cterm=NONE ctermbg=240 gui=NONE guibg=#45475a
+    highlight LstfFile ctermfg=252 guifg=#c0caf5
+    highlight LstfLinkCreate ctermfg=14 gui=italic guifg=#56b6c2
+    highlight LstfArrow cterm=bold ctermfg=14 gui=bold guifg=#56b6c2
+    highlight LstfCollision cterm=bold,underline ctermfg=9 gui=bold,underline guifg=#f38ba8
+    highlight LstfPredict cterm=italic ctermfg=9 gui=italic guifg=#f38ba8
+    highlight LstfDateRecent cterm=NONE ctermfg=11 gui=NONE guifg=#f9e2af
+    highlight LstfDateDay cterm=NONE ctermfg=10 gui=NONE guifg=#a6d189
+{{ICON_HIGHLIGHTS_DARK}}
+  endif
+  if exists('s:lstf_header_win') && win_id2win(s:lstf_header_win) > 0
+    call s:lstf_draw_frame()
+  endif
+endfunction
+call s:lstf_apply_colors()
+augroup lstf_colors
+  autocmd!
+  autocmd OptionSet background call s:lstf_apply_colors()
+augroup END
+set laststatus=2
+set noshowmode showtabline=0
+set shortmess+=F
+set noruler noshowcmd
+
+sign define LstfVisualLineSign linehl=LstfVisualLine
+function! s:lstf_clear_visual_lines() abort
+  execute 'sign unplace * group=lstf_visual buffer=' . bufnr('%')
+endfunction
+
+function! s:lstf_highlight_visual_lines() abort
+  call s:lstf_clear_visual_lines()
+  let l:mode = mode()
+  if l:mode !=# 'v' && l:mode !=# 'V' && l:mode !=# "\\<C-V>"
+    return
+  endif
+  let l:first = min([line('.'), line('v')])
+  let l:last = max([line('.'), line('v')])
+  for l:lnum in range(l:first, l:last)
+    execute 'sign place ' . l:lnum . ' group=lstf_visual line=' . l:lnum . ' name=LstfVisualLineSign buffer=' . bufnr('%')
+  endfor
+endfunction
+
+" `:edit!` preserva opcoes e mapeamentos locais, mas Vim e Neovim
+" apagam os grupos de sintaxe do buffer relido. Centralizar toda a
+" aparencia local aqui deixa a abertura e cada recarga identicas.
+function! s:lstf_configure_buffer() abort
+  call s:lstf_clear_visual_lines()
+  setlocal statusline=%!LstfStatusline()
+  if exists('+fillchars')
+    execute "setlocal fillchars+=eob:\\ "
+  endif
+  setlocal nonumber norelativenumber nowrap sidescrolloff=8 cursorline cursorlineopt=line
+  setlocal signcolumn=no foldcolumn=0 colorcolumn=
+  setlocal conceallevel=2 concealcursor=nvic
+  silent! syntax clear LstfInternalId LstfSep LstfFile LstfLinkCreate LstfArrow LstfDateRecent LstfDateDay
+  syntax match LstfInternalId /^\/\d\+\s\+/ conceal
+  syntax match LstfSep /│/ contained
+  syntax match LstfArrow / -> \| => / contained
+  syntax match LstfLinkCreate /^[^\/:\#].*\%( -> \| => \).*$/ contains=LstfArrow
+  " O sequencial e metadado interno: oculta-lo tambem na linha do
+  " cursor evita deslocar as colunas, inclusive ao voltar do :find.
+  " A linha inteira e um item, com o ID e os divisores contidos
+  " nela -- e neutra por design: o tipo se ve no icone colorido,
+  " pintado pelas regras geradas da tabela Zig logo abaixo. Ancorar
+  " nos cinco divisores, e nao em contagem de caracteres, e o que
+  " deixa o nome com `│` dentro ainda cair no grupo certo.
+  syntax match LstfFile /^\/\d\+\s\+[-dl?]\%( │ [^│]*\)\{0,4} │ .*$/ contains=LstfInternalId,LstfSep
+{{ICON_SYNTAX}}
+  " Destaque de data para recentes e hoje (arquivos antigos usam a cor padrao da linha):
+  let l:all = 'LstfFile'
+  let l:now = localtime()
+  let l:today = strftime('%Y-%m-%d', l:now)
+  let l:cur_hour = strftime('%Y-%m-%d %H:', l:now)
+  let l:prev_hour = strftime('%Y-%m-%d %H:', l:now - 3600)
+  execute 'syntax match LstfDateDay /' . l:today . ' \d\{2}:\d\{2}/ containedin=' . l:all
+  execute 'syntax match LstfDateRecent /' . l:cur_hour . '\d\{2}/ containedin=' . l:all
+  execute 'syntax match LstfDateRecent /' . l:prev_hour . '\d\{2}/ containedin=' . l:all
+endfunction
+" Autocmds locais de um buffer de listagem. `autocmd! * <buffer>`
+" limpa so os deste buffer, entao chamar de novo em cada buffer
+" aberto e seguro -- e necessario, porque `:edit!` de um arquivo
+" novo nao herda nada do anterior.
+function! s:lstf_buffer_autocmds() abort
+  call s:lstf_configure_buffer()
+  augroup lstf_buffer
+    autocmd! * <buffer>
+    autocmd BufWritePre <buffer> call s:lstf_prepare_save()
+    autocmd TextChanged <buffer> call s:lstf_restore_header()
+    autocmd CursorMoved <buffer> call s:lstf_keep_cursor_below_header()
+    autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_keep_cursor_in_name()
+    autocmd CursorMoved,CursorMovedI <buffer> call s:lstf_follow_scroll()
+    autocmd CursorMoved <buffer> call s:lstf_highlight_visual_lines()
+    autocmd WinEnter,BufEnter,VimResized <buffer> call s:lstf_follow_scroll()
+    autocmd TextChanged,InsertLeave <buffer> call s:lstf_restore_columns()
+    autocmd InsertLeave <buffer> call s:lstf_restore_header()
+    autocmd TextChanged <buffer> call s:lstf_collisions_schedule()
+    autocmd InsertLeave <buffer> call s:lstf_collisions_if_changed()
+    autocmd WinEnter <buffer> call s:lstf_collisions_if_changed()
+    " Salvar alteracoes comuns aplica pela sessao viva; diretivas e o
+    " fallback fecham todas as janelas da instancia controlada.
+    autocmd BufWritePost <buffer> call s:lstf_after_save()
+  augroup END
+endfunction
+augroup lstf_statusline
+  autocmd!
+  autocmd ModeChanged * redrawstatus | if exists('b:lstf_header') | call s:lstf_highlight_visual_lines() | endif
+  autocmd InsertEnter,InsertLeave * redrawstatus
+  " Abrir ou fechar um split estreita a janela da lista sem passar por
+  " ela: sem isto a barra de topo so voltaria a sincronizar no proximo
+  " Tab. Vim antigo nao tem o evento; ai sincroniza no Tab.
+  if exists('##WinScrolled')
+    autocmd WinScrolled * if exists('b:lstf_id_width') | call s:lstf_follow_scroll() | endif
+  endif
+  " A moldura e texto de buffer: nao se reajusta sozinha na largura nova.
+  autocmd VimResized * call s:lstf_draw_frame()
+augroup END
+" Recarga da sessao viva: o pai regravou buffer e estado; aqui so
+" falta sincronizar a tela com o que mudou -- sem reabrir nada.
+function! s:lstf_restore_cursor() abort
+  let l:start = s:lstf_content_start()
+  let l:landed = 0
+  if filereadable($LST_F_STATE . '/cursor_name')
+    " Volta de subida: pousa na entrada com o nome do diretorio de
+    " onde se veio. Nome, nao offset: sobrevive a :sort. One-shot.
+    let l:name = get(readfile($LST_F_STATE . '/cursor_name'), 0, '')
+    call delete($LST_F_STATE . '/cursor_name')
+    if !empty(l:name) && l:start > 0
+      for l:lnum in range(l:start, line('$'))
+        let l:p = s:lstf_entry_path(getline(l:lnum))
+        if substitute(l:p, '/$', '', '') ==# l:name
+          call cursor(l:lnum, 1)
+          let l:landed = 1
+          break
+        endif
+      endfor
+    endif
+  endif
+  if !l:landed
+    if filereadable($LST_F_STATE . '/cursor')
+      let l:offset = get(readfile($LST_F_STATE . '/cursor'), 0, '0')
+      if l:start > 0
+        execute 'call cursor(' . (l:start + l:offset) . ', 1)'
+      endif
+    elseif l:start > 0
+      call cursor(l:start, 1)
+    endif
+  endif
+endfunction
+
+function! s:lstf_after_reload() abort
+  call s:lstf_configure_buffer()
+  if filereadable($LST_F_STATE . '/theme')
+    let l:saved_bg = get(readfile($LST_F_STATE . '/theme'), 0, '')
+    if !empty(l:saved_bg) && l:saved_bg !=# &background
+      let &background = l:saved_bg
+      call s:lstf_apply_colors()
+    endif
+  endif
+  " Estado deste buffer, lido dos sidecars que o pai gravou ao lado do
+  " arquivo de conteudo. Por buffer, e nao do estado global: com duas
+  " janelas abertas o "corrente" do pai e o de quem pediu por ultimo,
+  " que nao e necessariamente esta janela.
+  let l:side_dir = s:lstf_sidecar('.dir')
+  if !empty(l:side_dir)
+    let b:lstf_dir = get(readfile(l:side_dir), 0, '')
+  elseif filereadable($LST_F_STATE . '/base')
+    let b:lstf_dir = get(readfile($LST_F_STATE . '/base'), 0, '')
+  endif
+  if exists('b:lstf_dir') && !empty(b:lstf_dir)
+    " `lcd`, nao `cd`: o cwd e da janela, para que `gf` e a completude
+    " de `:e` sigam valendo por pasta em cada uma das duas janelas.
+    silent! execute 'lcd ' . fnameescape(b:lstf_dir)
+  endif
+  let l:side_loc = s:lstf_sidecar('.location')
+  if !empty(l:side_loc)
+    let b:lstf_location = get(readfile(l:side_loc), 0, '')
+  elseif filereadable($LST_F_STATE . '/location')
+    let b:lstf_location = get(readfile($LST_F_STATE . '/location'), 0, '')
+  endif
+  let l:side_hdr = s:lstf_sidecar('.header')
+  if empty(l:side_hdr) && filereadable($LST_F_STATE . '/header')
+    let l:side_hdr = $LST_F_STATE . '/header'
+  endif
+  if !empty(l:side_hdr)
+    let l:pendente = &modified
+    let b:lstf_header = readfile(l:side_hdr)
+    call s:lstf_restore_header()
+    " Cabecalho ocupando o buffer todo: sem uma linha abaixo dele nao
+    " havia onde pousar o cursor para digitar o primeiro nome.
+    if line('$') <= len(b:lstf_header) | call append('$', '') | endif
+    if !l:pendente | setlocal nomodified | endif
+  endif
+  " O aviso e do buffer, nao da sessao: com duas janelas abertas o
+  " arquivo global e o de quem pediu por ultimo, e o recado de uma
+  " apareceria na barra da outra. O sidecar vem ao lado do conteudo.
+  let l:side_note = s:lstf_sidecar('.notice')
+  if !empty(l:side_note)
+    let b:lstf_notice = get(readfile(l:side_note), 0, '')
+  else
+    let b:lstf_notice = filereadable($LST_F_STATE . '/notice')
+      \ ? get(readfile($LST_F_STATE . '/notice'), 0, '') : ''
+  endif
+  call s:lstf_capture_prefixes()
+  call s:lstf_update_collisions()
+  " Voltar a um buffer que tem edicao pendente nao pode zerar a baseline:
+  " `b:lstf_entry_lines` e `nomodified` sao o que o `:w` compara, e regrava-los
+  " aqui fazia a linha continuar sumida na tela e o `:w` nao ver mudanca --
+  " um `dd` esquecido em silencio, e um paste depois disso virando copia.
+  if &modified
+    call s:lstf_follow_scroll()
+    call s:lstf_draw_frame()
+    redrawstatus!
+    return
+  endif
+  if exists('s:lstf_sort_mode')
+    call LstfSort(1, line('$'), s:lstf_sort_mode, s:lstf_sort_reverse)
+  endif
+  let b:lstf_entry_lines = s:lstf_entry_lines()
+  call s:lstf_follow_scroll()
+  call s:lstf_restore_cursor()
+  call s:lstf_draw_frame()
+  setlocal nomodified
+  redrawstatus!
+endfunction
+
+" A ajuda pode manter o foco em um popup ou painel auxiliar. Como
+" esta instancia do Vim e exclusiva do lst-f, F1 e F2 sao globais
+" para nunca deixar o Vim abrir :help em um split e alterar a tela.
+nnoremap <silent> <F1> :call LstfHelp()<CR>
+nnoremap <silent> <F2> :call LstfToggleTheme()<CR>
+nnoremap <silent> gq :call LstfQuitPanel()<CR>
+if s:lstf_keymap_classic
+  nnoremap <silent> q :call LstfQuitPanel()<CR>
+endif
+nnoremap <silent> ZZ :call LstfQuit()<CR>
+
+" Tudo que e local a um buffer de listagem: opcoes, sintaxe,
+" autocmds, mapas, comandos e abreviaturas. Uma funcao so, chamada
+" na abertura e a cada buffer novo que o Vim ler -- e o que faz
+" `:vsplit` + navegar abrir outro diretorio com as mesmas teclas,
+" sem um "painel de destino" de categoria separada.
+" Expansao de `:` no cmdline: transforma o que o usuario digitou no
+" comando-local correspondente. Global porque o cmdline nao e
+" do buffer; as funcoes abaixo idem, e por isso vivem fora de
+" s:lstf_setup_buffer() -- Vim nao aceita definicao aninhada.
+
+" Busca e troca so no nome. A grade tem largura fixa por buffer e o
+" conceal nao muda a coluna virtual, entao `\%>Nv` com N = largura do
+" prefixo exclui ID e colunas em toda linha de entrada. `^` no inicio
+" vira o comeco do nome. Padrao vazio repete o ultimo, que ja veio
+" restrito; padrao que comeca por coluna explicita (`\%>0v`, `\%5v`)
+" e escolha de quem digitou -- e o escape para buscar na linha inteira.
+function! s:lstf_name_pattern(pat) abort
+  if empty(a:pat) || a:pat =~# '^\\%[<>]\=\d\+[vc]' | return a:pat | endif
+  let l:prefix = values(get(b:, 'lstf_prefix', {}))
+  if empty(l:prefix) | return a:pat | endif
+  let l:width = strdisplaywidth(l:prefix[0])
+  if a:pat[0] ==# '^'
+    return '\%' . (l:width + 1) . 'v' . a:pat[1:]
+  endif
+  return '\%>' . l:width . 'v' . a:pat
+endfunction
+
+" `[range]s/pad/`, `[range]g/pad/`, `v/pad/`: o padrao entra logo
+" depois do delimitador. So o primeiro comando da linha -- o `s` de
+" dentro de um `:g` tem as colunas repostas pelo `TextChanged`.
+function! s:lstf_name_cmd(cmd) abort
+  let l:m = matchlist(a:cmd, '^\(\%([%.$,;0-9+\- \t]\|''[a-z<>]\)*\)\(s\%[ubstitute]\|g\%[lobal]!\=\|v\%[global]\)\s*\([^[:alnum:][:space:]\\"|]\)\(.*\)$')
+  if empty(l:m) | return '' | endif
+  let l:delim = l:m[3]
+  let l:rest = l:m[4]
+  let l:end = match(l:rest, '\%(^\|[^\\]\)\%(\\\\\)*\zs\V' . escape(l:delim, '\'))
+  let l:pat = l:end < 0 ? l:rest : strpart(l:rest, 0, l:end)
+  let l:new = s:lstf_name_pattern(l:pat)
+  if l:new ==# l:pat | return '' | endif
+  return l:m[1] . l:m[2] . l:delim . l:new . strpart(l:rest, len(l:pat))
+endfunction
+
+" Ordena as linhas existentes: IDs e edicoes pendentes viajam juntos.
+function! s:lstf_sort_compare(mode, reverse, a, b) abort
+  if a:a.dir != a:b.dir | return a:b.dir - a:a.dir | endif
+  let l:cmp = 0
+  if a:mode ==# 'size' && !a:a.dir
+    let l:cmp = a:a.size == a:b.size ? 0 : (a:a.size < a:b.size ? -1 : 1)
+  elseif a:mode ==# 'time'
+    let l:cmp = a:a.time == a:b.time ? 0 : (a:a.time < a:b.time ? -1 : 1)
+  elseif a:mode ==# 'ext' && !a:a.dir
+    let l:ae = tolower(fnamemodify(a:a.name, ':e'))
+    let l:be = tolower(fnamemodify(a:b.name, ':e'))
+    let l:cmp = l:ae ==# l:be ? 0 : (l:ae <# l:be ? -1 : 1)
+  endif
+  if l:cmp == 0
+    let l:an = tolower(a:a.name)
+    let l:bn = tolower(a:b.name)
+    let l:cmp = l:an ==# l:bn ? (a:a.name ==# a:b.name ? 0 : (a:a.name <# a:b.name ? -1 : 1)) : (l:an <# l:bn ? -1 : 1)
+  endif
+  return a:reverse ? -l:cmp : l:cmp
+endfunction
+
+function! LstfSort(first, last, arg, reverse) abort
+  let l:mode = trim(a:arg)
+  if empty(l:mode) | let l:mode = 'name' | endif
+  if l:mode ==# 'modified' | let l:mode = 'time' | endif
+  if index(['name', 'size', 'time', 'ext'], l:mode) < 0
+    echoerr 'Use :sort [name|size|time|modified|ext] ou :sort! [...]'
+    return
+  endif
+  let l:lines = getline(a:first, a:last)
+  let l:items = []
+  let l:slots = []
+  let l:header = len(get(b:, 'lstf_header', []))
+  for l:i in range(len(l:lines))
+    let l:line = l:lines[l:i]
+    if a:first + l:i <= l:header || l:line =~# '^[:#]' || l:line =~# '^\s*$' | continue | endif
+    let l:name = s:lstf_entry_path(l:line)
+    let l:id = matchstr(l:line, '^/\d\+')
+    let l:original = get(get(b:, 'lstf_original_path', {}), l:id, '')
+    let l:dir = empty(l:original) ? l:name =~# '/$' : l:original =~# '/$'
+    " O caminho original sobrevive a renomeios ainda nao aplicados.
+    let l:full = !empty(l:original) ? (s:lstf_dir() . '/' . l:original) : ''
+    let l:size = l:mode ==# 'size' && !l:dir && !empty(l:full) ? getfsize(l:full) : -1
+    let l:mtime = l:mode ==# 'time' && !empty(l:full) ? getftime(l:full) : -1
+    call add(l:items, {'line': l:line, 'name': l:name, 'dir': l:dir, 'size': l:size, 'time': l:mtime})
+    call add(l:slots, l:i)
+  endfor
+  call sort(l:items, function('s:lstf_sort_compare', [l:mode, a:reverse]))
+  for l:i in range(len(l:slots))
+    let l:lines[l:slots[l:i]] = l:items[l:i].line
+  endfor
+  let l:view = winsaveview()
+  let l:modified = &l:modified
+  if l:lines !=# getline(a:first, a:last)
+    call setline(a:first, l:lines)
+  endif
+  if !l:modified
+    setlocal nomodified
+    let b:lstf_entry_lines = s:lstf_entry_lines()
+  endif
+  call winrestview(l:view)
+  call s:lstf_keep_cursor_in_name()
+  if a:first == 1 && a:last == line('$')
+    let s:lstf_sort_mode = l:mode
+    let s:lstf_sort_reverse = a:reverse
+  endif
+  redrawstatus!
+endfunction
+
+" Apenas nossas formas passam por Sort; flags e padroes nativos ficam livres.
+function! s:lstf_sort_cmd(cmd) abort
+  let l:m = matchlist(a:cmd, '^\(\%([%.$,;0-9+\- \t]\|''[a-z<>]\)*\)sort\(!\=\)\s*\(name\|size\|time\|modified\|ext\)\=\s*$')
+  return empty(l:m) ? '' : l:m[1] . 'Sort' . l:m[2] . ' ' . l:m[3]
+endfunction
+
+function! s:lstf_cmd_cr() abort
+  if getcmdtype() =~# '^[/?]$' && exists('b:lstf_prefix')
+    let l:new = s:lstf_name_pattern(getcmdline())
+    if l:new !=# getcmdline() | return "\x15" . l:new . "\r" | endif
+  endif
+  if getcmdtype() ==# ':'
+    let l:cmd = substitute(getcmdline(), '^\s*', '', '')
+    if exists('b:lstf_prefix')
+      let l:new = s:lstf_sort_cmd(l:cmd)
+      " O cursor pode estar no meio ao editar um comando do historico.
+      " C-u so apaga ate o cursor; va ao fim para substituir tudo.
+      if !empty(l:new) | return "\x05\x15" . l:new . "\r" | endif
+      let l:new = s:lstf_name_cmd(l:cmd)
+      if !empty(l:new) | return "\x15" . l:new . "\r" | endif
+    endif
+    if l:cmd =~# '^cd\%(\s.*\|\)$'
+      return "\x15Cd" . l:cmd[2:] . "\r"
+    elseif l:cmd =~# '^home$'
+      return "\x15Home\r"
+    elseif l:cmd =~# '^back$'
+      return "\x15Back\r"
+    elseif l:cmd =~# '^forward$'
+      return "\x15Forward\r"
+    elseif l:cmd =~# '^hidden$'
+      return "\x15Hidden\r"
+    elseif l:cmd =~# '^theme\%(\s.*\|\)$'
+      return "\x15Theme" . l:cmd[5:] . "\r"
+    elseif l:cmd ==# 'light'
+      return "\x15Light\r"
+    elseif l:cmd ==# 'dark'
+      return "\x15Dark\r"
+    elseif l:cmd =~# '^find\%(\s.*\|\)$'
+      return "\x15Find" . l:cmd[4:] . "\r"
+    elseif l:cmd =~# '^\%(sh\|shell\|terminal\|term\)\%(\s.*\|\)$'
+      return "\x15Sh" . l:cmd[match(l:cmd, '\s\|\$')..] . "\r"
+    elseif l:cmd =~# '^filter!\=$'
+      return "\x15Filter\r"
+    elseif l:cmd =~# '^filter\s\+.*$'
+      return "\x15Filter" . l:cmd[6:] . "\r"
+    elseif l:cmd ==# 'compact' || l:cmd ==# 'columns'
+      return "\x15Compact\r"
+    elseif l:cmd =~# '^\%(yank\|relpath\)\%(\s.*\|\)$' || (s:lstf_keymap_classic && l:cmd =~# '^copy\%(\s.*\|\)$')
+      return "\x15Yank\r"
+    elseif l:cmd =~# '^\%(abspath\|realpath\)\%(\s.*\|\)$'
+      return "\x15YankAbs\r"
+    elseif l:cmd ==# 'trash' || l:cmd ==# 'lixeira'
+      return "\x15call LstfTrash()\r"
+    elseif l:cmd ==# 'bookmark'
+      return "\x15Bookmark\r"
+    elseif l:cmd ==# 'bookmarks'
+      return "\x15Bookmarks\r"
+    elseif l:cmd ==# 'q' || l:cmd ==# 'quit'
+      return "\x15call LstfQuit()\r"
+    elseif l:cmd =~# '^\%(bd\%[elete]\|bw\%[ipeout]\|bun\%[load]\)!\=\%(\s.*\|\)$'
+      return "\x15call LstfClosePanel()\r"
+    elseif l:cmd =~# '^wa\%[ll]!\=$'
+      return "\x15call LstfWriteAll(0)\r"
+    elseif l:cmd =~# '^\%(wq\%[all]\|x\%[it]\|xa\%[ll]\|exi\%[t]\)!\=$'
+      return "\x15call LstfWriteAll(1)\r"
+    endif
+  endif
+  return "\r"
+endfunction
+cnoremap <expr> <CR> <SID>lstf_cmd_cr()
+
+function! s:lstf_setup_buffer() abort
+  call s:lstf_buffer_autocmds()
+  " Atalhos padrao (alinhados ao Vim/oil.nvim): liberam ., r, <C-r>, b, m, q,
+  " ~, <C-a>, ?, ya, yl e :copy para edicao em lote nativa do Vim.
+  " Defina LST_F_KEYMAP=classic para manter os atalhos antigos.
+  nnoremap <buffer> <silent> g? :call LstfHelp()<CR>
+  nnoremap <buffer> <silent> cob :call LstfToggleTheme()<CR>
+  nnoremap <buffer> <silent> <CR> :call LstfOpen()<CR>
+  nnoremap <buffer> <silent> g. :call LstfToggleHidden()<CR>
+  nnoremap <buffer> <silent> - :call LstfUp()<CR>
+  nnoremap <buffer> <silent> gh :call LstfHome()<CR>
+  nnoremap <buffer> <silent> <lt> :call LstfBack()<CR>
+  nnoremap <buffer> <silent> > :call LstfForward()<CR>
+  nnoremap <buffer> <silent> <Bslash> :call LstfTree()<CR>
+  nnoremap <buffer> <silent> <F4> :call LstfShell()<CR>
+  nnoremap <buffer> <silent> <C-p> :call LstfFind()<CR>
+  nnoremap <buffer> <silent> gm :call LstfBookmark()<CR>
+  nnoremap <buffer> <silent> gb :call LstfBookmarks()<CR>
+  nnoremap <buffer> <silent> <C-l> :call LstfRefresh()<CR>
+  nnoremap <buffer> <silent> <C-s> :call LstfSplit()<CR>
+  nnoremap <buffer> <silent> <Tab> :<C-u>wincmd w<CR>
+  nnoremap <buffer> <silent> K :call LstfPreview()<CR>
+  nnoremap <buffer> <silent> gp :call LstfPreview()<CR>
+  nnoremap <buffer> <silent> gc :call LstfToggleCompact()<CR>
+  nnoremap <buffer> <silent> yr :call LstfYank(0)<CR>
+  nnoremap <buffer> <silent> yp :call LstfYank(0)<CR>
+  nnoremap <buffer> <silent> gyr :call LstfYank(0)<CR>
+  nnoremap <buffer> <silent> gyp :call LstfYank(0)<CR>
+  nnoremap <buffer> <silent> gya :call LstfYank(1)<CR>
+  nnoremap <buffer> <silent> yA :call LstfYank(1)<CR>
+  nnoremap <buffer> <silent> gyl :call LstfYankLink()<CR>
+  xnoremap <buffer> <silent> yr :call <SID>lstf_yank_visual(0)<CR>
+  xnoremap <buffer> <silent> yp :call <SID>lstf_yank_visual(0)<CR>
+  xnoremap <buffer> <silent> gyr :call <SID>lstf_yank_visual(0)<CR>
+  xnoremap <buffer> <silent> gyp :call <SID>lstf_yank_visual(0)<CR>
+  xnoremap <buffer> <silent> gya :call <SID>lstf_yank_visual(1)<CR>
+  xnoremap <buffer> <silent> yA :call <SID>lstf_yank_visual(1)<CR>
+  xnoremap <buffer> <silent> gyl :call <SID>lstf_yank_link_visual()<CR>
+  nnoremap <buffer> <silent> gq :call LstfQuitPanel()<CR>
+  nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
+  if s:lstf_keymap_classic
+    nnoremap <buffer> <silent> ? :call LstfHelp()<CR>
+    nnoremap <buffer> <silent> . :call LstfToggleHidden()<CR>
+    nnoremap <buffer> <silent> ~ :call LstfHome()<CR>
+    nnoremap <buffer> <silent> m :call LstfBookmark()<CR>
+    nnoremap <buffer> <silent> b :call LstfBookmarks()<CR>
+    nnoremap <buffer> <silent> <C-a> ggVG
+    nnoremap <buffer> <silent> r :call LstfRefresh()<CR>
+    nnoremap <buffer> <silent> <C-r> :call LstfRefresh()<CR>
+    nnoremap <buffer> <silent> ya :call LstfYank(1)<CR>
+    nnoremap <buffer> <silent> yl :call LstfYankLink()<CR>
+    xnoremap <buffer> <silent> ya :call <SID>lstf_yank_visual(1)<CR>
+    xnoremap <buffer> <silent> yl :call <SID>lstf_yank_link_visual()<CR>
+    nnoremap <buffer> <silent> q :call LstfQuitPanel()<CR>
+  endif
+  command! -buffer -nargs=? -bang Filter call LstfFilter(<bang>0 ? '' : <q-args>)
+  command! -buffer -nargs=0 Compact call LstfToggleCompact()
+  command! -buffer -nargs=0 Preview call LstfPreview()
+  command! -buffer -nargs=? -complete=dir Cd call LstfCd(<q-args>)
+  command! -buffer -nargs=? -complete=dir CD call LstfCd(<q-args>)
+  cnoreabbrev <expr> <buffer> cd getcmdtype() ==# ':' && getcmdline() =~# '^cd\%(\s.*\|\)$' ? 'Cd' : 'cd'
+  command! -buffer -nargs=0 Home call LstfHome()
+  cnoreabbrev <expr> <buffer> home getcmdtype() ==# ':' && getcmdline() ==# 'home' ? 'call LstfHome()' : 'home'
+  command! -buffer -nargs=0 Trash call LstfTrash()
+  cnoreabbrev <expr> <buffer> trash getcmdtype() ==# ':' && getcmdline() ==# 'trash' ? 'Trash' : 'trash'
+  command! -buffer -nargs=0 Bookmark call LstfBookmark()
+  command! -buffer -nargs=0 Bookmarks call LstfBookmarks()
+  cnoreabbrev <expr> <buffer> bookmark getcmdtype() ==# ':' && getcmdline() ==# 'bookmark' ? 'Bookmark' : 'bookmark'
+  cnoreabbrev <expr> <buffer> bookmarks getcmdtype() ==# ':' && getcmdline() ==# 'bookmarks' ? 'Bookmarks' : 'bookmarks'
+  command! -buffer -nargs=0 Back call LstfBack()
+  cnoreabbrev <expr> <buffer> back getcmdtype() ==# ':' && getcmdline() ==# 'back' ? 'Back' : 'back'
+  command! -buffer -nargs=0 Forward call LstfForward()
+  cnoreabbrev <expr> <buffer> forward getcmdtype() ==# ':' && getcmdline() ==# 'forward' ? 'Forward' : 'forward'
+  command! -buffer -nargs=0 Hidden call LstfToggleHidden()
+  cnoreabbrev <expr> <buffer> hidden getcmdtype() ==# ':' && getcmdline() ==# 'hidden' ? 'Hidden' : 'hidden'
+  command! -buffer -nargs=? Theme call LstfToggleTheme(<q-args>)
+  command! -buffer -nargs=0 Light call LstfToggleTheme('light')
+  command! -buffer -nargs=0 Dark call LstfToggleTheme('dark')
+  cnoreabbrev <expr> <buffer> theme getcmdtype() ==# ':' && getcmdline() =~# '^theme\%(\s.*\|\)$' ? 'Theme' : 'theme'
+  cnoreabbrev <expr> <buffer> light getcmdtype() ==# ':' && getcmdline() ==# 'light' ? 'Light' : 'light'
+  cnoreabbrev <expr> <buffer> dark getcmdtype() ==# ':' && getcmdline() ==# 'dark' ? 'Dark' : 'dark'
+  command! -buffer -range=% -bang -nargs=? Sort call LstfSort(<line1>, <line2>, <q-args>, <bang>0)
+  command! -buffer -nargs=? Find call s:lstf_cmd_find(<q-args>)
+  cnoreabbrev <expr> <buffer> find getcmdtype() ==# ':' && getcmdline() =~# '^find\%(\s.*\|\)$' ? 'Find' : 'find'
+  command! -buffer -nargs=? Sh call LstfShell(<q-args>)
+  command! -buffer -nargs=? Shell call LstfShell(<q-args>)
+  command! -buffer -nargs=? Terminal call LstfShell(<q-args>)
+  command! -buffer -nargs=? Term call LstfShell(<q-args>)
+  cnoreabbrev <expr> <buffer> sh getcmdtype() ==# ':' && getcmdline() =~# '^sh\%(\s.*\|\)$' ? 'Sh' : 'sh'
+  cnoreabbrev <expr> <buffer> shell getcmdtype() ==# ':' && getcmdline() =~# '^shell\%(\s.*\|\)$' ? 'Shell' : 'shell'
+  cnoreabbrev <expr> <buffer> terminal getcmdtype() ==# ':' && getcmdline() =~# '^terminal\%(\s.*\|\)$' ? 'Terminal' : 'terminal'
+  cnoreabbrev <expr> <buffer> term getcmdtype() ==# ':' && getcmdline() =~# '^term\%(\s.*\|\)$' ? 'Term' : 'term'
+  command! -buffer -nargs=0 Yank call LstfYank(0)
+  command! -buffer -nargs=0 YankRel call LstfYank(0)
+  command! -buffer -nargs=0 YankAbs call LstfYank(1)
+  command! -buffer -nargs=0 Copy call LstfYank(0)
+  cnoreabbrev <expr> <buffer> yank getcmdtype() ==# ':' && getcmdline() =~# '^yank\%(\s.*\|\)$' ? 'Yank' : 'yank'
+  cnoreabbrev <expr> <buffer> copy getcmdtype() ==# ':' && getcmdline() =~# '^copy\%(\s.*\|\)$' ? 'Copy' : 'copy'
+  cnoreabbrev <expr> <buffer> relpath getcmdtype() ==# ':' && getcmdline() =~# '^relpath\%(\s.*\|\)$' ? 'Yank' : 'relpath'
+  cnoreabbrev <expr> <buffer> abspath getcmdtype() ==# ':' && getcmdline() =~# '^abspath\%(\s.*\|\)$' ? 'YankAbs' : 'abspath'
+  cnoreabbrev <expr> <buffer> realpath getcmdtype() ==# ':' && getcmdline() =~# '^realpath\%(\s.*\|\)$' ? 'YankAbs' : 'realpath'
+  cnoreabbrev <expr> <buffer> q getcmdtype() ==# ':' && getcmdline() ==# 'q' ? 'call LstfQuit()' : 'q'
+  cnoreabbrev <expr> <buffer> quit getcmdtype() ==# ':' && getcmdline() ==# 'quit' ? 'call LstfQuit()' : 'quit'
+endfunction
+
+" Buffer de listagem que o Vim ler recebe o tratamento acima. O
+" arquivo inicial e lido antes do `-S`, entao este autocmd pega so
+" os seguintes: os que a navegacao viva abre ao trocar de pasta.
+function! s:lstf_open_buffer() abort
+  call s:lstf_setup_buffer()
+  call s:lstf_after_reload()
+endfunction
+
+augroup lstf_buffers
+  autocmd!
+  autocmd BufReadPost *.lstf let s:lstf_opened = 1 | call s:lstf_open_buffer()
+augroup END
+
+let s:lstf_opened = 0
+call s:lstf_open_buffer()
+" Por ultimo: abrir o cabecalho antes daqui faria os `setlocal` e os
+" mapeamentos `<buffer>` acima cairem no buffer errado, porque o
+" buffer corrente passaria a ser o da janela de topo.
+call s:lstf_open_header()
+redrawstatus | echo ''
+

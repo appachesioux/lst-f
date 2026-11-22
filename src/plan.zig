@@ -126,27 +126,27 @@ pub const Problem = union(enum) {
     pub fn describe(p: Problem, w: *std.Io.Writer) std.Io.Writer.Error!void {
         switch (p) {
             .create_empty_path => |v| try w.print("linha {d}: nome vazio", .{v.line}),
-            .create_absolute => |v| try w.print("linha {d}: caminho absoluto nao e aceito ({s})", .{ v.line, v.path }),
-            .create_escapes_base => |v| try w.print("linha {d}: caminho sai do diretorio-base ({s})", .{ v.line, v.path }),
+            .create_absolute => |v| try w.print("linha {d}: caminho absoluto não é aceito ({s})", .{ v.line, v.path }),
+            .create_escapes_base => |v| try w.print("linha {d}: caminho sai do diretório-base ({s})", .{ v.line, v.path }),
             .create_reserved => |v| try w.print("linha {d}: nome reservado pelo lst-f ({s})", .{ v.line, v.path }),
             .create_duplicate => |v| try w.print("linha {d}: duas linhas criam o mesmo caminho ({s})", .{ v.line, v.path }),
-            .create_occupied => |v| try w.print("linha {d}: {s} ja pertence a uma entrada da selecao", .{ v.line, v.path }),
+            .create_occupied => |v| try w.print("linha {d}: {s} já pertence a uma entrada da seleção", .{ v.line, v.path }),
             .create_over_removed => |v| try w.print(
-                "linha {d}: {s} pertence ao ID {d}, que esta sendo removido; remocoes acontecem por ultimo",
+                "linha {d}: {s} pertence ao ID {d}, que está sendo removido; remoções acontecem por último",
                 .{ v.line, v.path, v.id },
             ),
             .create_under_touched => |v| try w.print(
-                "linha {d}: {s} fica dentro do ID {d}, que esta sendo movido ou removido",
+                "linha {d}: {s} fica dentro do ID {d}, que está sendo movido ou removido",
                 .{ v.line, v.path, v.id },
             ),
-            .create_exists => |v| try w.print("linha {d}: {s} ja existe no disco", .{ v.line, v.path }),
+            .create_exists => |v| try w.print("linha {d}: {s} já existe no disco", .{ v.line, v.path }),
             .link_empty_target => |v| try w.print("linha {d}: link \"{s}\" sem destino (alvo)", .{ v.line, v.path }),
             .copy_no_free_name => |v| try w.print(
-                "ID {d}: {s} colide e nao sobrou nome livre com sufixo (-01 a -99)",
+                "ID {d}: {s} colide e não sobrou nome livre com sufixo (-01 a -99)",
                 .{ v.id, v.path },
             ),
             .copy_under_touched => |v| try w.print(
-                "ID {d}: {s} fica dentro de um diretorio que esta sendo movido ou removido",
+                "ID {d}: {s} fica dentro de um diretório que está sendo movido ou removido",
                 .{ v.id, v.path },
             ),
             .copy_into_self => |v| try w.print(
@@ -154,7 +154,7 @@ pub const Problem = union(enum) {
                 .{ v.id, v.from, v.to },
             ),
             .move_dest_occupied => |v| try w.print(
-                "ID {d}: mover {s} para ca esbarra em {s}, que ja existe; apague a linha dele ou escolha outro nome",
+                "ID {d}: mover {s} para cá esbarra em {s}, que já existe; apague a linha dele ou escolha outro nome",
                 .{ v.id, v.from, v.to },
             ),
             .claimed_elsewhere => |v| try w.print(
@@ -162,26 +162,26 @@ pub const Problem = union(enum) {
                 .{ v.id, v.path, v.dir },
             ),
             .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
-            .unknown_id => |v| try w.print("linha {d}: ID {d} nao pertence a selecao", .{ v.line, v.id }),
+            .unknown_id => |v| try w.print("linha {d}: ID {d} não pertence à seleção", .{ v.line, v.id }),
             .duplicate_id => |v| try w.print("linha {d}: ID {d} repetido com todas as linhas renomeadas; uma precisa manter o nome original", .{ v.line, v.id }),
             .empty_path => |v| try w.print("ID {d}: caminho vazio", .{v.id}),
-            .absolute_path => |v| try w.print("ID {d}: caminho absoluto nao e aceito ({s})", .{ v.id, v.path }),
-            .escapes_base => |v| try w.print("ID {d}: caminho sai do diretorio-base ({s})", .{ v.id, v.path }),
+            .absolute_path => |v| try w.print("ID {d}: caminho absoluto não é aceito ({s})", .{ v.id, v.path }),
+            .escapes_base => |v| try w.print("ID {d}: caminho sai do diretório-base ({s})", .{ v.id, v.path }),
             .reserved_name => |v| try w.print("ID {d}: nome reservado pelo lst-f ({s})", .{ v.id, v.path }),
             .duplicate_dest => |v| try w.print("IDs {d} e {d} apontam para o mesmo destino ({s})", .{ v.a, v.b, v.path }),
-            .dest_occupied => |v| try w.print("ID {d}: destino ja ocupado por outra entrada da selecao ({s})", .{ v.id, v.path }),
-            .dest_under_dest => |v| try w.print("ID {d} vira diretorio de ID {d}: destinos incompativeis", .{ v.outer, v.inner }),
+            .dest_occupied => |v| try w.print("ID {d}: destino já ocupado ({s})", .{ v.id, v.path }),
+            .dest_under_dest => |v| try w.print("ID {d} vira diretório de ID {d}: destinos incompatíveis", .{ v.outer, v.inner }),
             .parent_removed_child_moved => |v| try w.print(
-                "ID {d} remove um diretorio que contem o ID {d}, que esta sendo renomeado",
+                "ID {d} remove um diretório que contém o ID {d}, que está sendo renomeado",
                 .{ v.parent, v.child },
             ),
             .parent_moved_child_touched => |v| try w.print(
-                "ID {d} move um diretorio que contem o ID {d}, tambem alterado na mesma selecao",
+                "ID {d} move um diretório que contém o ID {d}, também alterado na mesma seleção",
                 .{ v.parent, v.child },
             ),
             .unknown_directive => |v| try w.print("linha {d}: diretiva desconhecida \":{s}\"", .{ v.line, v.name }),
             .directive_needs_argument => |v| try w.print("linha {d}: \":{s}\" precisa de um argumento", .{ v.line, v.name }),
-            .multiple_directives => |v| try w.print("linha {d}: so uma diretiva por vez", .{v.line}),
+            .multiple_directives => |v| try w.print("linha {d}: só uma diretiva por vez", .{v.line}),
         }
     }
 };
@@ -462,9 +462,11 @@ pub fn build(
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
-    // --- 3. Colisoes entre destinos ------------------------------------------
+    // --- 3. Colisoes entre destinos (O(N * profundidade)) --------------------
     var seen: std.StringHashMapUnmanaged(u32) = .empty;
+    var orig_by_path: std.StringHashMapUnmanaged(usize) = .empty;
     for (originals, 0..) |o, i| {
+        try orig_by_path.put(arena, o.path, i);
         const d = dests[i] orelse continue;
         const gop = try seen.getOrPut(arena, d);
         if (gop.found_existing) {
@@ -475,13 +477,16 @@ pub fn build(
     }
 
     // Destino que engole outro destino: "a" e "a/b" nao podem coexistir.
-    for (originals, 0..) |outer, i| {
-        const a = dests[i] orelse continue;
-        for (originals, 0..) |inner, j| {
-            if (i == j) continue;
-            const b = dests[j] orelse continue;
-            if (isUnder(a, b)) {
-                try problems.append(arena, .{ .dest_under_dest = .{ .outer = outer.id, .inner = inner.id } });
+    for (originals, 0..) |inner, j| {
+        const b = dests[j] orelse continue;
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, b, pos, '/')) |slash| {
+            pos = slash + 1;
+            const ancestor = b[0..slash];
+            if (seen.get(ancestor)) |outer_id| {
+                if (outer_id != inner.id) {
+                    try problems.append(arena, .{ .dest_under_dest = .{ .outer = outer_id, .inner = inner.id } });
+                }
             }
         }
     }
@@ -490,16 +495,14 @@ pub fn build(
     for (originals, 0..) |o, i| {
         const d = dests[i] orelse continue;
         if (std.mem.eql(u8, d, o.path)) continue;
-        for (originals, 0..) |other, j| {
-            if (i == j) continue;
-            if (!std.mem.eql(u8, other.path, d)) continue;
-            if (dests[j]) |od| {
-                if (std.mem.eql(u8, od, other.path)) {
-                    try problems.append(arena, .{ .dest_occupied = .{ .id = o.id, .path = d } });
+        if (orig_by_path.get(d)) |j| {
+            if (j != i) {
+                if (dests[j]) |od| {
+                    if (std.mem.eql(u8, od, originals[j].path)) {
+                        try problems.append(arena, .{ .dest_occupied = .{ .id = o.id, .path = d } });
+                    }
                 }
             }
-            // Entrada removida (sem destino) libera o nome; a ordenacao em 8
-            // garante que a remocao aconteca antes do rename que a ocupa.
         }
     }
 
@@ -522,50 +525,53 @@ pub fn build(
     // levaria o arquivo novo junto, em silencio.
     for (creates, 0..) |c, i| {
         const path = create_paths[i] orelse continue;
-        for (originals, 0..) |o, j| {
-            const d = dests[j];
-            if (std.mem.eql(u8, o.path, path)) {
-                if (d == null) {
+        if (orig_by_path.get(path)) |j| {
+            if (dests[j] == null) {
+                try problems.append(arena, .{
+                    .create_over_removed = .{ .line = c.line, .path = path, .id = originals[j].id },
+                });
+            }
+        }
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, path, pos, '/')) |slash| {
+            pos = slash + 1;
+            const ancestor = path[0..slash];
+            if (orig_by_path.get(ancestor)) |j| {
+                const d = dests[j];
+                const stays = d != null and std.mem.eql(u8, d.?, originals[j].path);
+                if (!stays) {
                     try problems.append(arena, .{
-                        .create_over_removed = .{ .line = c.line, .path = path, .id = o.id },
+                        .create_under_touched = .{ .line = c.line, .path = path, .id = originals[j].id },
                     });
                 }
-                continue;
-            }
-            if (!isUnder(o.path, path)) continue;
-            const stays = d != null and std.mem.eql(u8, d.?, o.path);
-            if (!stays) {
-                try problems.append(arena, .{
-                    .create_under_touched = .{ .line = c.line, .path = path, .id = o.id },
-                });
             }
         }
     }
     if (problems.items.len > 0) return .{ .invalid = try problems.toOwnedSlice(arena) };
 
-    // --- 4. Pai e filho na mesma selecao -------------------------------------
+    // --- 4. Pai e filho na mesma selecao (O(N * profundidade)) ---------------
     const absorbed = try arena.alloc(bool, originals.len);
     @memset(absorbed, false);
 
-    for (originals, 0..) |parent, i| {
-        if (parent.kind != .dir) continue;
-        const p_dest = dests[i];
-        for (originals, 0..) |child, j| {
-            if (i == j) continue;
-            if (!isUnder(parent.path, child.path)) continue;
-            const c_dest = dests[j];
+    for (originals, 0..) |child, j| {
+        const c_dest = dests[j];
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, child.path, pos, '/')) |slash| {
+            pos = slash + 1;
+            const ancestor = child.path[0..slash];
+            const i = orig_by_path.get(ancestor) orelse continue;
+            const parent = originals[i];
+            if (parent.kind != .dir) continue;
+            const p_dest = dests[i];
             if (p_dest == null) {
                 if (c_dest == null) {
-                    // Pai e filho removidos: redundancia, o pai leva o filho junto.
                     absorbed[j] = true;
                 } else if (!std.mem.eql(u8, c_dest.?, child.path)) {
                     try problems.append(arena, .{
                         .parent_removed_child_moved = .{ .parent = parent.id, .child = child.id },
                     });
                 }
-                // Pai removido e filho inalterado: o filho vai junto, sem operacao.
             } else if (!std.mem.eql(u8, p_dest.?, parent.path)) {
-                // Pai muda de lugar: qualquer alteracao no filho e ambigua.
                 const child_touched = c_dest == null or !std.mem.eql(u8, c_dest.?, child.path);
                 if (child_touched) {
                     try problems.append(arena, .{
@@ -614,12 +620,16 @@ pub fn build(
     // junto (removido) ou o deixaria para tras (movido). Mesmo argumento da
     // criacao.
     for (copies.items) |c| {
-        for (originals, 0..) |o, j| {
-            if (!isUnder(o.path, c.to)) continue;
-            const d = dests[j];
-            const stays = d != null and std.mem.eql(u8, d.?, o.path);
-            if (!stays) {
-                try problems.append(arena, .{ .copy_under_touched = .{ .id = c.id, .path = c.to } });
+        var pos: usize = 0;
+        while (std.mem.indexOfScalarPos(u8, c.to, pos, '/')) |slash| {
+            pos = slash + 1;
+            const ancestor = c.to[0..slash];
+            if (orig_by_path.get(ancestor)) |j| {
+                const d = dests[j];
+                const stays = d != null and std.mem.eql(u8, d.?, originals[j].path);
+                if (!stays) {
+                    try problems.append(arena, .{ .copy_under_touched = .{ .id = c.id, .path = c.to } });
+                }
             }
         }
     }
@@ -687,25 +697,18 @@ pub fn build(
     // pelo de outra pasta -- `dd` na linha antiga, `p` na linha que vem de
     // fora; sem isto a copia encontra o nome ocupado e derruba o plano inteiro.
     // As demais continuam por ultimo, como sempre.
+    var target_paths: std.StringHashMapUnmanaged(void) = .empty;
+    for (moves.items) |m| try target_paths.put(arena, m.to, {});
+    for (copies.items) |c| try target_paths.put(arena, c.to, {});
+
     var removes_early: std.ArrayList(Remove) = .empty;
     var removes_late: std.ArrayList(Remove) = .empty;
     for (removes.items) |rm| {
-        var targeted = false;
-        for (moves.items) |m| {
-            if (std.mem.eql(u8, m.to, rm.path)) {
-                targeted = true;
-                break;
-            }
+        if (target_paths.contains(rm.path)) {
+            try removes_early.append(arena, rm);
+        } else {
+            try removes_late.append(arena, rm);
         }
-        if (!targeted) {
-            for (copies.items) |c| {
-                if (std.mem.eql(u8, c.to, rm.path)) {
-                    targeted = true;
-                    break;
-                }
-            }
-        }
-        if (targeted) try removes_early.append(arena, rm) else try removes_late.append(arena, rm);
     }
     const removes_before = removes_early.items.len;
     const removes_ordered = try arena.alloc(Remove, removes.items.len);
@@ -889,6 +892,8 @@ pub const Directive = union(enum) {
     /// Andam sobre os diretorios ja visitados na sessao.
     back,
     forward,
+    /// Filtro nao-destrutivo na listagem local (`:filter <padrao>` ou `:filter!`).
+    filter: ?[]const u8,
 };
 
 pub const Document = struct {
@@ -916,71 +921,69 @@ fn isHeaderLine(line: []const u8, header: []const []const u8) bool {
     return false;
 }
 
+fn isPrivateUseCodepoint(cp: u21) bool {
+    return (cp >= 0xE000 and cp <= 0xF8FF) or (cp >= 0xF0000 and cp <= 0xFFFFD);
+}
+
+fn stripOptionalIcon(after_sep: []const u8) []const u8 {
+    if (after_sep.len > 0 and after_sep[0] >= 0x80) {
+        const cp_len = std.unicode.utf8ByteSequenceLength(after_sep[0]) catch 0;
+        if (cp_len > 0 and after_sep.len >= cp_len) {
+            const cp = std.unicode.utf8Decode(after_sep[0..cp_len]) catch 0;
+            if (isPrivateUseCodepoint(cp)) {
+                const rest = after_sep[cp_len..];
+                if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+                if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+                return rest;
+            }
+        }
+    }
+    if (std.mem.startsWith(u8, after_sep, "  ")) return after_sep[2..];
+    if (std.mem.startsWith(u8, after_sep, " ")) return after_sep[1..];
+    return after_sep;
+}
+
 fn extractPath(body: []const u8) []const u8 {
-    // Formato com grade de colunas (5 colunas) e icone antes do nome: `d │ ... │ 2026-08-25 23:53 │   caminho`
-    if (body.len >= 58 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[55..58], " │ ")) {
-        const after_sep = body[58..];
-        if (after_sep.len > 0 and after_sep[0] >= 0x80) {
-            const cp_len = std.unicode.utf8ByteSequenceLength(after_sep[0]) catch 0;
-            if (cp_len > 0 and after_sep.len >= cp_len) {
-                const rest = after_sep[cp_len..];
-                if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
-                if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
-                return rest;
-            }
+    const sep_str = " │ ";
+    // Grade padrao de 5 colunas (`T │ PERMS │ OWNER │ SIZE │ MODIFIED │ [icone]  caminho`)
+    // ou grade legada de 4 colunas (`T │ PERMS │ SIZE │ MODIFIED │  caminho`).
+    // Contar os 5 divisores garante que `" │ "` dentro do nome nao trunque.
+    if (body.len > 1 + sep_str.len and std.mem.eql(u8, body[1 .. 1 + sep_str.len], sep_str)) {
+        var pos: usize = 1;
+        var found: usize = 0;
+        var pos4: ?usize = null;
+        while (found < 5) : (found += 1) {
+            const idx = std.mem.indexOfPos(u8, body, pos, sep_str) orelse break;
+            pos = idx + sep_str.len;
+            if (found == 3) pos4 = pos;
         }
-        if (std.mem.startsWith(u8, after_sep, "  ")) return after_sep[2..];
-        if (std.mem.startsWith(u8, after_sep, " ")) return after_sep[1..];
-        return after_sep;
-    }
-    // Formato com grade de colunas e icone com divisor extra: `d │ ... │   │  caminho`
-    if (body.len >= 76 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[71..76], "  │")) {
-        const rest = body[76..];
-        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
-        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
-        return rest;
-    }
-    // Formato com grade de colunas antiga: `d │ ... │  caminho`
-    if (body.len >= 67 and std.mem.eql(u8, body[1..4], " │ ") and std.mem.eql(u8, body[63..67], " │")) {
-        const rest = body[67..];
-        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
-        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
-        return rest;
-    }
-    // Formato com grade de colunas antiga (com borda externa `│ d │ ...`):
-    if (std.mem.startsWith(u8, body, "│ ") and body.len >= 58 and std.mem.eql(u8, body[54..58], " │")) {
-        const rest = body[58..];
-        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
-        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
-        return rest;
-    }
-    // Formato com divisor `  │  ` ou ` │ `
-    if (std.mem.lastIndexOf(u8, body, " │ ")) |sep| {
-        const after_sep = body[sep + " │ ".len ..];
-        if (after_sep.len > 0 and after_sep[0] >= 0x80) {
-            const cp_len = std.unicode.utf8ByteSequenceLength(after_sep[0]) catch 0;
-            if (cp_len > 0 and after_sep.len >= cp_len) {
-                const rest = after_sep[cp_len..];
-                if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
-                if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
-                return rest;
-            }
-        }
-        if (std.mem.startsWith(u8, after_sep, "  ")) return after_sep[2..];
-        if (std.mem.startsWith(u8, after_sep, " ")) return after_sep[1..];
-        return after_sep;
+        if (found == 5) return stripOptionalIcon(body[pos..]);
+        if (pos4) |p4| return stripOptionalIcon(body[p4..]);
     }
     if (std.mem.indexOf(u8, body, "  │  ")) |sep| {
         return body[sep + "  │  ".len ..];
     }
+    if (std.mem.lastIndexOf(u8, body, sep_str)) |sep| {
+        return stripOptionalIcon(body[sep + sep_str.len ..]);
+    }
     return body;
+}
+
+fn extractPathForOriginal(body: []const u8, display: []const u8) []const u8 {
+    if (display.len > 0 and std.mem.startsWith(u8, body, display)) {
+        const rest = body[display.len..];
+        if (std.mem.startsWith(u8, rest, "  ")) return rest[2..];
+        if (std.mem.startsWith(u8, rest, " ")) return rest[1..];
+        if (rest.len == 0) return rest;
+    }
+    return extractPath(body);
 }
 
 /// Linha do corpo que nao comeca por ID: pedido de criacao. O espaco a esquerda
 /// e alinhamento com a coluna NAME, nunca parte do nome.
 /// `nome -> alvo` cria symlink; `nome => alvo` cria hardlink.
 fn newEntry(line: []const u8, line_no: u32) ?Create {
-    const body = std.mem.trimStart(u8, extractPath(std.mem.trimStart(u8, line, " \t")), " \t");
+    const body = std.mem.trimStart(u8, line, " \t");
     if (body.len == 0) return null;
 
     if (std.mem.indexOf(u8, body, " -> ")) |sep| {
@@ -1029,6 +1032,20 @@ pub fn parseBuffer(
     /// quer que tenham parado.
     header: []const []const u8,
 ) Allocator.Error!ParseResult {
+    return parseBufferWithOriginals(arena, text, header, &.{});
+}
+
+pub fn parseBufferWithOriginals(
+    arena: Allocator,
+    text: []const u8,
+    header: []const []const u8,
+    originals: []const Original,
+) Allocator.Error!ParseResult {
+    var display_by_id: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    for (originals) |o| {
+        if (o.display.len > 0) try display_by_id.put(arena, o.id, o.display);
+    }
+
     var edits: std.ArrayList(Edit) = .empty;
     var creates: std.ArrayList(Create) = .empty;
     var problems: std.ArrayList(Problem) = .empty;
@@ -1105,6 +1122,10 @@ pub fn parseBuffer(
                 directive = .refresh;
             } else if (std.mem.eql(u8, name, "undo")) {
                 directive = .undo;
+            } else if (std.mem.eql(u8, name, "filter!")) {
+                directive = .{ .filter = null };
+            } else if (std.mem.eql(u8, name, "filter")) {
+                directive = .{ .filter = if (argument.len == 0) null else argument };
             } else if (std.mem.eql(u8, name, "quit") or std.mem.eql(u8, name, "q")) {
                 directive = .quit;
             } else {
@@ -1143,7 +1164,10 @@ pub fn parseBuffer(
         }
 
         const body = line[j..];
-        const path = extractPath(body);
+        const path = if (display_by_id.get(id)) |disp|
+            extractPathForOriginal(body, disp)
+        else
+            extractPath(body);
         try edits.append(arena, .{ .id = id, .path = path, .line = line_no });
     }
 

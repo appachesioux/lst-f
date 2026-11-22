@@ -32,11 +32,11 @@ Está fora de escopo:
 - dependência de `fzf.vim`, `fzf-lua`, `oil.nvim`, `fd`, `rg`, Node, Python ou Nerd Font;
 - adaptadores remotos, sincronização, permissões elevadas e gerenciamento de conteúdo de arquivos;
 - integração com Git. Renomear é operação de filesystem; quem versiona o diretório usa o Git depois, e o `git status` reconhece rename por conteúdo. `git mv` não entra nem como opção;
-- lixeira do sistema (FreeDesktop Trash). A área de sessão existe para rollback e arrependimento dentro da sessão; ela não é uma lixeira e não vai virar uma.
+- lixeira do sistema (FreeDesktop Trash com `.trashinfo`). O `lst-f` mantém lixeira própria simples em `$XDG_DATA_HOME/lst-f/trash`, com poda automática após 30 dias.
 
 ## Stack e comandos
 
-- Zig 0.16.x. O ambiente de desenvolvimento possui Zig 0.16.0; Rust não será adotado.
+- Zig 0.17.x (`minimum_zig_version = 0.17.0`). Rust não será adotado.
 - Biblioteca padrão de Zig como base. Dependências externas exigem benefício concreto e aprovação prévia.
 - Zig é pré-1.0 e quebra a biblioteca padrão a cada release. Contar com manutenção periódica por atualização de versão; não é motivo para abstrair a std por trás de camadas próprias.
 - Executáveis de runtime: `fzf` e um editor `vim` ou `nvim` configurado pelo usuário. Podem estar instalados no `$PATH` do sistema ou colocados diretamente ao lado do binário do `lst-f` (modo bundle/portátil autocontido).

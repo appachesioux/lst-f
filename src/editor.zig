@@ -38,9 +38,9 @@ const wait_flags = [_][]const u8{ "--wait", "-w" };
 
 /// Ordem de resolucao:
 /// 1. Opcao explicita (--editor <cmd>);
-/// 2. Busca no PATH somente por `vim`. Variaveis como $VISUAL e $EDITOR
-///    sao ignoradas para garantir uma tela previsivel. O Neovim continua
-///    disponivel por `--editor nvim`, mas nunca e escolhido automaticamente.
+/// 2. Variavel $LST_F_EDITOR;
+/// 3. Busca no PATH por `vim`, com fallback para `nvim`. Variaveis genericas
+///    como $VISUAL e $EDITOR sao ignoradas para garantir uma tela previsivel.
 pub fn resolve(
     arena: Allocator,
     io: Io,
@@ -49,7 +49,11 @@ pub fn resolve(
 ) ResolveError!Editor {
     const spec = blk: {
         if (explicit) |e| break :blk e;
+        if (environ.get("LST_F_EDITOR")) |e| {
+            if (std.mem.trim(u8, e, " \t").len > 0) break :blk e;
+        }
         if (which(arena, io, environ, "vim") != null) break :blk "vim";
+        if (which(arena, io, environ, "nvim") != null) break :blk "nvim";
         return error.NoEditor;
     };
 
@@ -148,18 +152,20 @@ pub fn queryOsc11(io: Io) ?Background {
     var written: usize = 0;
     while (written < query.len) {
         const w = std.os.linux.write(fd, query[written..].ptr, query.len - written);
-        if (std.os.linux.errno(w) == .INTR) continue;
-        if (w <= 0) return null;
-        written += @intCast(w);
+        const err = std.os.linux.errno(w);
+        if (err == .INTR) continue;
+        if (err != .SUCCESS or w == 0) return null;
+        written += w;
     }
 
     var buf: [128]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
         const r = std.os.linux.read(fd, buf[total..].ptr, buf.len - total);
-        if (std.os.linux.errno(r) == .INTR) continue;
-        if (r <= 0) break;
-        total += @intCast(r);
+        const err = std.os.linux.errno(r);
+        if (err == .INTR) continue;
+        if (err != .SUCCESS or r == 0) break;
+        total += r;
         if (total >= 2 and buf[total - 2] == 0x1b and buf[total - 1] == '\\') break;
         if (total >= 1 and buf[total - 1] == 0x07) break;
     }
@@ -282,13 +288,20 @@ pub fn selfDir(arena: Allocator, io: Io, environ: *const std.process.Environ.Map
     return dir;
 }
 
+fn isExecutableFile(io: Io, path: []const u8) bool {
+    const st = Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = true }) catch return false;
+    if (st.kind != .file) return false;
+    Io.Dir.cwd().access(io, path, .{ .execute = true }) catch return false;
+    return true;
+}
+
 pub fn whichPathOnly(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, name: []const u8) ?[]const u8 {
     const path = environ.get("PATH") orelse return null;
     var it = std.mem.splitScalar(u8, path, ':');
     while (it.next()) |entry| {
         if (entry.len == 0) continue;
         const candidate = std.fmt.allocPrint(arena, "{s}/{s}", .{ entry, name }) catch return null;
-        Io.Dir.cwd().access(io, candidate, .{}) catch continue;
+        if (!isExecutableFile(io, candidate)) continue;
         return candidate;
     }
     return null;
@@ -300,14 +313,12 @@ pub fn whichPathOnly(arena: Allocator, io: Io, environ: *const std.process.Envir
 /// 3. Variavel de ambiente PATH.
 pub fn which(arena: Allocator, io: Io, environ: *const std.process.Environ.Map, name: []const u8) ?[]const u8 {
     if (std.mem.indexOfScalar(u8, name, '/') != null) {
-        Io.Dir.cwd().access(io, name, .{}) catch return null;
+        if (!isExecutableFile(io, name)) return null;
         return name;
     }
     if (selfDir(arena, io, environ)) |dir| {
         if (std.fmt.allocPrint(arena, "{s}/{s}", .{ dir, name })) |candidate| {
-            if (Io.Dir.cwd().access(io, candidate, .{})) |_| {
-                return candidate;
-            } else |_| {}
+            if (isExecutableFile(io, candidate)) return candidate;
         } else |_| {}
     }
     return whichPathOnly(arena, io, environ, name);

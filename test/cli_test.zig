@@ -95,3 +95,28 @@ test "flags de tema (--light, --dark, --theme)" {
     try testing.expectError(error.MissingValue, parse(a, &.{ "lst-f", "--theme" }));
     try testing.expectError(error.BadValue, parse(a, &.{ "lst-f", "--theme", "invalido" }));
 }
+
+test "flags novas (--no-icons, --cwd-file, --exclude) e helpers (abbreviateHome, matchesFilter)" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+
+    // Padrao de icones e ligado; --no-icons desliga.
+    try testing.expect((try parse(a, &.{"lst-f"})).browse.options.icons);
+    const b = (try parse(a, &.{ "lst-f", "--no-icons", "--cwd-file", "/tmp/cwd", "--exclude", ".git", "--exclude", "dist" })).browse;
+    try testing.expect(!b.options.icons);
+    try testing.expectEqualStrings("/tmp/cwd", b.cwd_file.?);
+    try testing.expectEqual(@as(usize, 2), b.options.exclude.len);
+
+    var env: std.process.Environ.Map = .init(testing.allocator);
+    defer env.deinit();
+    try env.put("HOME", "/home/spock");
+    try testing.expectEqualStrings("~", cli.abbreviateHome(a, &env, "/home/spock"));
+    try testing.expectEqualStrings("~/Devel/lst-f", cli.abbreviateHome(a, &env, "/home/spock/Devel/lst-f"));
+    try testing.expectEqualStrings("/home/spock2/x", cli.abbreviateHome(a, &env, "/home/spock2/x"));
+
+    try testing.expect(cli.matchesFilter("*.log", "app.LOG"));
+    try testing.expect(!cli.matchesFilter("*.log", "app.txt"));
+    try testing.expect(cli.matchesFilter("plan", "src_plan_test.zig"));
+    try testing.expect(!cli.matchesFilter("plan", "fsops.zig"));
+}

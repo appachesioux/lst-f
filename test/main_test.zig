@@ -7,4 +7,5 @@ test {
     _ = @import("plan_test.zig");
     _ = @import("fsops_test.zig");
     _ = @import("cli_test.zig");
+    _ = @import("tzif_test.zig");
 }

@@ -5,7 +5,7 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.10.28 ─╮   ← moldura
+╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.11.22 ─╮   ← moldura
 
 ──────────────────────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos
@@ -19,92 +19,101 @@ A coluna `OWNER` fica em branco no que é seu — repetir o seu nome em toda lin
 não informa nada. Dono alheio aparece pelo nome; se o `uid` não estiver em
 `/etc/passwd` (usuário só de LDAP ou SSSD, por exemplo), aparece o número.
 
-As duas linhas do topo — a moldura com o caminho e a versão, e os títulos das colunas — são barra de tela; as entradas ocupam o buffer inteiro. Pressionar **`F1` ou `?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
+As duas linhas do topo — a moldura com o caminho e a versão, e os títulos das colunas — são barra de tela; as entradas ocupam o buffer inteiro. Pressionar **`F1` ou `g?`** abre o popup de ajuda flutuante com os comandos e diretivas principais (`:cd`, `:find`, `:filter`, `:undo`, `:quit`), fechando com `q` ou `Esc`.
 
-A barra de baixo mostra permanentemente o modo, a posição na lista, o nome sob o cursor e se a sessão está usando **Vim** ou **Neovim**. O diretório atual fica na moldura, no topo.
+A barra de baixo mostra permanentemente o modo, a posição na lista, edições pendentes, o nome sob o cursor e se a sessão está usando **Vim** ou **Neovim**. O diretório atual fica na moldura, no topo.
 
 O ID à esquerda casa a linha com a entrada, então reordenar, rodar `:sort` ou
 recolar linhas é inofensivo. Nada é gravado sem diff e confirmação, e as
 remoções aparecem em bloco próprio na confirmação.
 
-Colisões que o próprio buffer já consegue provar são resolvidas antes do `:w`:
-a linha editada, criada ou colada recebe o primeiro sufixo livre (`-01` a
-`-99`) e a barra inferior mostra o nome sugerido. Se nenhum sufixo estiver
-livre, o conflito fica sublinhado em vermelho. A validação após o `:w` permanece
-como garantia definitiva contra mudanças externas e conflitos mais complexos.
+Colisões que o próprio buffer já consegue provar aparecem **em anotação visual**
+(virtual text, sem alterar o texto do buffer) antes do `:w`: a linha editada,
+criada ou colada mostra o primeiro sufixo livre (`-01` a `-99`) ou o aviso de
+conflito em vermelho. A validação após o `:w` permanece como garantia definitiva
+contra mudanças externas e conflitos mais complexos.
 
-Sem plugin, sem gerenciador de pacotes: funciona com `vim` puro no servidor em
-que você acabou de entrar por SSH.
+Sem plugin, sem gerenciador de pacotes: funciona com `vim` ou `nvim` puro no
+servidor em que você acabou de entrar por SSH (use `--no-icons` ou `LST_F_ICONS=0`
+em terminais sem Nerd Font).
 
 ## O que faz
+
+> **Atalhos compatíveis com Vim/oil.nvim:** teclas nativas de edição em lote (`.`, `r`, `Ctrl+R`, `b`, `m`, `q`, `~`, `Ctrl+A`, `?`, `:copy`) ficam livres por padrão. Se preferir os atalhos antigos, defina `LST_F_KEYMAP=classic`.
 
 | você escreve / digita               | acontece                                  |
 | ----------------------------------- | ----------------------------------------- |
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
 | apaga a linha                        | manda para a lixeira (recuperável por 30 dias) |
 | escreve um nome em linha nova        | cria o arquivo (com `/` no fim, o diretório) |
-| `q` no buffer                        | fecha primeiro o split; depois sai do `lst-f` |
-| `ZZ`                                  | sai do `lst-f`                            |
-| `F1` ou `?`                          | abre o helper popup de ajuda flutuante     |
+| `gq` no buffer                       | fecha primeiro o split; depois sai do `lst-f` |
+| `ZZ` / `:q` / `:wq` / `:x`           | sai do `lst-f` (`:wq` e `:x` salvam antes) |
+| `F1` ou `g?`                         | abre o popup de ajuda flutuante           |
 | `F2` ou `cob`                        | alterna tema entre claro e escuro (`light`/`dark`) |
-| `F4`                                  | abre terminal / shell interativo no diretório atual |
-| `Enter` sobre diretório               | entra nele                                 |
-| `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista   |
-| `Enter` sobre arquivo binário/mídia   | abre no app padrão via `xdg-open`          |
-| `.`                                   | alterna exibição de arquivos ocultos       |
-| `-`                                   | sobe para o diretório-pai                  |
-| `<` e `>`                             | voltam e avançam nos diretórios visitados na sessão |
-| `m` / `b`                             | marca ou desmarca uma pasta; abre a lista de bookmarks |
-| `\`                                   | abre uma árvore visual do diretório atual  |
-| `Ctrl+P`                              | abre o buscador fuzzy (`fzf`) na árvore inteira |
-| `Ctrl+A`                              | seleciona todo o buffer do `lst-f`         |
-| `yr` ou `yp`                          | copia caminho relativo do arquivo/diretório para o clipboard |
-| `ya`                                  | copia caminho absoluto do arquivo/diretório para o clipboard |
-| `Ctrl+S`                              | abre o split; depois alterna entre as pastas |
-| `Tab`                                 | percorre as janelas abertas                |
-| `yy` + `p` (ou `Np`)                  | duplica a linha: o ID repetido é pedido de cópia |
-| `yy` aqui + `p` na outra janela       | copia para a pasta da outra janela          |
-| `dd` aqui + `p` na outra janela       | move para a pasta da outra janela           |
-| `nome -> alvo` em linha nova          | cria symlink apontando para o alvo         |
-| `nome => alvo` em linha nova          | cria hardlink apontando para o alvo        |
-| `:cd <dir>`                          | entra no diretório (`..` sobe)             |
+| `F4`                                 | abre terminal / shell interativo no diretório atual |
+| `Enter` sobre diretório              | entra nele                                |
+| `Enter` sobre arquivo de texto/código | abre-o no Vim/Neovim; `:q` volta à lista  |
+| `Enter` sobre arquivo binário/mídia  | abre via `xdg-open` (com display) ou abre o preview |
+| `K` ou `gp`                          | abre preview flutuante do arquivo/pasta sob o cursor |
+| `g.`                                 | alterna exibição de arquivos ocultos      |
+| `-`                                  | sobe para o diretório-pai                 |
+| `gh`                                 | vai para o diretório HOME (`~`)           |
+| `Ctrl+L`                             | recarrega a listagem atual                |
+| `gc` ou `:compact`                   | alterna modo compacto de colunas (`T │ NAME`) |
+| `<` e `>`                            | voltam e avançam nos diretórios visitados na sessão |
+| `gm` / `gb`                          | marca ou desmarca uma pasta; abre a lista de bookmarks |
+| `\`                                  | abre árvore visual sob demanda (`Enter` entra na pasta) |
+| `Ctrl+P`                             | abre o buscador fuzzy (`fzf`) na árvore inteira |
+| `yr` / `yp` / `gyr` / `gyp`          | copia caminho relativo para o clipboard   |
+| `gya` ou `yA`                        | copia caminho absoluto para o clipboard   |
+| `gyl` (também em modo visual)        | copia a linha de link pronta; `p` cola onde criar |
+| `Ctrl+S`                             | abre o split; depois alterna entre as pastas |
+| `Tab`                                | percorre as janelas abertas               |
+| `yy` + `p` (ou `Np`)                 | duplica a linha: o ID repetido é pedido de cópia |
+| `yy` aqui + `p` na outra janela      | copia para a pasta da outra janela        |
+| `dd` aqui + `p` na outra janela      | move para a pasta da outra janela         |
+| `nome -> alvo` em linha nova         | cria symlink apontando para o alvo        |
+| `nome => alvo` em linha nova         | cria hardlink apontando para o alvo       |
+| `:cd <dir>`                          | entra no diretório (`..` sobe)            |
 | `:sh [dir]`                          | abre terminal / shell no diretório (`:shell`, `:terminal`) |
-| `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor (:copy) |
+| `:yank` / `:relpath`                 | copia o caminho relativo do arquivo sob o cursor |
 | `:abspath` / `:realpath`             | copia o caminho absoluto do arquivo sob o cursor |
-| `yl` (também em modo visual)          | copia a linha de link pronta; `p` cola onde criar |
-| `:sort [name\|size]`               | ordena pelo nome (padrão) ou tamanho; `:sort!` inverte |
-| `:hidden`                            | alterna exibição de arquivos ocultos       |
+| `:sort [name\|size\|time\|ext]`      | ordena por nome, tamanho, data (`time`/`modified`) ou extensão; `:sort!` inverte |
+| `:filter [padrão]` / `:filter!`      | filtra a listagem local sem apagar arquivos |
+| `:hidden`                            | alterna exibição de arquivos ocultos      |
 | `:trash`                             | abre a lixeira (remoção lá dentro é definitiva) |
-| `:theme [light|dark]`                | alterna ou define tema claro/escuro (`:light`, `:dark`) |
-| `:open <arquivo>`                    | abre o arquivo para edição no editor       |
-| `:find [termo]`                      | busca fuzzy na árvore com o `fzf`          |
+| `:theme [light\|dark]`               | alterna ou define tema claro/escuro (`:light`, `:dark`) |
+| `:open <arquivo>`                    | abre o arquivo para edição no editor      |
+| `:find [termo]`                      | busca fuzzy na árvore com o `fzf`         |
 | `:back` / `:forward`                 | andam pelos diretórios visitados na sessão |
 | `:bookmark` / `:bookmarks`           | marca a pasta selecionada ou atual; escolhe uma pasta marcada |
-| `:undo`                              | desfaz a última operação da sessão         |
-| `:quit`                              | sai (salvar sem mudanças também sai)       |
-| `:cq` no editor                      | aborta sem aplicar nada                    |
+| `:undo`                              | desfaz a última operação da janela (pilha multinível) |
+| `:w`                                 | aplica alterações ou atualiza a lista mantendo a sessão aberta |
+| `:quit` / `:q`                       | encerra a sessão                          |
+| `:cq` no editor                      | aborta sem aplicar nada                   |
 
-Na árvore, use `j`/`k` ou as setas para navegar; `q`, `Esc`, `Enter` ou `\` a fecha. Para manter a abertura rápida em árvores grandes, ela mostra até 2.000 entradas e informa quando foi truncada.
+Na árvore (`\`), use `j`/`k` ou as setas para navegar; `Enter` entra na pasta selecionada; `q`, `Esc` ou `\` fecha. Ela é gerada sob demanda (não pesa na navegação) e mostra até 2.000 entradas.
 
 Os bookmarks ficam em `$XDG_CONFIG_HOME/lst-f/bookmarks` (por padrão,
-`~/.config/lst-f/bookmarks`), um caminho absoluto por linha. `m` marca a pasta
-sob o cursor; sobre um arquivo, marca a pasta atual. `b` abre um popup com a lista
+`~/.config/lst-f/bookmarks`), um caminho absoluto por linha. `gm` marca a pasta
+sob o cursor; sobre um arquivo, marca a pasta atual. `gb` abre um popup com a lista
 numerada para escolher o destino (`Enter` ou o número confirma, `0`, `Esc` ou `q` cancela).
 A visita entra no histórico, então `<` volta de onde você veio.
 
-Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `q`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
+Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `s`, `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `gq`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
 
-No buffer da listagem, `:sort` e `:sort name` ordenam pelo nome, ignorando
-maiúsculas e minúsculas; `:sort size` usa o tamanho real em bytes. `:sort!` e
-`:sort! size` invertem a ordem, mantendo diretórios no topo. Nomes desempatam
-tamanhos iguais. A escolha continua ativa ao atualizar ou navegar na sessão;
-um intervalo ou seleção visual ordena apenas as linhas selecionadas.
-As linhas completas são preservadas, incluindo edições ainda não salvas.
-Arquivos novos ou indisponíveis ficam antes dos arquivos com tamanho conhecido
-na ordem crescente. Pastas são ordenadas por nome, sem somar seu conteúdo.
+Com edições em mais de uma pasta, `:wa` grava primeiro o destino dos recortes.
+`:wq`, `:wqall`, `:x` e `:xall` usam a mesma ordem e encerram a sessão depois de salvar tudo;
+se uma gravação for recusada ou cancelada, a sessão continua aberta.
+
+No buffer da listagem, `:sort` e `:sort name` ordenam pelo nome; `:sort size`
+usa o tamanho real em bytes; `:sort time` (ou `:sort modified`) ordena pela
+data de modificação; `:sort ext` agrupa por extensão. `:sort!` inverte a ordem,
+mantendo diretórios no topo. A escolha continua ativa ao atualizar ou navegar na
+sessão; um intervalo ou seleção visual ordena apenas as linhas selecionadas.
 Outras opções, como `:sort n`, continuam usando o comando nativo do Vim.
 
-Em terminais estreitos, o nome editável pode ficar fora da área visível; use `zl` e `zh` para rolar horizontalmente.
+Em terminais estreitos ou splits lado a lado, use `gc` (`:compact`) para ocultar as colunas técnicas e manter o nome visível (ou `zl`/`zh` para rolar horizontalmente).
 
 O editor abre com o diretório atual como *cwd*, então `:e`, `gf` e completação
 funcionam direto sobre os caminhos listados.
@@ -155,7 +164,7 @@ lst-f -a               # inclui arquivos ocultos (dotfiles)
 lst-f --find relatorio # começa direto no buscador
 ```
 
-Opções: `-a`, `--all`, `--hidden`, `--light`, `--dark`, `--theme <modo>`, `--editor <cmd>`, `--max-depth <n>`, `--icons`, `--no-color`.
+Opções: `-a`, `--all`, `--hidden`, `--light`, `--dark`, `--theme <modo>`, `--editor <cmd>`, `--cwd-file <arq>`, `--max-depth <n>`, `--exclude <nome>`, `--icons`, `--no-icons`, `--no-color`.
 
 Para editar com uma configuração limpa: `lst-f --editor "vim -u NONE"`.
 

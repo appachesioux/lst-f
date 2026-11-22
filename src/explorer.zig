@@ -43,6 +43,14 @@ pub const Options = struct {
     /// Cores discretas via ANSI; o fzf recebe `--ansi` quando ligado.
     color: bool = false,
     show_hidden: bool = false,
+    /// Usa `ctime` em vez de `mtime` (util na lixeira, onde o rename marca a chegada).
+    use_ctime: bool = false,
+    /// Nomes de diretorios a ignorar na busca recursiva (ex.: `.git`, `node_modules`).
+    exclude: []const []const u8 = &.{},
+    /// Limite opcional de entradas emitidas na busca recursiva.
+    max_entries: ?u32 = null,
+    /// Marcado como `true` se a leitura do diretorio foi interrompida por erro ou teto.
+    incomplete: ?*bool = null,
 };
 
 /// Resolve uid -> nome lendo `/etc/passwd` uma vez. Sem libc: o alvo de
@@ -101,15 +109,63 @@ pub fn parsePasswd(
     }
 }
 
-/// Dono da entrada. `Io.File.Stat` nao expoe uid -- mesma lacuna do `dev` --,
-/// entao vai de `statx` cru, so com a mascara do uid.
-fn ownerUid(dir_fd: std.posix.fd_t, sub_path: [:0]const u8) ?u32 {
-    if (@import("builtin").os.tag != .linux) return null;
-    const linux = std.os.linux;
-    var stx: linux.Statx = undefined;
-    const rc = linux.statx(dir_fd, sub_path.ptr, linux.AT.SYMLINK_NOFOLLOW, .{ .UID = true }, &stx);
-    if (linux.errno(rc) != .SUCCESS) return null;
-    return stx.uid;
+const EntryStat = struct {
+    kind: Io.File.Kind,
+    size: u64,
+    mtime_s: i64,
+    ctime_s: i64,
+    mode: u16,
+    uid: ?u32,
+};
+
+/// Consulta completa em uma unica chamada `statx` no Linux (reduz syscalls
+/// pela metade em relacao a `statFile` + `statx(UID)`).
+fn statEntry(io: Io, dir: Io.Dir, raw_name: []const u8, fallback_kind: Io.File.Kind) ?EntryStat {
+    if (@import("builtin").os.tag == .linux) {
+        var name_buf: [std.Io.Dir.max_name_bytes + 1]u8 = undefined;
+        if (raw_name.len < name_buf.len) {
+            @memcpy(name_buf[0..raw_name.len], raw_name);
+            name_buf[raw_name.len] = 0;
+            const linux = std.os.linux;
+            var stx: linux.Statx = undefined;
+            const rc = linux.statx(
+                dir.handle,
+                name_buf[0..raw_name.len :0].ptr,
+                linux.AT.SYMLINK_NOFOLLOW,
+                .{ .TYPE = true, .MODE = true, .SIZE = true, .MTIME = true, .CTIME = true, .UID = true },
+                &stx,
+            );
+            if (linux.errno(rc) == .SUCCESS) {
+                const kind: Io.File.Kind = switch (stx.mode & linux.S.IFMT) {
+                    linux.S.IFDIR => .directory,
+                    linux.S.IFREG => .file,
+                    linux.S.IFLNK => .sym_link,
+                    linux.S.IFIFO => .named_pipe,
+                    linux.S.IFSOCK => .unix_domain_socket,
+                    linux.S.IFCHR => .character_device,
+                    linux.S.IFBLK => .block_device,
+                    else => fallback_kind,
+                };
+                return .{
+                    .kind = kind,
+                    .size = stx.size,
+                    .mtime_s = stx.mtime.sec,
+                    .ctime_s = stx.ctime.sec,
+                    .mode = stx.mode & 0o7777,
+                    .uid = stx.uid,
+                };
+            }
+        }
+    }
+    const st = dir.statFile(io, raw_name, .{ .follow_symlinks = false }) catch return null;
+    return .{
+        .kind = st.kind,
+        .size = st.size,
+        .mtime_s = st.mtime.toSeconds(),
+        .ctime_s = st.ctime.toSeconds(),
+        .mode = @truncate(@intFromEnum(st.permissions)),
+        .uid = null,
+    };
 }
 
 /// Chamado uma vez por entrada, na ordem final. Permite alimentar o fzf em
@@ -167,6 +223,13 @@ pub fn enumerate(
     try walk(arena, io, dir, "", base_dev, 0, options.max_depth, options, &users, &index, sink);
 }
 
+fn isExcluded(name: []const u8, exclude: []const []const u8) bool {
+    for (exclude) |ex| {
+        if (std.mem.eql(u8, name, ex)) return true;
+    }
+    return false;
+}
+
 fn walk(
     arena: Allocator,
     io: Io,
@@ -180,10 +243,22 @@ fn walk(
     index: *u32,
     sink: Sink,
 ) Error!void {
+    if (options.max_entries) |cap| {
+        if (index.* >= cap) {
+            if (options.incomplete) |inc| inc.* = true;
+            return;
+        }
+    }
     const entries = try readDir(arena, io, dir, prefix, options, users);
     sortEntries(entries.items);
 
     for (entries.items) |e| {
+        if (options.max_entries) |cap| {
+            if (index.* >= cap) {
+                if (options.incomplete) |inc| inc.* = true;
+                return;
+            }
+        }
         try sink.emit(index.*, e);
         index.* += 1;
 
@@ -191,6 +266,7 @@ fn walk(
         if (depth + 1 >= max_depth) continue;
 
         const name = std.fs.path.basename(e.path);
+        if (isExcluded(name, options.exclude)) continue;
         var name_buf: [std.Io.Dir.max_name_bytes + 1]u8 = undefined;
         if (name.len >= name_buf.len) continue;
         @memcpy(name_buf[0..name.len], name);
@@ -215,27 +291,25 @@ fn readDir(
 ) Allocator.Error!std.ArrayList(Entry) {
     var out: std.ArrayList(Entry) = .empty;
     var it = dir.iterate();
-    while (it.next(io) catch null) |raw_entry| {
+    while (true) {
+        const maybe = it.next(io) catch {
+            if (options.incomplete) |inc| inc.* = true;
+            break;
+        };
+        const raw_entry = maybe orelse break;
         if (std.mem.eql(u8, raw_entry.name, ".") or std.mem.eql(u8, raw_entry.name, "..")) continue;
         if (std.mem.startsWith(u8, raw_entry.name, plan.area_prefix)) continue;
         if (!options.show_hidden and raw_entry.name.len > 0 and raw_entry.name[0] == '.') continue;
+        if (options.recursive and isExcluded(raw_entry.name, options.exclude)) continue;
 
         const path = if (prefix.len == 0)
             try arena.dupe(u8, raw_entry.name)
         else
             try std.fmt.allocPrint(arena, "{s}/{s}", .{ prefix, raw_entry.name });
 
-        const st = dir.statFile(io, raw_entry.name, .{ .follow_symlinks = false }) catch null;
+        const st = statEntry(io, dir, raw_entry.name, raw_entry.kind);
         const fs_kind: Io.File.Kind = if (st) |s| s.kind else raw_entry.kind;
-
-        var name_buf: [std.Io.Dir.max_name_bytes + 1]u8 = undefined;
-        const owner = owner: {
-            if (raw_entry.name.len >= name_buf.len) break :owner "";
-            @memcpy(name_buf[0..raw_entry.name.len], raw_entry.name);
-            name_buf[raw_entry.name.len] = 0;
-            const uid = ownerUid(dir.handle, name_buf[0..raw_entry.name.len :0]) orelse break :owner "";
-            break :owner users.nameFor(io, uid);
-        };
+        const owner = if (st) |s| (if (s.uid) |uid| users.nameFor(io, uid) else "") else "";
 
         try out.append(arena, .{
             .path = path,
@@ -252,8 +326,8 @@ fn readDir(
             },
             .symlink = fs_kind == .sym_link,
             .size = if (st) |s| s.size else 0,
-            .mtime_s = if (st) |s| s.ctime.toSeconds() else 0,
-            .mode = if (st) |s| @truncate(@intFromEnum(s.permissions)) else 0,
+            .mtime_s = if (st) |s| (if (options.use_ctime) s.ctime_s else s.mtime_s) else 0,
+            .mode = if (st) |s| s.mode else 0,
             .utf8_ok = std.unicode.utf8ValidateSlice(raw_entry.name),
             .owner = owner,
         });
@@ -265,13 +339,53 @@ pub fn sortEntries(entries: []Entry) void {
     std.mem.sort(Entry, entries, {}, lessThan);
 }
 
+/// Comparacao natural caixa-insensivel: `foto2.jpg` vem antes de `foto10.jpg`.
+pub fn naturalOrderIgnoreCase(a: []const u8, b: []const u8) std.math.Order {
+    var i: usize = 0;
+    var j: usize = 0;
+    while (i < a.len and j < b.len) {
+        if (std.ascii.isDigit(a[i]) and std.ascii.isDigit(b[j])) {
+            var ai = i;
+            while (ai < a.len and a[ai] == '0') ai += 1;
+            var a_end = ai;
+            while (a_end < a.len and std.ascii.isDigit(a[a_end])) a_end += 1;
+
+            var bj = j;
+            while (bj < b.len and b[bj] == '0') bj += 1;
+            var b_end = bj;
+            while (b_end < b.len and std.ascii.isDigit(b[b_end])) b_end += 1;
+
+            const a_digits = a[ai..a_end];
+            const b_digits = b[bj..b_end];
+            if (a_digits.len != b_digits.len) {
+                return std.math.order(a_digits.len, b_digits.len);
+            }
+            const cmp = std.mem.order(u8, a_digits, b_digits);
+            if (cmp != .eq) return cmp;
+            // Mesmo valor numerico: menos zeros a esquerda primeiro.
+            const a_total = a_end - i;
+            const b_total = b_end - j;
+            if (a_total != b_total) return std.math.order(a_total, b_total);
+            i = a_end;
+            j = b_end;
+            continue;
+        }
+        const ca = std.ascii.toLower(a[i]);
+        const cb = std.ascii.toLower(b[j]);
+        if (ca != cb) return std.math.order(ca, cb);
+        i += 1;
+        j += 1;
+    }
+    return std.math.order(a.len - i, b.len - j);
+}
+
 fn lessThan(_: void, a: Entry, b: Entry) bool {
     const a_dir = a.kind == .dir;
     const b_dir = b.kind == .dir;
     if (a_dir != b_dir) return a_dir;
     const an = std.fs.path.basename(a.path);
     const bn = std.fs.path.basename(b.path);
-    const ci = std.ascii.orderIgnoreCase(an, bn);
+    const ci = naturalOrderIgnoreCase(an, bn);
     if (ci != .eq) return ci == .lt;
     return std.mem.order(u8, an, bn) == .lt;
 }
@@ -301,7 +415,8 @@ fn deviceOf(dir_fd: std.posix.fd_t, sub_path: [:0]const u8) ?u64 {
 /// Titulos da grade do buffer editavel. Nao vao para o buffer: o helper os
 /// desenha na barra de topo, que nao rola com a lista nem pode ser editada.
 /// Alinham byte a byte com `writeTableDetails`.
-pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ SAVED            │ NAME";
+pub const table_titles = "T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME";
+pub const table_titles_trash = "T │ PERMS     │ OWNER    │ SIZE      │ REMOVED          │ NAME";
 
 /// Cabe `root`, `nobody`, `www-data`. Nome mais longo e truncado: alargar a
 /// coluna sai do espaco do nome, que e o que se edita.
@@ -310,6 +425,10 @@ const table_owner = 8;
 /// Metadados para a grade do buffer editavel. Cada campo recebe um divisor
 /// vertical '│'.
 pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
+    return writeTableDetailsWithOptions(w, e, true);
+}
+
+pub fn writeTableDetailsWithOptions(w: *Io.Writer, e: Entry, icons: bool) Io.Writer.Error!void {
     try w.writeByte(kindChar(e));
     try w.writeAll(" │ ");
     try writeMode(w, e.mode);
@@ -320,7 +439,9 @@ pub fn writeTableDetails(w: *Io.Writer, e: Entry) Io.Writer.Error!void {
     try w.writeAll(" │ ");
     try writeTime(w, e.mtime_s);
     try w.writeAll(" │ ");
-    try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink, e.mode & 0o111 != 0));
+    if (icons) {
+        try w.writeAll(getIcon(e.path, e.kind == .dir, e.symlink, e.mode & 0o111 != 0));
+    }
 }
 
 pub fn writePadded(w: *Io.Writer, text: []const u8, width: usize) Io.Writer.Error!void {
@@ -385,6 +506,10 @@ pub fn writeTime(w: *Io.Writer, seconds: i64) Io.Writer.Error!void {
         return;
     }
     const local_seconds = seconds + tz_offset_seconds;
+    if (local_seconds <= 0) {
+        try w.writeAll("       -        ");
+        return;
+    }
     const es: std.time.epoch.EpochSeconds = .{ .secs = @intCast(local_seconds) };
     const day = es.getEpochDay().calculateYearDay();
     const md = day.calculateMonthDay();
@@ -504,7 +629,7 @@ pub fn getIcon(name: []const u8, is_dir: bool, is_link: bool, is_exec: bool) []c
 
     for (file_icons) |fi| {
         for (fi.exts) |e| {
-            if (std.mem.eql(u8, ext, e)) return fi.glyph;
+            if (std.ascii.eqlIgnoreCase(ext, e)) return fi.glyph;
         }
     }
 

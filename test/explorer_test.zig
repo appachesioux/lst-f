@@ -158,3 +158,29 @@ test "helper Vim: todo glifo emitido por getIcon tem regra de cor" {
         if (in_group) try testing.expect(std.mem.indexOf(u8, syntax, gl) != null);
     }
 }
+
+test "ordenacao natural coloca foto2 antes de foto10 e getIcon ignora caixa" {
+    var entries = [_]Entry{
+        .{ .path = "foto10.JPG", .kind = .file, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
+        .{ .path = "foto2.jpg", .kind = .file, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
+        .{ .path = "foto1.jpg", .kind = .file, .symlink = false, .size = 0, .mtime_s = 0, .mode = 0, .utf8_ok = true },
+    };
+    explorer.sortEntries(&entries);
+    try testing.expectEqualStrings("foto1.jpg", entries[0].path);
+    try testing.expectEqualStrings("foto2.jpg", entries[1].path);
+    try testing.expectEqualStrings("foto10.JPG", entries[2].path);
+
+    try testing.expectEqualStrings(explorer.glyphs.img, explorer.getIcon("FOTO.JPG", false, false, false));
+    try testing.expectEqualStrings(explorer.glyphs.md, explorer.getIcon("README.MD", false, false, false));
+}
+
+test "writeTime nao entra em panic com fuso negativo e timestamp pequeno" {
+    const prev = explorer.tz_offset_seconds;
+    defer explorer.tz_offset_seconds = prev;
+    explorer.tz_offset_seconds = -10800; // UTC-3
+
+    var buf: [64]u8 = undefined;
+    var w: Io.Writer = .fixed(&buf);
+    try explorer.writeTime(&w, 100);
+    try testing.expectEqualStrings("       -        ", w.buffered());
+}
