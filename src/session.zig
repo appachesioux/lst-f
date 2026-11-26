@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const explorer = @import("explorer.zig");
+const i18n = @import("i18n.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -192,7 +193,7 @@ pub const State = struct {
     }
 
     pub fn writeHelperScript(s: State, io: Io, app_name: []const u8, version: []const u8) !void {
-        return s.writeHelperScriptWithOptions(io, app_name, version, true);
+        return s.writeHelperScriptWithLang(io, app_name, version, true, .en);
     }
 
     pub fn writeHelperScriptWithOptions(
@@ -201,6 +202,17 @@ pub const State = struct {
         app_name: []const u8,
         version: []const u8,
         icons: bool,
+    ) !void {
+        return s.writeHelperScriptWithLang(io, app_name, version, icons, .en);
+    }
+
+    pub fn writeHelperScriptWithLang(
+        s: State,
+        io: Io,
+        app_name: []const u8,
+        version: []const u8,
+        icons: bool,
+        lang: i18n.Lang,
     ) !void {
         var file = try s.dir.createFile(io, "helper.vim", .{ .truncate = true });
         defer file.close(io);
@@ -211,6 +223,7 @@ pub const State = struct {
         var id_buf: [128]u8 = undefined;
         const identity = std.fmt.bufPrint(&id_buf, "{s} v{s}", .{ app_name, version }) catch "lst-f";
         const icons_val: []const u8 = if (icons) "1" else "0";
+        const lang_val: []const u8 = lang.code();
 
         var rest: []const u8 = helper_template;
         while (rest.len > 0) {
@@ -226,6 +239,9 @@ pub const State = struct {
             } else if (std.mem.startsWith(u8, rest, "{{ICONS}}")) {
                 try w.writeAll(icons_val);
                 rest = rest["{{ICONS}}".len..];
+            } else if (std.mem.startsWith(u8, rest, "{{LANG}}")) {
+                try w.writeAll(lang_val);
+                rest = rest["{{LANG}}".len..];
             } else if (std.mem.startsWith(u8, rest, "{{ICON_HIGHLIGHTS_LIGHT}}")) {
                 try w.writeAll(comptime explorer.vimIconHighlightsLight());
                 rest = rest["{{ICON_HIGHLIGHTS_LIGHT}}".len..];

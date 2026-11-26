@@ -18,74 +18,143 @@ let s:lstf_titles = filereadable($LST_F_STATE . '/titles')
   \ ? get(readfile($LST_F_STATE . '/titles'), 0, '') : ''
 let s:lstf_identity = '{{IDENTITY}}'
 let s:lstf_icons = {{ICONS}}
+let s:lstf_lang = '{{LANG}}'
 let s:lstf_keymap_classic = ($LST_F_KEYMAP ==# 'classic')
+function! s:tr(en, pt) abort
+  return s:lstf_lang ==# 'pt' ? a:pt : a:en
+endfunction
 " Sem titulos nao ha grade para descrever, e a janela de cabecalho
 " nao chega a existir.
 let s:lstf_frame = !empty(s:lstf_titles)
 function! LstfHelp() abort
-  let l:title = ' {{IDENTITY}} — Ajuda (F1) '
-  let l:lines = [
-    \ '',
-    \ '  • Edite o caminho e use :w: renomeia ou move (cria os pais que faltarem)',
-    \ '  • Antes de aplicar, um popup mostra a lista completa de alterações',
-    \ '  • :w sem edição apenas atualiza a lista e mantém a sessão aberta',
-    \ '  • Apague a linha  : manda para a lixeira (:trash abre, 30 dias)',
-    \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretório)',
-    \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
-    \ '  • Só o nome é editável: cabeçalho e colunas voltam sozinhos',
-    \ '  • / ? :s :g       : buscam e trocam só no nome (\%>0v: linha toda)',
-    \ '  • :sort [name|size|time|ext] : ordena (use :sort! para inverter)',
-    \ '  • :filter [pad]   : filtra a listagem sem remover arquivos (:filter! limpa)',
-    \ '  • /0000 oculto    : vincula a linha (:sort e reordenar são seguros)',
-    \ '',
-    \ '  Diretivas e comandos:',
-    \ '    :cd [dir]      Entra no diretório (.. sobe, sem arg ou ~ vai para HOME)',
-    \ '    :home          Vai direto para o diretório HOME (~)',
-    \ '    :trash         Abre a lixeira (remoção lá dentro é definitiva)',
-    \ '    :find [termo]  Busca recursiva fuzzy na árvore com fzf',
-    \ '    :filter [pad]  Filtra a pasta atual sem apagar linhas (:filter! limpa)',
-    \ '    :compact       Alterna colunas compactas (útil em splits estreitos)',
-    \ '    :sh [dir]      Abre terminal / shell no diretório (:shell, :terminal)',
-    \ '    :hidden        Alterna exibição de arquivos ocultos',
-    \ '    :theme [modo]  Alterna ou define tema: light ou dark (:light, :dark)',
-    \ '    :back/:forward Andam pelos diretórios visitados na sessão',
-    \ '    :bookmark      Marca/desmarca a pasta selecionada ou atual',
-    \ '    :bookmarks     Escolhe uma pasta marcada para visitar',
-    \ '    :undo          Desfaz a última operação aplicada (pilha por janela)',
-    \ '    :quit / :q     Sai da sessão (:cq aborta sem aplicar nada)',
-    \ '',
-    \ '  Atalhos no buffer (estilo Vim/oil; LST_F_KEYMAP=classic mantém antigos):',
-    \ '    g.             Alterna exibição de arquivos ocultos',
-    \ '    gh             Vai direto para o diretório HOME (~)',
-    \ '    Ctrl+P         Abre a busca fuzzy (fzf) na árvore inteira',
-    \ '    Enter          Abre arquivo ou entra no diretório da linha',
-    \ '    -              Sobe para o diretório-pai',
-    \ '    Ctrl+L         Recarrega (refresh) a lista atual',
-    \ '    K ou gp        Preview flutuante do arquivo/pasta sob o cursor',
-    \ '    gc             Alterna modo compacto de colunas',
-    \ '    gyr / gyp / yr Copia caminho relativo para o clipboard',
-    \ '    gya / yA       Copia caminho absoluto para o clipboard',
-    \ '    gyl            Copia a linha de link pronta; p cola onde criar',
-    \ '    < e >          Voltam e avançam nos diretórios visitados',
-    \ '    \              Mostra a árvore visual (Enter navega até a pasta)',
-    \ '    F1 ou g?       Esta ajuda',
-    \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
-    \ '    F4             Abre terminal / shell no diretório atual',
-    \ '    gm / gb        Marca pasta / abre bookmarks',
-    \ '    Ctrl+S         Abre o split; depois alterna entre as pastas',
-    \ '    Tab            Percorre as janelas abertas',
-    \ '    yy / dd / p    Copia / recorta ou remove / cola (entre pastas também)',
-    \ '    gq             Fecha primeiro o split, mantendo a pasta principal',
-    \ '    ZZ / :q        Sai da sessão',
-    \ '    (Teclas nativas ., r, Ctrl+R, b, m, q, ~, Ctrl+A, ? ficam livres!)',
-    \ '    :q, :quit, ZZ  Saem do lst-f (tambem depois de renomear)',
-    \ '    F1 ou ?        Abre este popup de ajuda',
-    \ '',
-    \ '  Em terminal estreito, zl/zh rolam horizontalmente',
-    \ '',
-    \ '  Pressione q, <Esc> ou <Enter> para fechar este popup',
-    \ ''
-  \ ]
+  let l:title = ' {{IDENTITY}} — ' . s:tr('Help (F1)', 'Ajuda (F1)') . ' '
+  if s:lstf_lang ==# 'pt'
+    let l:lines = [
+      \ '',
+      \ '  • Edite o caminho e use :w: renomeia ou move (cria os pais que faltarem)',
+      \ '  • Antes de aplicar, um popup mostra a lista completa de alterações',
+      \ '  • :w sem edição apenas atualiza a lista e mantém a sessão aberta',
+      \ '  • Apague a linha  : manda para a lixeira (:trash abre, 30 dias)',
+      \ '  • Nome em linha nova: cria arquivo ( / no fim cria diretório)',
+      \ '  • nome -> alvo    : cria symlink ( nome => alvo cria hardlink)',
+      \ '  • Só o nome é editável: cabeçalho e colunas voltam sozinhos',
+      \ '  • / ? :s :g       : buscam e trocam só no nome (\%>0v: linha toda)',
+      \ '  • :sort [name|size|time|ext] : ordena (use :sort! para inverter)',
+      \ '  • :filter [pad]   : filtra a listagem sem remover arquivos (:filter! limpa)',
+      \ '  • /0000 oculto    : vincula a linha (:sort e reordenar são seguros)',
+      \ '',
+      \ '  Diretivas e comandos:',
+      \ '    :cd [dir]      Entra no diretório (.. sobe, sem arg ou ~ vai para HOME)',
+      \ '    :home          Vai direto para o diretório HOME (~)',
+      \ '    :trash         Abre a lixeira (remoção lá dentro é definitiva)',
+      \ '    :find [termo]  Busca recursiva fuzzy na árvore com fzf',
+      \ '    :filter [pad]  Filtra a pasta atual sem apagar linhas (:filter! limpa)',
+      \ '    :compact       Alterna colunas compactas (útil em splits estreitos)',
+      \ '    :sh [dir]      Abre terminal / shell no diretório (:shell, :terminal)',
+      \ '    :hidden        Alterna exibição de arquivos ocultos',
+      \ '    :theme [modo]  Alterna ou define tema: light ou dark (:light, :dark)',
+      \ '    :back/:forward Andam pelos diretórios visitados na sessão',
+      \ '    :bookmark      Marca/desmarca a pasta selecionada ou atual',
+      \ '    :bookmarks     Escolhe uma pasta marcada para visitar',
+      \ '    :undo          Desfaz a última operação aplicada (pilha por janela)',
+      \ '    :quit / :q     Sai da sessão (:cq aborta sem aplicar nada)',
+      \ '',
+      \ '  Atalhos no buffer (estilo Vim/oil; LST_F_KEYMAP=classic mantém antigos):',
+      \ '    g.             Alterna exibição de arquivos ocultos',
+      \ '    gh             Vai direto para o diretório HOME (~)',
+      \ '    Ctrl+P         Abre a busca fuzzy (fzf) na árvore inteira',
+      \ '    Enter          Abre arquivo ou entra no diretório da linha',
+      \ '    -              Sobe para o diretório-pai',
+      \ '    Ctrl+L         Recarrega (refresh) a lista atual',
+      \ '    K ou gp        Preview flutuante do arquivo/pasta sob o cursor',
+      \ '    gc             Alterna modo compacto de colunas',
+      \ '    gyr / gyp / yr Copia caminho relativo para o clipboard',
+      \ '    gya / yA       Copia caminho absoluto para o clipboard',
+      \ '    gyl            Copia a linha de link pronta; p cola onde criar',
+      \ '    < e >          Voltam e avançam nos diretórios visitados',
+      \ '    \              Mostra a árvore visual (Enter navega até a pasta)',
+      \ '    F1 ou g?       Esta ajuda',
+      \ '    F2 ou cob      Alterna entre tema claro e escuro (light/dark)',
+      \ '    F4             Abre terminal / shell no diretório atual',
+      \ '    gm / gb        Marca pasta / abre bookmarks',
+      \ '    Ctrl+S         Abre o split; depois alterna entre as pastas',
+      \ '    Tab            Percorre as janelas abertas',
+      \ '    yy / dd / p    Copia / recorta ou remove / cola (entre pastas também)',
+      \ '    q / gq         Fecha primeiro o split, mantendo a pasta principal',
+      \ '    ZZ / :q        Sai da sessão',
+      \ '    (Teclas nativas ., r, Ctrl+R, b, m, ~, Ctrl+A, ? ficam livres!)',
+      \ '    :q, :quit, ZZ  Saem do lst-f (também depois de renomear)',
+      \ '    F1 ou g?       Abre este popup de ajuda',
+      \ '',
+      \ '  Em terminal estreito, zl/zh rolam horizontalmente',
+      \ '',
+      \ '  Pressione q, <Esc> ou <Enter> para fechar este popup',
+      \ ''
+    \ ]
+  else
+    let l:lines = [
+      \ '',
+      \ '  • Edit the path and run :w: renames or moves (creates missing parents)',
+      \ '  • Before applying, a popup shows the full list of changes',
+      \ '  • :w without edits simply refreshes the list and keeps the session open',
+      \ '  • Delete a line   : sends to trash (:trash opens it, 30-day retention)',
+      \ '  • Name on new line: creates file (trailing / creates directory)',
+      \ '  • name -> target  : creates symlink (name => target creates hardlink)',
+      \ '  • Only the name is editable: header and columns restore automatically',
+      \ '  • / ? :s :g       : search and replace only in name (\%>0v: whole line)',
+      \ '  • :sort [name|size|time|ext] : sort entries (use :sort! to reverse)',
+      \ '  • :filter [pat]   : filters listing without deleting files (:filter! clears)',
+      \ '  • Hidden /0000    : binds each line (:sort and reordering are safe)',
+      \ '',
+      \ '  Directives and commands:',
+      \ '    :cd [dir]      Enter directory (.. goes up, no arg or ~ goes to HOME)',
+      \ '    :home          Go straight to HOME directory (~)',
+      \ '    :trash         Open trash (deletion inside trash is permanent)',
+      \ '    :find [query]  Recursive fuzzy search across the tree with fzf',
+      \ '    :filter [pat]  Filter current folder without deleting lines (:filter! clears)',
+      \ '    :compact       Toggle compact columns (useful in narrow splits)',
+      \ '    :sh [dir]      Open terminal / shell in directory (:shell, :terminal)',
+      \ '    :hidden        Toggle hidden files',
+      \ '    :theme [mode]  Toggle or set theme: light or dark (:light, :dark)',
+      \ '    :back/:forward Move through visited directories in this session',
+      \ '    :bookmark      Bookmark/unbookmark selected or current folder',
+      \ '    :bookmarks     Choose a bookmarked folder to visit',
+      \ '    :undo          Undo last applied operation (per-window stack)',
+      \ '    :quit / :q     Quit session (:cq aborts without applying anything)',
+      \ '',
+      \ '  Buffer keymaps (Vim/oil style; LST_F_KEYMAP=classic keeps legacy):',
+      \ '    g.             Toggle hidden files',
+      \ '    gh             Go straight to HOME directory (~)',
+      \ '    Ctrl+P         Open fuzzy search (fzf) across the whole tree',
+      \ '    Enter          Open file or enter directory on current line',
+      \ '    -              Go up to parent directory',
+      \ '    Ctrl+L         Refresh current listing',
+      \ '    K or gp        Floating preview of file/folder under cursor',
+      \ '    gc             Toggle compact columns mode',
+      \ '    gyr / gyp / yr Copy relative path to clipboard',
+      \ '    gya / yA       Copy absolute path to clipboard',
+      \ '    gyl            Copy ready-made link line; p pastes where to create',
+      \ '    < and >        Go back and forward in visited directories',
+      \ '    \              Show visual tree (Enter navigates to folder)',
+      \ '    F1 or g?       This help',
+      \ '    F2 or cob      Toggle between light and dark theme',
+      \ '    F4             Open terminal / shell in current directory',
+      \ '    gm / gb        Bookmark folder / open bookmarks',
+      \ '    Ctrl+S         Open split; then switch focus between folders',
+      \ '    Tab            Cycle open windows',
+      \ '    yy / dd / p    Copy / cut or remove / paste (across folders too)',
+      \ '    q / gq         Close split first, keeping main folder',
+      \ '    ZZ / :q        Quit session',
+      \ '    (Native keys ., r, Ctrl+R, b, m, ~, Ctrl+A, ? stay free!)',
+      \ '    :q, :quit, ZZ  Exit lst-f (even after renaming)',
+      \ '    F1 or g?       Open this help popup',
+      \ '',
+      \ '  In narrow terminals, zl/zh scroll horizontally',
+      \ '',
+      \ '  Press q, <Esc>, or <Enter> to close this popup',
+      \ ''
+    \ ]
+  endif
 
   if has('nvim')
     let l:buf = nvim_create_buf(v:false, v:true)
@@ -267,7 +336,7 @@ function! LstfYank(...) abort
     let l:path = s:lstf_rel_path(l:entry, l:dir, s:lstf_root_dir(l:dir))
   endif
   call s:lstf_set_clipboard(l:path)
-  let b:lstf_notice = 'caminho copiado: ' . l:path
+  let b:lstf_notice = s:tr('path copied: ', 'caminho copiado: ') . l:path
   redrawstatus!
 endfunction
 
@@ -287,7 +356,7 @@ function! LstfYankLink() abort
   endif
   let l:line = s:lstf_link_line(l:entry, s:lstf_dir())
   call s:lstf_set_clipboard(l:line, 1)
-  let b:lstf_notice = 'linha de link copiada: ' . l:line
+  let b:lstf_notice = s:tr('link line copied: ', 'linha de link copiada: ') . l:line
   redrawstatus!
 endfunction
 
@@ -302,8 +371,8 @@ function! s:lstf_yank_link_visual() range abort
   if empty(l:lines) | return | endif
   call s:lstf_set_clipboard(join(l:lines, "\n"), 1)
   let b:lstf_notice = len(l:lines) == 1
-    \ ? ('linha de link copiada: ' . l:lines[0])
-    \ : (len(l:lines) . ' linhas de link copiadas')
+    \ ? (s:tr('link line copied: ', 'linha de link copiada: ') . l:lines[0])
+    \ : (len(l:lines) . s:tr(' link lines copied', ' linhas de link copiadas'))
   redrawstatus!
 endfunction
 
@@ -323,7 +392,9 @@ function! s:lstf_yank_visual(abs) range abort
   if !empty(l:paths)
     let l:text = join(l:paths, "\n")
     call s:lstf_set_clipboard(l:text)
-    let b:lstf_notice = len(l:paths) == 1 ? ('caminho copiado: ' . l:paths[0]) : (len(l:paths) . ' caminhos copiados')
+    let b:lstf_notice = len(l:paths) == 1
+      \ ? (s:tr('path copied: ', 'caminho copiado: ') . l:paths[0])
+      \ : (len(l:paths) . s:tr(' paths copied', ' caminhos copiados'))
     redrawstatus!
   endif
 endfunction
@@ -356,7 +427,7 @@ function! s:lstf_open_external(path) abort
   else
     call system('xdg-open ' . shellescape(a:path) . ' >/dev/null 2>&1 &')
   endif
-  let b:lstf_notice = 'aberto via xdg-open'
+  let b:lstf_notice = s:tr('opened via xdg-open', 'aberto via xdg-open')
   redrawstatus!
   return 1
 endfunction
@@ -394,8 +465,8 @@ function! LstfPreview() abort
     return
   endif
   let l:pfile = $LST_F_STATE . '/entry_preview'
-  let l:lines = filereadable(l:pfile) ? readfile(l:pfile) : ['(sem preview)']
-  if empty(l:lines) | let l:lines = ['(vazio)'] | endif
+  let l:lines = filereadable(l:pfile) ? readfile(l:pfile) : [s:tr('(no preview)', '(sem preview)')]
+  if empty(l:lines) | let l:lines = [s:tr('(empty)', '(vazio)')] | endif
   let l:title = ' Preview: ' . fnamemodify(l:path, ':t') . ' '
   if has('nvim')
     let l:buf = nvim_create_buf(v:false, v:true)
@@ -472,8 +543,8 @@ function! s:lstf_write_directive(directive) abort
   " a navegacao adiada), que caem no mesmo `quitall`.
   let l:pendente = s:lstf_pending_elsewhere()
   if !empty(l:pendente)
-    let b:lstf_notice = 'edicao pendente em ' . l:pendente
-      \ . ': aplique ali, ou :cq sai sem aplicar'
+    let b:lstf_notice = s:tr('pending edits in ', 'edição pendente em ') . l:pendente
+      \ . s:tr(': apply there, or :cq quits without applying', ': aplique ali, ou :cq sai sem aplicar')
     redrawstatus!
     return
   endif
@@ -695,7 +766,7 @@ endfunction
 " dentro apaga em definitivo. Sem comando de esvaziar, sem tela propria.
 function! LstfTrash() abort
   if empty($LST_F_TRASH)
-    let b:lstf_notice = 'sem HOME: nao ha lixeira'
+    let b:lstf_notice = s:tr('no HOME: trash unavailable', 'sem HOME: não há lixeira')
     redrawstatus!
     return
   endif
@@ -723,7 +794,7 @@ endfunction
 function! LstfBookmark() abort
   let l:file = s:lstf_bookmark_file()
   if empty(l:file)
-    let b:lstf_notice = 'sem HOME: bookmarks indisponiveis'
+    let b:lstf_notice = s:tr('no HOME: bookmarks unavailable', 'sem HOME: bookmarks indisponíveis')
     redrawstatus!
     return
   endif
@@ -731,7 +802,7 @@ function! LstfBookmark() abort
   let l:selected = empty(l:entry) ? '' : simplify(s:lstf_dir() . '/' . l:entry)
   let l:path = isdirectory(l:selected) ? l:selected : s:lstf_dir()
   if stridx(l:path, "\n") >= 0
-    let b:lstf_notice = 'pasta com quebra de linha nao pode ser marcada'
+    let b:lstf_notice = s:tr('folder with newline cannot be bookmarked', 'pasta com quebra de linha não pode ser marcada')
     redrawstatus!
     return
   endif
@@ -739,22 +810,22 @@ function! LstfBookmark() abort
   let l:idx = index(l:items, l:path)
   if l:idx >= 0
     call remove(l:items, l:idx)
-    let l:notice = 'bookmark removido: ' . l:path
+    let l:notice = s:tr('bookmark removed: ', 'bookmark removido: ') . l:path
   else
     call add(l:items, l:path)
     call sort(l:items)
-    let l:notice = 'bookmark adicionado: ' . l:path
+    let l:notice = s:tr('bookmark added: ', 'bookmark adicionado: ') . l:path
   endif
   try
     if mkdir(fnamemodify(l:file, ':h'), 'p') == 0
-      throw 'nao consegui criar pasta de bookmarks'
+      throw 'mkdir failed'
     endif
     if writefile(l:items, l:file) != 0
-      throw 'nao consegui gravar bookmarks'
+      throw 'writefile failed'
     endif
     let b:lstf_notice = l:notice
   catch
-    let b:lstf_notice = 'nao consegui salvar bookmarks'
+    let b:lstf_notice = s:tr('could not save bookmarks', 'não consegui salvar bookmarks')
   endtry
   redrawstatus!
 endfunction
@@ -776,7 +847,7 @@ function! LstfBookmarkSelect(idx, ...) abort
   if a:idx < 1 || a:idx > len(l:items) | return | endif
   let l:path = l:items[a:idx - 1]
   if !isdirectory(l:path)
-    let b:lstf_notice = 'bookmark inacessivel: ' . l:path
+    let b:lstf_notice = s:tr('bookmark inaccessible: ', 'bookmark inacessível: ') . l:path
     redrawstatus!
     return
   endif
@@ -806,7 +877,7 @@ endfunction
 function! LstfBookmarks() abort
   let l:items = s:lstf_bookmarks()
   if empty(l:items)
-    let b:lstf_notice = 'sem bookmarks: m marca uma pasta'
+    let b:lstf_notice = s:tr('no bookmarks: gm bookmarks a folder', 'sem bookmarks: gm marca uma pasta')
     redrawstatus!
     return
   endif
@@ -869,7 +940,7 @@ function! LstfBookmarks() abort
       \ 'borderhighlight': ['LstfPopupBorder']
     \ })
   else
-    let l:menu = ['Bookmarks (0 cancela):'] + l:lines
+    let l:menu = [s:tr('Bookmarks (0 cancels):', 'Bookmarks (0 cancela):')] + l:lines
     let l:choice = inputlist(l:menu)
     call LstfBookmarkSelect(l:choice)
   endif
@@ -923,7 +994,7 @@ function! LstfToggleTheme(...) abort
   elseif l:target ==# 'toggle'
     let &background = (&background ==# 'light' ? 'dark' : 'light')
   else
-    echoerr 'Uso: :theme [light|dark|toggle]'
+    echoerr s:tr('Usage: :theme [light|dark|toggle]', 'Uso: :theme [light|dark|toggle]')
     return
   endif
   call s:lstf_apply_colors()
@@ -937,7 +1008,7 @@ function! LstfToggleTheme(...) abort
   endif
   redraw!
   redrawstatus!
-  echo 'Tema: ' . &background
+  echo s:tr('Theme: ', 'Tema: ') . &background
 endfunction
 
 
@@ -951,12 +1022,14 @@ function! s:lstf_confirm_plan(plan) abort
   " o que rolar nem tecla a anunciar -- o input() abaixo e a pergunta.
   if &columns < 30 || &lines < 9 || (!has('nvim') && !exists('*popup_create'))
     echo join([''] + a:plan, "\n")
-    let l:answer = input('Aplicar alterações no disco? [s/N] ')
+    let l:answer = input(s:tr('Apply changes to disk? [y/N] ', 'Aplicar alterações no disco? [s/N] '))
     return tolower(l:answer) =~# '^[sy]'
   endif
   let l:max_height = &lines - 6
   let l:keys = len(a:plan) + 3 > l:max_height
-    \ ? '[S]im    [N]ão     j/k rolam' : '[S]im    [N]ão'
+    \ ? s:tr('[Y]es    [N]o     j/k scroll', '[S]im    [N]ão     j/k rolam')
+    \ : s:tr('[Y]es    [N]o', '[S]im    [N]ão')
+  let l:confirm_title = s:tr(' Confirm changes ', ' Confirmar alterações ')
   " As teclas vao no rodape, como numa caixa de dialogo: a acao fica
   " onde o olho a procura. O defeito antigo (a linha de opcoes cair
   " abaixo do corte num plano alto) nao volta porque a vista e ancorada
@@ -987,7 +1060,7 @@ function! s:lstf_confirm_plan(plan) abort
       \ 'height': l:height,
       \ 'style': 'minimal',
       \ 'border': 'rounded',
-      \ 'title': ' Confirmar alterações ',
+      \ 'title': l:confirm_title,
       \ 'title_pos': 'center'
     \ })
     call setwinvar(l:win, '&winhighlight',
@@ -998,7 +1071,7 @@ function! s:lstf_confirm_plan(plan) abort
     call win_execute(l:win, 'setlocal nowrap')
   else
     let l:win = popup_create(l:lines, {
-      \ 'title': ' Confirmar alterações ',
+      \ 'title': l:confirm_title,
       \ 'border': [],
       \ 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'],
       \ 'padding': [0, 1, 0, 1],
@@ -1108,8 +1181,8 @@ function! s:lstf_prepare_save() abort
         endif
       endif
     elseif l:perr == 2
-      let l:answer = input('Apply filesystem changes? [y/N] ')
-      if tolower(l:answer) !=# 'y' && tolower(l:answer) !=# 'yes'
+      let l:answer = input(s:tr('Apply filesystem changes? [y/N] ', 'Aplicar alterações no disco? [s/N] '))
+      if tolower(l:answer) !~# '^[sy]'
         if l:is_quitting
           return
         endif
@@ -1531,11 +1604,11 @@ function! s:lstf_prever(use, path, proprios, tomado, cache) abort
     return
   endif
   if empty(a:use.id)
-    call s:lstf_annotate(a:use.line, '  ✗ nome ja ocupado')
+    call s:lstf_annotate(a:use.line, s:tr('  ✗ name already taken', '  ✗ nome já ocupado'))
     return
   endif
   if !has_key(a:proprios, a:use.id) && !s:lstf_id_ficou_na_origem(a:use.id, a:cache)
-    call s:lstf_annotate(a:use.line, '  ✗ ocupado: apague a linha dele ou renomeie')
+    call s:lstf_annotate(a:use.line, s:tr('  ✗ occupied: delete its line or rename', '  ✗ ocupado: apague a linha dele ou renomeie'))
     return
   endif
   let l:n = 1
@@ -1548,7 +1621,7 @@ function! s:lstf_prever(use, path, proprios, tomado, cache) abort
     endif
     let l:n += 1
   endwhile
-  call s:lstf_annotate(a:use.line, '  ✗ sem nome livre com sufixo')
+  call s:lstf_annotate(a:use.line, s:tr('  ✗ no free suffixed name', '  ✗ sem nome livre com sufixo'))
 endfunction
 
 " Barra de topo: os titulos das colunas sao linha de tela, nao de
@@ -1760,11 +1833,11 @@ function! LstfStatusline() abort
   let l:tag = s:lstf_frame ? '' : s:lstf_identity . '  ·  '
   let l:av = get(b:, 'lstf_notice', '')
   let l:aviso = empty(l:av) ? '' : '%#LstfStatusNotice# ' . substitute(l:av, '%', '%%', 'g') . ' %#LstfStatusInfo#'
-  let l:pending = &modified ? '%#LstfStatusNotice# [editado] %#LstfStatusInfo#' : ''
+  let l:pending = &modified ? '%#LstfStatusNotice# [' . s:tr('modified', 'editado') . '] %#LstfStatusInfo#' : ''
   let l:sort_tag = exists('s:lstf_sort_mode') ? (' ' . s:lstf_sort_mode . (get(s:, 'lstf_sort_reverse', 0) ? '↓' : '↑') . ' ') : ''
   let l:collisions = get(b:, 'lstf_collision_count', 0)
-  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# colisão: ' . l:collisions . ' %#LstfStatusInfo#' : ''
-  return '%#' . l:mode_hl . '# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:pending . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo#' . l:sort_tag . l:tag . l:editor . ' %#LstfStatusHelp# F1=Ajuda '
+  let l:collision = l:collisions > 0 ? '%#LstfStatusCollision# ' . s:tr('collision: ', 'colisão: ') . l:collisions . ' %#LstfStatusInfo#' : ''
+  return '%#' . l:mode_hl . '# ' . l:mode . ' %#LstfStatusInfo# ' . l:current . '/' . l:total . ' ' . l:pending . l:aviso . l:collision . ' %<' . l:where . '%=%#LstfStatusInfo#' . l:sort_tag . l:tag . l:editor . ' %#LstfStatusHelp# ' . s:tr('F1=Help', 'F1=Ajuda') . ' '
 endfunction
 
 function! s:lstf_tree_path_at(lines, lnum) abort
@@ -1812,15 +1885,16 @@ function! LstfTree() abort
   let l:tfile = $LST_F_STATE . '/tree'
   let l:lines = filereadable(l:tfile) ? readfile(l:tfile) : []
   if empty(l:lines)
-    let l:lines = ['(árvore vazia)']
+    let l:lines = [s:tr('(empty tree)', '(árvore vazia)')]
   endif
+  let l:tree_title = s:tr(' Tree (Enter opens) ', ' Árvore (Enter entra) ')
   let s:lstf_tree_lines = l:lines
   if has('nvim')
     let l:buf = nvim_create_buf(v:false, v:true)
     call nvim_buf_set_lines(l:buf, 0, -1, v:true, l:lines)
     let l:width = min([max([50, max(map(copy(l:lines), 'strdisplaywidth(v:val) + 4'))]), &columns - 4])
     let l:height = min([len(l:lines), &lines - 4])
-    let l:opts = {'relative': 'editor', 'row': max([1, (&lines - l:height) / 2 - 1]), 'col': max([1, (&columns - l:width) / 2]), 'width': l:width, 'height': l:height, 'style': 'minimal', 'border': 'rounded', 'title': ' Árvore (Enter entra) ', 'title_pos': 'center'}
+    let l:opts = {'relative': 'editor', 'row': max([1, (&lines - l:height) / 2 - 1]), 'col': max([1, (&columns - l:width) / 2]), 'width': l:width, 'height': l:height, 'style': 'minimal', 'border': 'rounded', 'title': l:tree_title, 'title_pos': 'center'}
     let l:win = nvim_open_win(l:buf, v:true, l:opts)
     call setwinvar(l:win, '&winhighlight',
       \ 'Normal:LstfPopup,FloatBorder:LstfPopupBorder,FloatTitle:LstfPopupBorder')
@@ -1830,7 +1904,7 @@ function! LstfTree() abort
     endfor
     execute 'nnoremap <buffer> <silent> <CR> :let s:lstf_tree_pick = line(".") <Bar> lua pcall(vim.api.nvim_win_close, ' . l:win . ', true) <Bar> call <SID>lstf_tree_enter(s:lstf_tree_lines, s:lstf_tree_pick)<CR>'
   elseif exists('*popup_create')
-    let l:win = popup_create(l:lines, {'title': ' Árvore (Enter entra) ', 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'mapping': 0, 'filter': function('s:lstf_tree_filter'), 'close': 'none', 'highlight': 'LstfPopup', 'borderhighlight': ['LstfPopupBorder']})
+    let l:win = popup_create(l:lines, {'title': l:tree_title, 'border': [], 'borderchars': ['─', '│', '─', '│', '╭', '╮', '╯', '╰'], 'padding': [0, 1, 0, 1], 'pos': 'center', 'cursorline': v:true, 'mapping': 0, 'filter': function('s:lstf_tree_filter'), 'close': 'none', 'highlight': 'LstfPopup', 'borderhighlight': ['LstfPopupBorder']})
   else
     echo join(l:lines, "\n")
   endif
@@ -1874,7 +1948,7 @@ function! s:lstf_collapse_panels(wins) abort
   noautocmd call win_gotoid(l:dest)
   let s:lstf_list_win = l:dest
   if !empty(l:presa)
-    let b:lstf_notice = 'edicao pendente em ' . l:presa . ': janela mantida'
+    let b:lstf_notice = s:tr('pending edits in ', 'edição pendente em ') . l:presa . s:tr(': window kept', ': janela mantida')
   endif
   call s:lstf_follow_scroll()
   call s:lstf_draw_frame()
@@ -1889,7 +1963,7 @@ endfunction
 function! LstfClosePanel() abort
   let l:wins = s:lstf_list_wins()
   if len(l:wins) <= 1
-    let b:lstf_notice = 'painel unico: :q sai do lst-f, Ctrl+S abre o segundo'
+    let b:lstf_notice = s:tr('single pane: :q quits lst-f, Ctrl+S opens a second', 'painel único: :q sai do lst-f, Ctrl+S abre o segundo')
     redrawstatus!
     return
   endif
@@ -1935,9 +2009,9 @@ function! LstfWriteAll(quit) abort
     if !getbufvar(l:nr, '&modified') | continue | endif
     let l:wins = win_findbuf(l:nr)
     if empty(l:wins)
-      let b:lstf_notice = 'edicao pendente em '
+      let b:lstf_notice = s:tr('pending edits in ', 'edição pendente em ')
         \ . fnamemodify(getbufvar(l:nr, 'lstf_dir', ''), ':t')
-        \ . ' sem janela: abra a pasta para gravar'
+        \ . s:tr(' without window: open folder to save', ' sem janela: abra a pasta para gravar')
       redrawstatus!
       return
     endif
@@ -1985,7 +2059,7 @@ function! LstfRefresh() abort
   endif
   silent! edit!
   call s:lstf_after_reload()
-  let b:lstf_notice = 'Lista atualizada'
+  let b:lstf_notice = s:tr('List refreshed', 'Lista atualizada')
   redrawstatus
 endfunction
 
@@ -2298,10 +2372,8 @@ endfunction
 " para nunca deixar o Vim abrir :help em um split e alterar a tela.
 nnoremap <silent> <F1> :call LstfHelp()<CR>
 nnoremap <silent> <F2> :call LstfToggleTheme()<CR>
+nnoremap <silent> q :call LstfQuitPanel()<CR>
 nnoremap <silent> gq :call LstfQuitPanel()<CR>
-if s:lstf_keymap_classic
-  nnoremap <silent> q :call LstfQuitPanel()<CR>
-endif
 nnoremap <silent> ZZ :call LstfQuit()<CR>
 
 " Tudo que e local a um buffer de listagem: opcoes, sintaxe,
@@ -2372,7 +2444,7 @@ function! LstfSort(first, last, arg, reverse) abort
   if empty(l:mode) | let l:mode = 'name' | endif
   if l:mode ==# 'modified' | let l:mode = 'time' | endif
   if index(['name', 'size', 'time', 'ext'], l:mode) < 0
-    echoerr 'Use :sort [name|size|time|modified|ext] ou :sort! [...]'
+    echoerr s:tr('Usage: :sort [name|size|time|modified|ext] or :sort! [...]', 'Use :sort [name|size|time|modified|ext] ou :sort! [...]')
     return
   endif
   let l:lines = getline(a:first, a:last)
@@ -2524,6 +2596,7 @@ function! s:lstf_setup_buffer() abort
   xnoremap <buffer> <silent> gya :call <SID>lstf_yank_visual(1)<CR>
   xnoremap <buffer> <silent> yA :call <SID>lstf_yank_visual(1)<CR>
   xnoremap <buffer> <silent> gyl :call <SID>lstf_yank_link_visual()<CR>
+  nnoremap <buffer> <silent> q :call LstfQuitPanel()<CR>
   nnoremap <buffer> <silent> gq :call LstfQuitPanel()<CR>
   nnoremap <buffer> <silent> ZZ :call LstfQuit()<CR>
   if s:lstf_keymap_classic
@@ -2539,7 +2612,6 @@ function! s:lstf_setup_buffer() abort
     nnoremap <buffer> <silent> yl :call LstfYankLink()<CR>
     xnoremap <buffer> <silent> ya :call <SID>lstf_yank_visual(1)<CR>
     xnoremap <buffer> <silent> yl :call <SID>lstf_yank_link_visual()<CR>
-    nnoremap <buffer> <silent> q :call LstfQuitPanel()<CR>
   endif
   command! -buffer -nargs=? -bang Filter call LstfFilter(<bang>0 ? '' : <q-args>)
   command! -buffer -nargs=0 Compact call LstfToggleCompact()

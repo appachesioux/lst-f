@@ -175,4 +175,10 @@ test "writeHelperScript inclui grupos de highlight e syntax de data por antiguid
     // yr / yp resolvem caminho relativo contra a raiz do projeto (.git e marcadores)
     try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_root_dir(dir) abort") != null);
     try testing.expect(std.mem.indexOf(u8, script, "function! s:lstf_rel_path(entry, dir, root) abort") != null);
+
+    // Idioma injetado no helper (padrao: en; pt quando solicitado)
+    try testing.expect(std.mem.indexOf(u8, script, "let s:lstf_lang = 'en'") != null);
+    try state.writeHelperScriptWithLang(io, "lst-f", "test", true, .pt);
+    const script_pt = try tmp.dir.readFileAlloc(io, "helper.vim", arena, .limited(1024 * 1024));
+    try testing.expect(std.mem.indexOf(u8, script_pt, "let s:lstf_lang = 'pt'") != null);
 }

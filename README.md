@@ -5,7 +5,7 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.11.22 ─╮   ← moldura
+╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.11.26 ─╮   ← moldura
 
 ──────────────────────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos
@@ -46,7 +46,7 @@ em terminais sem Nerd Font).
 | muda o caminho de uma linha          | renomeia ou move (cria os pais que faltam) |
 | apaga a linha                        | manda para a lixeira (recuperável por 30 dias) |
 | escreve um nome em linha nova        | cria o arquivo (com `/` no fim, o diretório) |
-| `gq` no buffer                       | fecha primeiro o split; depois sai do `lst-f` |
+| `q` (ou `gq`) no buffer              | fecha primeiro o split; depois sai do `lst-f` |
 | `ZZ` / `:q` / `:wq` / `:x`           | sai do `lst-f` (`:wq` e `:x` salvam antes) |
 | `F1` ou `g?`                         | abre o popup de ajuda flutuante           |
 | `F2` ou `cob`                        | alterna tema entre claro e escuro (`light`/`dark`) |
@@ -100,7 +100,7 @@ sob o cursor; sobre um arquivo, marca a pasta atual. `gb` abre um popup com a li
 numerada para escolher o destino (`Enter` ou o número confirma, `0`, `Esc` ou `q` cancela).
 A visita entra no histórico, então `<` volta de onde você veio.
 
-Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `s`, `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `gq`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
+Use `:w` para aplicar a edição no filesystem. Antes de qualquer mudança, um popup lista criações, cópias, renomeios e remoções; `s`, `y` ou `Enter` confirma, `n` ou `Esc` cancela, e `j`/`k` rolam listas longas. Mesmo sem alterações, `:w` só atualiza a lista e mantém a sessão aberta. Depois de aplicar, o mesmo buffer é recarregado na mesma instância do editor, sem apagar a tela; o resultado aparece na barra de baixo e o cursor fica na mesma linha aproximada. Se o sistema não permitir o socket da sessão viva, a confirmação textual e o fluxo antigo de fechar e reabrir continuam disponíveis como fallback. `q`, `gq`, `:q`, `:quit` ou `ZZ` encerram a sessão de fato, inclusive quando há renomeações pendentes.
 
 Com edições em mais de uma pasta, `:wa` grava primeiro o destino dos recortes.
 `:wq`, `:wqall`, `:x` e `:xall` usam a mesma ordem e encerram a sessão depois de salvar tudo;

@@ -17,6 +17,7 @@ const fzf = @import("fzf.zig");
 const editor_mod = @import("editor.zig");
 const preview = @import("preview.zig");
 const session = @import("session.zig");
+const i18n = @import("i18n.zig");
 
 const linux = std.os.linux;
 
@@ -59,6 +60,8 @@ pub const Browse = struct {
     cwd_file: ?[]const u8 = null,
     options: explorer.Options = .{ .icons = true },
     theme: ThemePreference = .auto,
+    /// Explicit language override from `--lang`; `null` uses OS/env auto-detection.
+    lang: ?i18n.Lang = null,
 };
 
 pub const ArgError = error{ UnknownOption, MissingValue, BadValue, TooManyPaths };
@@ -112,6 +115,16 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
             } else {
                 return error.BadValue;
             }
+        } else if (std.mem.eql(u8, arg, "--lang")) {
+            i += 1;
+            if (i >= args.len) return error.MissingValue;
+            if (std.ascii.eqlIgnoreCase(args[i], "auto")) {
+                browse.lang = null;
+            } else if (i18n.Lang.parse(args[i])) |l| {
+                browse.lang = l;
+            } else {
+                return error.BadValue;
+            }
         } else if (std.mem.eql(u8, arg, "--editor")) {
             i += 1;
             if (i >= args.len) return error.MissingValue;
@@ -150,79 +163,171 @@ pub fn parseArgs(arena: Allocator, args: []const [:0]const u8, color_default: bo
     return .{ .browse = browse };
 }
 
-pub fn printHelp(w: *Io.Writer) !void {
-    try w.print(
-        \\{s} v{s} — explora e altera o filesystem no terminal
-        \\
-        \\uso: lst-f [opções] [diretório]
-        \\
-        \\A tela é o buffer do seu Vim ou Neovim. Cada linha é uma entrada, com um
-        \\ID oculto à esquerda. Edite o caminho para renomear ou mover; apague a
-        \\linha para mandar à lixeira. O ID casa a linha com a entrada, então
-        \\reordenar, rodar :sort ou recolar linhas é seguro.
-        \\
-        \\  -a, --all, --hidden  mostra arquivos e diretórios ocultos
-        \\  --find [termo]       abre direto no buscador fuzzy da árvore
-        \\  --editor <cmd>       editor a usar (padrão: $LST_F_EDITOR, vim, nvim)
-        \\  --cwd-file <arq>     grava o diretório final ao sair (para wrapper cd)
-        \\  --max-depth <n>      profundidade máxima da busca recursiva
-        \\  --exclude <nome>     ignora diretório no :find (repetível)
-        \\  --icons / --no-icons liga ou desliga ícones Nerd Font (padrão: ligado; LST_F_ICONS=0)
-        \\  --no-color           desliga as cores
-        \\  --light, --dark      força tema claro ou escuro (padrão: auto-detectado)
-        \\  --theme <modo>       define tema: auto, light ou dark
-        \\  -h, --help           esta ajuda
-        \\  -V, --version        versão
-        \\
-        \\comandos no editor:
-        \\  :w                   aplica alterações (com confirmação) ou atualiza a lista
-        \\  :q / :wq / :x        sai da sessão (:cq aborta sem aplicar nada)
-        \\  :sort [name|size|time|ext]  ordena (use :sort! para inverter)
-        \\  :filter [padrão]     filtra a pasta atual sem apagar arquivos (:filter! limpa)
-        \\  :compact             alterna colunas compactas (útil em splits estreitos)
-        \\  :cd [dir], :home     navega entre diretórios
-        \\  :trash               abre a lixeira (remoção lá dentro é definitiva)
-        \\  :find [termo]        busca fuzzy recursiva com o fzf
-        \\  :sh [dir]            abre terminal / shell no diretório
-        \\  :hidden              alterna exibição de arquivos ocultos
-        \\  :theme [light|dark]  alterna ou define o tema
-        \\  :back / :forward     andam pelo histórico de pastas da sessão
-        \\  :bookmark(s)         marca/abre pastas favoritas
-        \\  :undo                desfaz a última operação aplicada (pilha por janela)
-        \\
-        \\atalhos no buffer (defina LST_F_KEYMAP=classic para os antigos):
-        \\  Enter / -            entra no diretório (ou abre arquivo) / sobe ao pai
-        \\  g.                   alterna exibição de arquivos ocultos
-        \\  gh                   vai para HOME (~)
-        \\  Ctrl+L               recarrega a lista atual
-        \\  K ou gp              preview flutuante do item sob o cursor
-        \\  gc                   alterna modo compacto de colunas
-        \\  Ctrl+P               abre a busca fuzzy (fzf) na árvore inteira
-        \\  Ctrl+S / Tab         abre/alterna split lado a lado / percorre janelas
-        \\  < e >                voltam e avançam no histórico
-        \\  \                    árvore visual sob demanda (Enter navega até a pasta)
-        \\  gm / gb              marca pasta / abre bookmarks
-        \\  gyr / gya / gyl      copia caminho relativo / absoluto / linha de link
-        \\  F1 ou g?             ajuda          F2 ou cob  alterna tema
-        \\  F4                   abre shell     gq / ZZ    fecha split / sai
-        \\  yy / dd / p          copia / recorta ou remove / cola (entre pastas também)
-        \\
-        \\no buscador (fzf):
-        \\  Tab                  marca / desmarca      Enter  aceita a marcação
-        \\  Ctrl+A               marca / desmarca tudo
-        \\  {s}                abre e fecha o preview (começa fechado)
-        \\  {s}                   esta ajuda            Esc    cancela
-        \\
-        \\Precisa do fzf ({d}.{d}+) e de Vim ou Neovim no PATH (ou --editor <cmd>).
-        \\
-    , .{
-        build_options.app_name,
-        build_options.version,
-        fzf.Keys.preview,
-        fzf.Keys.help_label,
-        fzf.min_version.major,
-        fzf.min_version.minor,
-    });
+fn extractLangArg(args: []const [:0]const u8) ?i18n.Lang {
+    var result: ?i18n.Lang = null;
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--lang") and i + 1 < args.len) {
+            i += 1;
+            if (std.ascii.eqlIgnoreCase(args[i], "auto")) {
+                result = null;
+            } else if (i18n.Lang.parse(args[i])) |l| {
+                result = l;
+            }
+        }
+    }
+    return result;
+}
+
+pub fn printHelp(w: *Io.Writer, lang: i18n.Lang) !void {
+    switch (lang) {
+        .en => try w.print(
+            \\{s} v{s} — explore and edit the filesystem in your terminal
+            \\
+            \\usage: lst-f [options] [directory]
+            \\
+            \\The screen is your Vim or Neovim buffer. Each line is an entry, with a
+            \\hidden ID on the left. Edit the path to rename or move; delete the line
+            \\to send it to trash. The ID binds each line to its entry, so reordering,
+            \\running :sort, or pasting lines is safe.
+            \\
+            \\  -a, --all, --hidden  show hidden files and directories
+            \\  --find [query]       open directly in the recursive fuzzy finder
+            \\  --editor <cmd>       editor to use (default: $LST_F_EDITOR, vim, nvim)
+            \\  --cwd-file <file>    write final directory on exit (for shell cd wrapper)
+            \\  --max-depth <n>      maximum depth for recursive search
+            \\  --exclude <name>     ignore directory in :find (repeatable)
+            \\  --icons / --no-icons enable or disable Nerd Font icons (default: on; LST_F_ICONS=0)
+            \\  --no-color           disable colors
+            \\  --light, --dark      force light or dark theme (default: auto-detected)
+            \\  --theme <mode>       set theme: auto, light, or dark
+            \\  --lang <lang>        set language: auto, en, or pt (default: auto; LST_F_LANG)
+            \\  -h, --help           show this help
+            \\  -V, --version        show version
+            \\
+            \\editor commands:
+            \\  :w                   apply changes (with confirmation) or refresh listing
+            \\  :q / :wq / :x        quit session (:cq aborts without applying anything)
+            \\  :sort [name|size|time|ext]  sort entries (use :sort! to reverse)
+            \\  :filter [pattern]    filter current folder without deleting files (:filter! clears)
+            \\  :compact             toggle compact columns (useful in narrow splits)
+            \\  :cd [dir], :home     navigate between directories
+            \\  :trash               open trash (deletion inside trash is permanent)
+            \\  :find [query]        recursive fuzzy search with fzf
+            \\  :sh [dir]            open terminal / shell in directory
+            \\  :hidden              toggle hidden files
+            \\  :theme [light|dark]  toggle or set theme
+            \\  :back / :forward     move through session directory history
+            \\  :bookmark(s)         bookmark/open favorite folders
+            \\  :undo                undo last applied operation (per-window stack)
+            \\
+            \\buffer keymaps (set LST_F_KEYMAP=classic for legacy bindings):
+            \\  Enter / -            enter directory (or open file) / go to parent
+            \\  g.                   toggle hidden files
+            \\  gh                   go to HOME (~)
+            \\  Ctrl+L               refresh current listing
+            \\  K or gp              floating preview of item under cursor
+            \\  gc                   toggle compact columns
+            \\  Ctrl+P               open fuzzy search (fzf) across the tree
+            \\  Ctrl+S / Tab         open/switch side-by-side split / cycle windows
+            \\  < and >              go back and forward in history
+            \\  \                    on-demand visual tree (Enter navigates to folder)
+            \\  gm / gb              bookmark folder / open bookmarks
+            \\  gyr / gya / gyl      copy relative path / absolute path / link line
+            \\  F1 or g?             help           F2 or cob  toggle theme
+            \\  F4                   open shell     q / ZZ     close split / quit
+            \\  yy / dd / p          copy / cut or remove / paste (across folders too)
+            \\
+            \\in fuzzy finder (fzf):
+            \\  Tab                  select / deselect     Enter  accept selection
+            \\  Ctrl+A               select / deselect all
+            \\  {s}                toggle preview (starts hidden)
+            \\  {s}                   this help             Esc    cancel
+            \\
+            \\Requires fzf ({d}.{d}+) and Vim or Neovim in PATH (or --editor <cmd>).
+            \\
+        , .{
+            build_options.app_name,
+            build_options.version,
+            fzf.Keys.preview,
+            fzf.Keys.help_label,
+            fzf.min_version.major,
+            fzf.min_version.minor,
+        }),
+        .pt => try w.print(
+            \\{s} v{s} — explora e altera o filesystem no terminal
+            \\
+            \\uso: lst-f [opções] [diretório]
+            \\
+            \\A tela é o buffer do seu Vim ou Neovim. Cada linha é uma entrada, com um
+            \\ID oculto à esquerda. Edite o caminho para renomear ou mover; apague a
+            \\linha para mandar à lixeira. O ID casa a linha com a entrada, então
+            \\reordenar, rodar :sort ou recolar linhas é seguro.
+            \\
+            \\  -a, --all, --hidden  mostra arquivos e diretórios ocultos
+            \\  --find [termo]       abre direto no buscador fuzzy da árvore
+            \\  --editor <cmd>       editor a usar (padrão: $LST_F_EDITOR, vim, nvim)
+            \\  --cwd-file <arq>     grava o diretório final ao sair (para wrapper cd)
+            \\  --max-depth <n>      profundidade máxima da busca recursiva
+            \\  --exclude <nome>     ignora diretório no :find (repetível)
+            \\  --icons / --no-icons liga ou desliga ícones Nerd Font (padrão: ligado; LST_F_ICONS=0)
+            \\  --no-color           desliga as cores
+            \\  --light, --dark      força tema claro ou escuro (padrão: auto-detectado)
+            \\  --theme <modo>       define tema: auto, light ou dark
+            \\  --lang <idioma>      define idioma: auto, en ou pt (padrão: auto; LST_F_LANG)
+            \\  -h, --help           esta ajuda
+            \\  -V, --version        versão
+            \\
+            \\comandos no editor:
+            \\  :w                   aplica alterações (com confirmação) ou atualiza a lista
+            \\  :q / :wq / :x        sai da sessão (:cq aborta sem aplicar nada)
+            \\  :sort [name|size|time|ext]  ordena (use :sort! para inverter)
+            \\  :filter [padrão]     filtra a pasta atual sem apagar arquivos (:filter! limpa)
+            \\  :compact             alterna colunas compactas (útil em splits estreitos)
+            \\  :cd [dir], :home     navega entre diretórios
+            \\  :trash               abre a lixeira (remoção lá dentro é definitiva)
+            \\  :find [termo]        busca fuzzy recursiva com o fzf
+            \\  :sh [dir]            abre terminal / shell no diretório
+            \\  :hidden              alterna exibição de arquivos ocultos
+            \\  :theme [light|dark]  alterna ou define o tema
+            \\  :back / :forward     andam pelo histórico de pastas da sessão
+            \\  :bookmark(s)         marca/abre pastas favoritas
+            \\  :undo                desfaz a última operação aplicada (pilha por janela)
+            \\
+            \\atalhos no buffer (defina LST_F_KEYMAP=classic para os antigos):
+            \\  Enter / -            entra no diretório (ou abre arquivo) / sobe ao pai
+            \\  g.                   alterna exibição de arquivos ocultos
+            \\  gh                   vai para HOME (~)
+            \\  Ctrl+L               recarrega a lista atual
+            \\  K ou gp              preview flutuante do item sob o cursor
+            \\  gc                   alterna modo compacto de colunas
+            \\  Ctrl+P               abre a busca fuzzy (fzf) na árvore inteira
+            \\  Ctrl+S / Tab         abre/alterna split lado a lado / percorre janelas
+            \\  < e >                voltam e avançam no histórico
+            \\  \                    árvore visual sob demanda (Enter navega até a pasta)
+            \\  gm / gb              marca pasta / abre bookmarks
+            \\  gyr / gya / gyl      copia caminho relativo / absoluto / linha de link
+            \\  F1 ou g?             ajuda          F2 ou cob  alterna tema
+            \\  F4                   abre shell     q / ZZ     fecha split / sai
+            \\  yy / dd / p          copia / recorta ou remove / cola (entre pastas também)
+            \\
+            \\no buscador (fzf):
+            \\  Tab                  marca / desmarca      Enter  aceita a marcação
+            \\  Ctrl+A               marca / desmarca tudo
+            \\  {s}                abre e fecha o preview (começa fechado)
+            \\  {s}                   esta ajuda            Esc    cancela
+            \\
+            \\Precisa do fzf ({d}.{d}+) e de Vim ou Neovim no PATH (ou --editor <cmd>).
+            \\
+        , .{
+            build_options.app_name,
+            build_options.version,
+            fzf.Keys.preview,
+            fzf.Keys.help_label,
+            fzf.min_version.major,
+            fzf.min_version.minor,
+        }),
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,24 +369,29 @@ pub fn run(init: std.process.Init) !u8 {
         } else |_| {}
     }
 
+    const detected_lang = extractLangArg(args) orelse i18n.detect(environ);
+
     const cmd = parseArgs(arena, args, color_default) catch |err| {
-        try out.print("lst-f: argumentos invalidos ({s})\n\n", .{@errorName(err)});
-        try printHelp(out);
+        try out.print("lst-f: {s} ({s})\n\n", .{
+            i18n.tr(detected_lang, "invalid arguments", "argumentos inválidos"),
+            @errorName(err),
+        });
+        try printHelp(out, detected_lang);
         return 2;
     };
 
     return switch (cmd) {
         .help => blk: {
-            try printHelp(out);
+            try printHelp(out, detected_lang);
             break :blk 0;
         },
         .version => blk: {
             try out.print("{s} v{s}\n", .{ build_options.app_name, build_options.version });
             break :blk 0;
         },
-        .preview_index => |index| runPreview(arena, io, out, environ, index),
-        .client => |name| runClient(out, environ, name),
-        .browse => |b| runSession(arena, io, out, environ, b),
+        .preview_index => |index| runPreview(arena, io, out, environ, index, detected_lang),
+        .client => |name| runClient(out, environ, name, detected_lang),
+        .browse => |b| runSession(arena, io, out, environ, b, b.lang orelse detected_lang),
     };
 }
 
@@ -293,6 +403,7 @@ fn runPreview(
     out: *Io.Writer,
     environ: *const std.process.Environ.Map,
     index: u32,
+    lang: i18n.Lang,
 ) !u8 {
     const state = session.State.open(arena, io, environ) catch return 1;
     const base_path = state.readBase(io, arena) catch return 1;
@@ -301,7 +412,7 @@ fn runPreview(
 
     var base = Io.Dir.cwd().openDir(io, base_path, .{}) catch return 1;
     defer base.close(io);
-    try preview.render(arena, io, out, base, list[index]);
+    try preview.renderLang(arena, io, out, base, list[index], lang);
     return 0;
 }
 
@@ -313,9 +424,9 @@ fn runPreview(
 ///
 /// `dir` e o que permite mais de um buffer de diretorio aberto ao mesmo tempo:
 /// sem ele o pai nao saberia em qual janela a navegacao aconteceu.
-fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8) !u8 {
+fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8, lang: i18n.Lang) !u8 {
     const state_path = environ.get(session.env_state) orelse {
-        try out.writeAll("lst-f: sem sessao viva\n");
+        try out.writeAll(i18n.tr(lang, "lst-f: no live session\n", "lst-f: sem sessão viva\n"));
         return 2;
     };
     const arg = environ.get(live_env_arg) orelse "";
@@ -337,7 +448,7 @@ fn runClient(out: *Io.Writer, environ: *std.process.Environ.Map, cmd: []const u8
         @ptrCast(&addr),
         @sizeOf(linux.sockaddr.un),
     )) != .SUCCESS) {
-        try out.writeAll("lst-f: sessao nao responde\n");
+        try out.writeAll(i18n.tr(lang, "lst-f: session not responding\n", "lst-f: sessão não responde\n"));
         return 2;
     }
 
@@ -493,6 +604,7 @@ const Session = struct {
     /// Identidade exibida na barra permanente do buffer.
     editor_name: []const u8,
     background: ?editor_mod.Background = null,
+    lang: i18n.Lang = .en,
 
     /// Buffer em foco: o da janela que fez o ultimo pedido, ou o principal
     /// na volta externa do editor. Todo caminho relativo se resolve contra
@@ -531,20 +643,24 @@ fn runSession(
     out: *Io.Writer,
     environ: *std.process.Environ.Map,
     opts: Browse,
+    lang: i18n.Lang,
 ) !u8 {
     const base = Io.Dir.cwd().realPathFileAlloc(io, opts.dir, arena) catch {
-        try out.print("lst-f: nao foi possivel abrir {s}\n", .{opts.dir});
+        try out.print("lst-f: {s} {s}\n", .{
+            i18n.tr(lang, "could not open", "não foi possível abrir"),
+            opts.dir,
+        });
         return 1;
     };
 
     // O editor e requisito, nao conveniencia: sem ele nao ha tela.
     const initial_editor = editor_mod.resolve(arena, io, environ, opts.editor) catch |err| {
-        try explainEditor(out, err);
+        try explainEditor(out, err, lang);
         return 1;
     };
 
     const features = fzf.detect(arena, io, environ) catch |err| blk: {
-        try warnFzf(out, err);
+        try warnFzf(out, err, lang);
         break :blk fzf.Features{ .version = .{ .major = 0, .minor = 0 }, .raw = "" };
     };
 
@@ -568,6 +684,7 @@ fn runSession(
 
     try environ.put(session.env_state, state.path);
     try environ.put(session.env_self, try editor_mod.selfPath(arena, io, environ));
+    try environ.put(i18n.env_lang, lang.code());
     const trash = try trashPath(arena, environ);
     try environ.put(session.env_trash, trash);
     // O contrato com o fzf depende de flags exatas, e `FZF_DEFAULT_OPTS` entra
@@ -587,7 +704,7 @@ fn runSession(
     }
 
     const helper_path = try std.fmt.allocPrint(arena, "{s}/helper.vim", .{state.path});
-    try state.writeHelperScriptWithOptions(io, build_options.app_name, build_options.version, effective_opts.icons);
+    try state.writeHelperScriptWithLang(io, build_options.app_name, build_options.version, effective_opts.icons, lang);
 
     // Um arquivo de buffer por diretorio aberto: e o que permite duas
     // janelas com dois diretorios diferentes (Fase 1 da revisao de UX).
@@ -620,6 +737,7 @@ fn runSession(
         .editor_spec = opts.editor,
         .editor_name = editorLabel(initial_editor),
         .background = bg,
+        .lang = lang,
         .features = features,
         .state = state,
         .pid = pid,
@@ -664,7 +782,7 @@ fn loop(s: *Session) !void {
         s.view.keep_buffer = false;
 
         const editor = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
-            try explainEditor(s.out, err);
+            try explainEditor(s.out, err, s.lang);
             return;
         };
         const spawned = editor_mod.spawn(
@@ -677,7 +795,10 @@ fn loop(s: *Session) !void {
             s.helper_path,
             s.background,
         ) catch |err| {
-            try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
+            try s.out.print("lst-f: {s}: {s}\n", .{
+                i18n.tr(s.lang, "failed to open editor", "falha ao abrir o editor"),
+                @errorName(err),
+            });
             return;
         };
         var child = spawned;
@@ -689,7 +810,10 @@ fn loop(s: *Session) !void {
             if (code == 0) .saved else .aborted
         else blk: {
             const term = child.wait(s.io) catch |err| {
-                try s.out.print("lst-f: falha ao abrir o editor: {s}\n", .{@errorName(err)});
+                try s.out.print("lst-f: {s}: {s}\n", .{
+                    i18n.tr(s.lang, "failed to open editor", "falha ao abrir o editor"),
+                    @errorName(err),
+                });
                 return;
             };
             break :blk switch (term) {
@@ -699,7 +823,11 @@ fn loop(s: *Session) !void {
         };
         // Sair com erro (:cq) e o sinal de "nao aplica nada", como no git commit.
         if (result == .aborted) {
-            try s.out.writeAll("lst-f: editor saiu com erro; nada foi aplicado.\n");
+            try s.out.writeAll(i18n.tr(
+                s.lang,
+                "lst-f: editor exited with error; nothing was applied.\n",
+                "lst-f: editor saiu com erro; nada foi aplicado.\n",
+            ));
             return;
         }
 
@@ -891,7 +1019,8 @@ fn serveEditorRound(s: *Session, child: *std.process.Child) !?u8 {
                 const conn: i32 = @intCast(conn_rc);
                 handleLiveConn(s, conn) catch |err| {
                     var reply_buf: [192]u8 = undefined;
-                    const reply = std.fmt.bufPrint(&reply_buf, "Efalha interna na sessao viva ({s})", .{@errorName(err)}) catch "Efalha interna na sessao viva";
+                    const fallback = i18n.tr(s.lang, "Einternal error in live session", "Efalha interna na sessão viva");
+                    const reply = std.fmt.bufPrint(&reply_buf, "{s} ({s})", .{ fallback, @errorName(err) }) catch fallback;
                     _ = linux.write(conn, reply.ptr, reply.len);
                 };
                 _ = linux.close(conn);
@@ -967,7 +1096,7 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     } else if (std.mem.eql(u8, cmd, "hidden")) {
         s.view.show_hidden = !s.view.show_hidden;
         loadListing(s) catch {
-            s.notice = "nao consegui listar o diretorio";
+            s.notice = i18n.tr(s.lang, "could not list directory", "não consegui listar o diretório");
         };
         ok = true;
     } else if (std.mem.eql(u8, cmd, "enter")) {
@@ -976,9 +1105,9 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         ok = enterDirQuiet(s, arg);
     } else if (std.mem.eql(u8, cmd, "reload") or std.mem.eql(u8, cmd, "refresh")) {
         loadListing(s) catch {
-            s.notice = "nao consegui listar o diretorio";
+            s.notice = i18n.tr(s.lang, "could not list directory", "não consegui listar o diretório");
         };
-        s.notice = "lista atualizada";
+        s.notice = i18n.tr(s.lang, "list refreshed", "lista atualizada");
         ok = true;
     } else if (std.mem.eql(u8, cmd, "apply")) {
         if (try applySavedBufferLive(s)) |message| {
@@ -1002,19 +1131,22 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
     } else if (std.mem.eql(u8, cmd, "filter")) {
         s.view.filter = if (arg.len == 0) null else try s.arena.dupe(u8, arg);
         loadListing(s) catch {
-            s.notice = "não consegui listar o diretório";
+            s.notice = i18n.tr(s.lang, "could not list directory", "não consegui listar o diretório");
         };
         s.notice = if (s.view.filter) |flt|
-            try std.fmt.allocPrint(s.arena, "filtro: {s}", .{flt})
+            try std.fmt.allocPrint(s.arena, "{s}: {s}", .{ i18n.tr(s.lang, "filter", "filtro"), flt })
         else
-            "filtro removido";
+            i18n.tr(s.lang, "filter cleared", "filtro removido");
         ok = true;
     } else if (std.mem.eql(u8, cmd, "compact")) {
         s.view.compact = !s.view.compact;
         loadListing(s) catch {
-            s.notice = "não consegui listar o diretório";
+            s.notice = i18n.tr(s.lang, "could not list directory", "não consegui listar o diretório");
         };
-        s.notice = if (s.view.compact) "modo compacto ligado" else "modo completo ligado";
+        s.notice = if (s.view.compact)
+            i18n.tr(s.lang, "compact mode on", "modo compacto ligado")
+        else
+            i18n.tr(s.lang, "full mode on", "modo completo ligado");
         ok = true;
     } else if (std.mem.eql(u8, cmd, "theme")) {
         const next_bg: editor_mod.Background = if (std.mem.eql(u8, arg, "light"))
@@ -1072,7 +1204,7 @@ fn handleLiveConn(s: *Session, conn: i32) !void {
         _ = linux.write(conn, reply.items.ptr, reply.items.len);
     } else {
         var reply_buf: [512]u8 = undefined;
-        const msg = response orelse failure orelse "nao foi possivel";
+        const msg = response orelse failure orelse i18n.tr(s.lang, "operation failed", "não foi possível");
         const n = @min(msg.len, reply_buf.len - 2);
         reply_buf[0] = 'E';
         @memcpy(reply_buf[1 .. 1 + n], msg[0..n]);
@@ -1099,7 +1231,7 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
     if (document.directive == null or document.directive.? != .refresh) {
-        return "diretiva requer a volta completa da sessão";
+        return i18n.tr(s.lang, "directive requires full session reload", "diretiva requer a volta completa da sessão");
     }
 
     const built = try buildPlan(s, document);
@@ -1113,7 +1245,7 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
 
     const p = copy_resolved.plan;
     if (!p.isEmpty()) {
-        if (!s.state.takeApproval(s.io)) return "alterações não foram confirmadas";
+        if (!s.state.takeApproval(s.io)) return i18n.tr(s.lang, "changes were not confirmed", "alterações não foram confirmadas");
         if (s.last_preview_hash) |expected_hash| {
             var base_dir = try openBase(s);
             defer base_dir.close(s.io);
@@ -1123,14 +1255,18 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
             const actual_hash = std.hash.Wyhash.hash(0, check_out.written());
             s.last_preview_hash = null;
             if (actual_hash != expected_hash) {
-                return "o plano mudou no disco desde a confirmação; revise com :w";
+                return i18n.tr(
+                    s.lang,
+                    "plan changed on disk since confirmation; review with :w",
+                    "o plano mudou no disco desde a confirmação; revise com :w",
+                );
             }
         }
         if (try applyApprovedLive(s, p)) |message| return message;
         s.reload_others = try refreshMovedSources(s, p.copies, try std.fmt.allocPrint(
             s.arena,
-            "movido para {s}",
-            .{abbreviateHome(s.arena, s.environ, s.view.dir)},
+            "{s} {s}",
+            .{ i18n.tr(s.lang, "moved to", "movido para"), abbreviateHome(s.arena, s.environ, s.view.dir) },
         ));
     }
 
@@ -1184,7 +1320,7 @@ fn previewProposedBuffer(s: *Session) !?[]const u8 {
         "proposal",
         req,
         .limited(64 * 1024 * 1024),
-    ) catch return "não foi possível ler a proposta do buffer";
+    ) catch return i18n.tr(s.lang, "could not read buffer proposal", "não foi possível ler a proposta do buffer");
     const parsed = try plan.parseBufferWithOriginals(req, text, s.view.header_lines, s.view.entries);
     if (parsed == .invalid) return try describeProblems(s, parsed.invalid);
     const document = parsed.ok;
@@ -1223,33 +1359,33 @@ fn writeEntryPreview(s: *Session, rel_path: []const u8) !void {
     defer base_dir.close(s.io);
     var out: std.Io.Writer.Allocating = .init(req);
     if (rel_path.len > 0) {
-        try preview.render(req, s.io, &out.writer, base_dir, rel_path);
+        try preview.renderLang(req, s.io, &out.writer, base_dir, rel_path, s.lang);
     }
     try s.state.dir.writeFile(s.io, .{ .sub_path = "entry_preview", .data = out.written() });
 }
 
 fn describeProblems(s: *Session, problems: []const plan.Problem) ![]const u8 {
     var result: std.Io.Writer.Allocating = .init(s.arena);
-    try result.writer.writeAll("buffer tem problemas: ");
+    try result.writer.writeAll(i18n.tr(s.lang, "buffer has problems: ", "buffer tem problemas: "));
     for (problems, 0..) |p, i| {
         if (i != 0) try result.writer.writeAll("; ");
-        try p.describe(&result.writer);
+        try p.describeLang(&result.writer, s.lang);
     }
     return result.written();
 }
 
-fn formatFsError(err: anyerror) []const u8 {
+fn formatFsError(err: anyerror, lang: i18n.Lang) []const u8 {
     return switch (err) {
-        error.AccessDenied, error.PermissionDenied => "permissao negada",
-        error.FileNotFound => "arquivo nao encontrado",
-        error.ReadOnlyFileSystem => "sistema de arquivos somente leitura",
-        error.DeviceOrResourceBusy => "recurso ocupado",
-        error.DiskQuota => "cota de disco excedida",
-        error.NoSpaceLeft => "sem espaco no dispositivo",
-        error.SymlinkInPath => "symlink no caminho",
-        error.PathAlreadyExists => "caminho ja existe",
-        error.DirNotEmpty => "diretorio nao esta vazio",
-        error.TrashUnavailable => "nao consegui abrir a lixeira",
+        error.AccessDenied, error.PermissionDenied => i18n.tr(lang, "permission denied", "permissão negada"),
+        error.FileNotFound => i18n.tr(lang, "file not found", "arquivo não encontrado"),
+        error.ReadOnlyFileSystem => i18n.tr(lang, "read-only filesystem", "sistema de arquivos somente leitura"),
+        error.DeviceOrResourceBusy => i18n.tr(lang, "device or resource busy", "recurso ocupado"),
+        error.DiskQuota => i18n.tr(lang, "disk quota exceeded", "cota de disco excedida"),
+        error.NoSpaceLeft => i18n.tr(lang, "no space left on device", "sem espaço no dispositivo"),
+        error.SymlinkInPath => i18n.tr(lang, "symlink in path", "symlink no caminho"),
+        error.PathAlreadyExists => i18n.tr(lang, "path already exists", "caminho já existe"),
+        error.DirNotEmpty => i18n.tr(lang, "directory not empty", "diretório não está vazio"),
+        error.TrashUnavailable => i18n.tr(lang, "could not open trash", "não consegui abrir a lixeira"),
         else => @errorName(err),
     };
 }
@@ -1273,18 +1409,26 @@ fn applyApprovedLive(s: *Session, p: plan.Plan) !?[]const u8 {
     if (p.removes.len > 0) {
         retention = retentionFor(s) catch |err| return try std.fmt.allocPrint(
             s.arena,
-            "a lixeira não pode receber ({s}): remoção recusada",
-            .{formatFsError(err)},
+            "{s} ({s}): {s}",
+            .{
+                i18n.tr(s.lang, "trash unavailable", "a lixeira não pode receber"),
+                formatFsError(err, s.lang),
+                i18n.tr(s.lang, "removal refused", "remoção recusada"),
+            },
         );
     }
 
-    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, retention);
+    const outcome = try fsops.applyLang(s.arena, s.io, base_dir, effective, retention, s.lang);
     if (outcome.failure) |failure| {
-        return try std.fmt.allocPrint(s.arena, "falha em {s} {s}: {s}; rollback {s}", .{
-            failure.phase,
+        return try std.fmt.allocPrint(s.arena, "{s} {s} {s}: {s}; rollback {s}", .{
+            i18n.tr(s.lang, "failed during", "falha em"),
+            i18n.fsPhase(s.lang, failure.phase),
             failure.detail,
-            formatFsError(failure.err),
-            if (outcome.rollback_errors.len == 0) "completo" else "incompleto",
+            formatFsError(failure.err, s.lang),
+            if (outcome.rollback_errors.len == 0)
+                i18n.tr(s.lang, "complete", "completo")
+            else
+                i18n.tr(s.lang, "incomplete", "incompleto"),
         });
     }
 
@@ -1551,7 +1695,10 @@ fn writeBuffer(s: *Session) !void {
         var loc_buf: std.Io.Writer.Allocating = .init(s.arena);
         try loc_buf.writer.writeAll(abbreviateHome(s.arena, s.environ, s.view.dir));
         if (s.view.show_hidden) try loc_buf.writer.writeAll("  [all]");
-        if (s.view.filter) |flt| try loc_buf.writer.print("  [filtro: {s}]", .{flt});
+        if (s.view.filter) |flt| try loc_buf.writer.print("  [{s}: {s}]", .{
+            i18n.tr(s.lang, "filter", "filtro"),
+            flt,
+        });
         break :blk loc_buf.written();
     };
     // A sessao viva recarrega o buffer sem reabrir o editor: o lado do Vim
@@ -1563,14 +1710,18 @@ fn writeBuffer(s: *Session) !void {
     try s.environ.put(session.env_location, location);
     var notes: std.ArrayList([]const u8) = .empty;
     if (s.view.incomplete) {
-        try notes.append(s.arena, "leitura interrompida — listagem pode estar incompleta");
+        try notes.append(s.arena, i18n.tr(
+            s.lang,
+            "read interrupted — listing may be incomplete",
+            "leitura interrompida — listagem pode estar incompleta",
+        ));
     }
     const header: plan.BufferHeader = .{
         .scope = null,
         .unlistable = s.view.unlistable,
         .notes = notes.items,
     };
-    s.view.header_lines = try plan.headerLines(s.arena, header);
+    s.view.header_lines = try plan.headerLinesLang(s.arena, header, s.lang);
     try s.state.writeHeader(s.io, s.arena, s.view.header_lines);
     const titles: []const u8 = if (s.view.compact)
         "T │ NAME"
@@ -1579,7 +1730,7 @@ fn writeBuffer(s: *Session) !void {
     else
         explorer.table_titles;
     try s.state.writeTitles(s.io, titles);
-    try plan.writeBuffer(s.arena, &writer.interface, header, s.view.entries);
+    try plan.writeBufferLang(s.arena, &writer.interface, header, s.view.entries, s.lang);
     try writer.interface.flush();
     try writeViewSidecars(s, location);
     // O aviso ja esta no arquivo que sera aberto agora; a proxima navegacao
@@ -1689,7 +1840,10 @@ fn writeTree(s: *Session) !void {
         try w.writeByte('\n');
     }
     if (col.truncated) {
-        try w.print("… árvore truncada em {d} entradas\n", .{TreeCollector.limit});
+        switch (s.lang) {
+            .en => try w.print("… tree truncated at {d} entries\n", .{TreeCollector.limit}),
+            .pt => try w.print("… árvore truncada em {d} entradas\n", .{TreeCollector.limit}),
+        }
     }
     try w.flush();
 }
@@ -1726,13 +1880,13 @@ fn isDirty(s: *Session, dir: []const u8) bool {
 fn switchView(s: *Session, dir: []const u8) bool {
     const from = s.view;
     const v = s.views.getOrCreate(s.arena, s.io, s.state.path, dir, from.show_hidden) catch {
-        s.notice = "nao consegui abrir o buffer deste diretorio";
+        s.notice = i18n.tr(s.lang, "could not open buffer for this directory", "não consegui abrir o buffer deste diretório");
         return false;
     };
     if (v == from) {
         if (isDirty(s, v.dir)) return true;
         loadListing(s) catch {
-            s.notice = "nao consegui listar o diretorio";
+            s.notice = i18n.tr(s.lang, "could not list directory", "não consegui listar o diretório");
             return false;
         };
         return true;
@@ -1746,7 +1900,7 @@ fn switchView(s: *Session, dir: []const u8) bool {
     s.view = v;
     if (isDirty(s, v.dir)) return true;
     loadListing(s) catch {
-        s.notice = "nao consegui listar o diretorio";
+        s.notice = i18n.tr(s.lang, "could not list directory", "não consegui listar o diretório");
         return false;
     };
     return true;
@@ -1771,15 +1925,24 @@ fn enterDirQuiet(s: *Session, raw_target: []const u8) bool {
     }
 
     const resolved = Io.Dir.cwd().realPathFileAlloc(s.io, joined, s.arena) catch {
-        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{raw_target}) catch null;
+        s.notice = std.fmt.allocPrint(s.arena, "{s} {s}", .{
+            i18n.tr(s.lang, "could not enter", "não consegui entrar em"),
+            raw_target,
+        }) catch null;
         return false;
     };
     const st = Io.Dir.cwd().statFile(s.io, resolved, .{}) catch {
-        s.notice = std.fmt.allocPrint(s.arena, "nao consegui entrar em {s}", .{raw_target}) catch null;
+        s.notice = std.fmt.allocPrint(s.arena, "{s} {s}", .{
+            i18n.tr(s.lang, "could not enter", "não consegui entrar em"),
+            raw_target,
+        }) catch null;
         return false;
     };
     if (st.kind != .directory) {
-        s.notice = std.fmt.allocPrint(s.arena, "{s} nao e um diretorio", .{raw_target}) catch null;
+        s.notice = std.fmt.allocPrint(s.arena, "{s} {s}", .{
+            raw_target,
+            i18n.tr(s.lang, "is not a directory", "não é um diretório"),
+        }) catch null;
         return false;
     }
     return switchView(s, resolved);
@@ -1790,7 +1953,7 @@ fn enterDirQuiet(s: *Session, raw_target: []const u8) bool {
 /// ao voltar para um View cujo trilho proprio e mais curto.
 fn goBack(s: *Session) !void {
     const target = s.view.history.back() orelse {
-        s.notice = "nao ha para onde voltar nesta sessao";
+        s.notice = i18n.tr(s.lang, "no previous directory in this session", "não há para onde voltar nesta sessão");
         return;
     };
     const trail = s.view.history;
@@ -1804,7 +1967,7 @@ fn goBack(s: *Session) !void {
 
 fn goForward(s: *Session) !void {
     const target = s.view.history.forward() orelse {
-        s.notice = "nao ha para onde avancar nesta sessao";
+        s.notice = i18n.tr(s.lang, "no next directory in this session", "não há para onde avançar nesta sessão");
         return;
     };
     const trail = s.view.history;
@@ -1820,11 +1983,17 @@ fn goForward(s: *Session) !void {
 /// sessao: o passo e desfeito e a tela nao sai do lugar.
 fn enterVisited(s: *Session, target: []const u8) !bool {
     const st = Io.Dir.cwd().statFile(s.io, target, .{}) catch {
-        s.notice = try std.fmt.allocPrint(s.arena, "{s} nao esta mais acessivel", .{target});
+        s.notice = try std.fmt.allocPrint(s.arena, "{s} {s}", .{
+            target,
+            i18n.tr(s.lang, "is no longer accessible", "não está mais acessível"),
+        });
         return false;
     };
     if (st.kind != .directory) {
-        s.notice = try std.fmt.allocPrint(s.arena, "{s} nao e mais um diretorio", .{target});
+        s.notice = try std.fmt.allocPrint(s.arena, "{s} {s}", .{
+            target,
+            i18n.tr(s.lang, "is no longer a directory", "não é mais um diretório"),
+        });
         return false;
     }
     if (!switchView(s, target)) return false;
@@ -1837,7 +2006,7 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
     const preferred = s.environ.get("VISUAL") orelse s.environ.get("EDITOR") orelse s.editor_spec;
     const editor = editor_mod.resolve(s.arena, s.io, s.environ, preferred) catch {
         const fallback = editor_mod.resolve(s.arena, s.io, s.environ, s.editor_spec) catch |err| {
-            try explainEditor(s.out, err);
+            try explainEditor(s.out, err, s.lang);
             return;
         };
         _ = editor_mod.run(
@@ -1849,7 +2018,10 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
             s.view.dir,
             null,
         ) catch |err| {
-            try s.out.print("lst-f: falha ao abrir arquivo no editor: {s}\n", .{@errorName(err)});
+            try s.out.print("lst-f: {s}: {s}\n", .{
+                i18n.tr(s.lang, "failed to open file in editor", "falha ao abrir arquivo no editor"),
+                @errorName(err),
+            });
         };
         try loadListing(s);
         return;
@@ -1863,7 +2035,10 @@ fn openFileInEditor(s: *Session, target: []const u8) !void {
         s.view.dir,
         null,
     ) catch |err| {
-        try s.out.print("lst-f: falha ao abrir arquivo no editor: {s}\n", .{@errorName(err)});
+        try s.out.print("lst-f: {s}: {s}\n", .{
+            i18n.tr(s.lang, "failed to open file in editor", "falha ao abrir arquivo no editor"),
+            @errorName(err),
+        });
     };
     try loadListing(s);
 }
@@ -1898,7 +2073,11 @@ fn openShell(s: *Session, target: ?[]const u8) !void {
         .stdout = .inherit,
         .stderr = .inherit,
     }) catch |err| {
-        try s.out.print("lst-f: falha ao abrir terminal ({s}): {s}\n", .{ dir_to_open, @errorName(err) });
+        try s.out.print("lst-f: {s} ({s}): {s}\n", .{
+            i18n.tr(s.lang, "failed to open shell", "falha ao abrir terminal"),
+            dir_to_open,
+            @errorName(err),
+        });
         try pause(s);
         return;
     };
@@ -1957,7 +2136,11 @@ fn resolveFindExcludes(arena: Allocator, s: *Session) ![]const []const u8 {
 /// vira o conteudo do buffer. Devolve `false` quando nada foi escolhido.
 fn runFind(s: *Session, query: []const u8) !bool {
     if (s.features.version.major == 0 and s.features.version.minor == 0) {
-        s.notice = "o fzf não está disponível; a busca depende dele";
+        s.notice = i18n.tr(
+            s.lang,
+            "fzf is not available; search requires it",
+            "o fzf não está disponível; a busca depende dele",
+        );
         return false;
     }
 
@@ -2005,7 +2188,7 @@ fn runFind(s: *Session, query: []const u8) !bool {
     if (selection.aborted) return false;
     if (std.mem.eql(u8, selection.key, fzf.Keys.help)) {
         try s.out.writeByte('\n');
-        try printHelp(s.out);
+        try printHelp(s.out, s.lang);
         try pause(s);
         return runFind(s, query);
     }
@@ -2035,17 +2218,31 @@ fn runFind(s: *Session, query: []const u8) !bool {
     s.view.entries = try entries.toOwnedSlice(s.arena);
     s.view.unlistable = try unlistable.toOwnedSlice(s.arena);
     reserveIds(s, feed.high);
-    s.notice = if (query.len > 0)
-        try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s)){s}", .{
-            query,
-            s.view.entries.len,
-            if (capped) " [truncado]" else "",
-        })
-    else
-        try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s)){s}", .{
-            s.view.entries.len,
-            if (capped) " [truncado]" else "",
-        });
+    const trunc_tag = if (capped) i18n.tr(s.lang, " [truncated]", " [truncado]") else "";
+    s.notice = switch (s.lang) {
+        .en => if (query.len > 0)
+            try std.fmt.allocPrint(s.arena, ":find {s} results ({d} selected){s}", .{
+                query,
+                s.view.entries.len,
+                trunc_tag,
+            })
+        else
+            try std.fmt.allocPrint(s.arena, ":find results ({d} selected){s}", .{
+                s.view.entries.len,
+                trunc_tag,
+            }),
+        .pt => if (query.len > 0)
+            try std.fmt.allocPrint(s.arena, "resultado de :find {s} ({d} marcada(s)){s}", .{
+                query,
+                s.view.entries.len,
+                trunc_tag,
+            })
+        else
+            try std.fmt.allocPrint(s.arena, "resultado de :find ({d} marcada(s)){s}", .{
+                s.view.entries.len,
+                trunc_tag,
+            }),
+    };
     return true;
 }
 
@@ -2054,12 +2251,14 @@ fn findHeader(s: *Session) ![]const u8 {
     const w = &buf.writer;
     const width: usize = @max(40, terminalWidth() -| gutter);
 
-    const location = try std.fmt.allocPrint(s.arena, "{s}  [arvore]{s}", .{
+    const location = try std.fmt.allocPrint(s.arena, "{s}  [{s}]{s}", .{
         abbreviateHome(s.arena, s.environ, s.view.dir),
+        i18n.tr(s.lang, "tree", "árvore"),
         if (s.view.show_hidden) " [all]" else "",
     });
-    const badge = try std.fmt.allocPrint(s.arena, "{s} ajuda  \u{00b7}  {s} v{s}", .{
+    const badge = try std.fmt.allocPrint(s.arena, "{s} {s}  \u{00b7}  {s} v{s}", .{
         fzf.Keys.help_label,
+        i18n.tr(s.lang, "help", "ajuda"),
         build_options.app_name,
         build_options.version,
     });
@@ -2294,15 +2493,15 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
 
     if (!approved_in_editor and (p.moves.len > 0 or p.creates.len > 0 or p.copies.len > 0 or missing.len > 0)) {
         const question = if (p.moves.len == 0 and p.copies.len == 0)
-            "Aplicar criações?"
+            i18n.tr(s.lang, "Apply creations?", "Aplicar criações?")
         else if (p.creates.len == 0 and p.copies.len == 0)
-            "Aplicar renomeações e movimentos?"
+            i18n.tr(s.lang, "Apply renames and moves?", "Aplicar renomeações e movimentos?")
         else if (p.moves.len == 0 and p.creates.len == 0)
-            "Aplicar cópias?"
+            i18n.tr(s.lang, "Apply copies?", "Aplicar cópias?")
         else if (p.creates.len == 0)
-            "Aplicar renomeações, movimentos e cópias?"
+            i18n.tr(s.lang, "Apply renames, moves, and copies?", "Aplicar renomeações, movimentos e cópias?")
         else
-            "Aplicar criações, renomeações, movimentos e cópias?";
+            i18n.tr(s.lang, "Apply creations, renames, moves, and copies?", "Aplicar criações, renomeações, movimentos e cópias?");
         if (!try confirm(s, question)) {
             effective.moves = &.{};
             effective.renames = &.{};
@@ -2314,17 +2513,32 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
 
     var retention: ?fsops.Retention = null;
     if (p.removes.len > 0) {
-        if (approved_in_editor or try confirm(s, "Confirmar remoções?")) {
+        if (approved_in_editor or try confirm(s, i18n.tr(s.lang, "Confirm removals?", "Confirmar remoções?"))) {
             retention = retentionFor(s) catch |err| blk: {
                 if (err == error.TrashUnavailable) {
-                    try s.out.print(
-                        "lst-f: a lixeira ({s}) nao pode receber. As remocoes foram recusadas;\n" ++
-                            "       as renomeacoes seguem. Apagar sem retencao faria a seguranca\n" ++
-                            "       depender de circunstancia.\n",
-                        .{if (s.trash_path.len > 0) s.trash_path else "sem HOME"},
-                    );
+                    const trash_label = if (s.trash_path.len > 0)
+                        s.trash_path
+                    else
+                        i18n.tr(s.lang, "no HOME", "sem HOME");
+                    switch (s.lang) {
+                        .en => try s.out.print(
+                            "lst-f: trash ({s}) is unavailable. Removals were refused;\n" ++
+                                "       renames will proceed. Deleting without retention would make\n" ++
+                                "       safety depend on circumstance.\n",
+                            .{trash_label},
+                        ),
+                        .pt => try s.out.print(
+                            "lst-f: a lixeira ({s}) não pode receber. As remoções foram recusadas;\n" ++
+                                "       as renomeações seguem. Apagar sem retenção faria a segurança\n" ++
+                                "       depender de circunstância.\n",
+                            .{trash_label},
+                        ),
+                    }
                 } else {
-                    try s.out.print("lst-f: nao foi possivel abrir a lixeira: {s}\n", .{@errorName(err)});
+                    try s.out.print("lst-f: {s}: {s}\n", .{
+                        i18n.tr(s.lang, "could not open trash", "não foi possível abrir a lixeira"),
+                        @errorName(err),
+                    });
                 }
                 break :blk null;
             };
@@ -2336,11 +2550,11 @@ fn confirmAndApply(s: *Session, p: plan.Plan, approved_in_editor: bool) !bool {
     }
 
     if (effective.isEmpty()) {
-        s.notice = "nada foi aplicado";
+        s.notice = i18n.tr(s.lang, "nothing was applied", "nada foi aplicado");
         return false;
     }
 
-    const outcome = try fsops.apply(s.arena, s.io, base_dir, effective, retention);
+    const outcome = try fsops.applyLang(s.arena, s.io, base_dir, effective, retention, s.lang);
     if (outcome.failure) |failure| {
         // Em falha, o relatorio precisa permanecer visivel antes de voltar ao
         // editor para que o estado e a recuperacao manual fiquem claros.
@@ -2373,7 +2587,10 @@ fn appliedNotice(s: *Session, applied: fsops.Applied) ![]const u8 {
 
     var parts: std.ArrayList([]const u8) = .empty;
     if (created_files > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} criado(s)", .{created_files}));
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} {s}", .{
+            created_files,
+            i18n.tr(s.lang, "created", "criado(s)"),
+        }));
     }
     if (created_links > 0) {
         try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} link(s)", .{created_links}));
@@ -2386,27 +2603,49 @@ fn appliedNotice(s: *Session, applied: fsops.Applied) ![]const u8 {
         if (c.cut) moved_in += 1 else copied += 1;
     }
     if (copied > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} copiado(s)", .{copied}));
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} {s}", .{
+            copied,
+            i18n.tr(s.lang, "copied", "copiado(s)"),
+        }));
     }
     if (moved_in > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} movido(s) para ca", .{moved_in}));
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} {s}", .{
+            moved_in,
+            i18n.tr(s.lang, "moved here", "movido(s) para cá"),
+        }));
     }
     if (applied.renames.len > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} renomeado(s)", .{applied.renames.len}));
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} {s}", .{
+            applied.renames.len,
+            i18n.tr(s.lang, "renamed", "renomeado(s)"),
+        }));
     }
     if (parents > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} pai(s)", .{parents}));
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} {s}", .{
+            parents,
+            i18n.tr(s.lang, "parent(s)", "pai(s)"),
+        }));
     }
     if (applied.removed.len > 0) {
-        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} removido(s)", .{applied.removed.len}));
+        try parts.append(s.arena, try std.fmt.allocPrint(s.arena, "{d} {s}", .{
+            applied.removed.len,
+            i18n.tr(s.lang, "removed", "removido(s)"),
+        }));
     }
-    if (parts.items.len == 0) return "nada foi aplicado";
+    if (parts.items.len == 0) return i18n.tr(s.lang, "nothing was applied", "nada foi aplicado");
 
     const summary = try std.mem.join(s.arena, ", ", parts.items);
     if (applied.removed.len > 0) {
-        return std.fmt.allocPrint(s.arena, "aplicado: {s}  ·  :undo desfaz", .{summary});
+        return std.fmt.allocPrint(s.arena, "{s}: {s}  ·  :undo {s}", .{
+            i18n.tr(s.lang, "applied", "aplicado"),
+            summary,
+            i18n.tr(s.lang, "reverts", "desfaz"),
+        });
     }
-    return std.fmt.allocPrint(s.arena, "aplicado: {s}", .{summary});
+    return std.fmt.allocPrint(s.arena, "{s}: {s}", .{
+        i18n.tr(s.lang, "applied", "aplicado"),
+        summary,
+    });
 }
 
 fn missingDirs(s: *Session, base_dir: Io.Dir, dirs: []const []const u8) ![]const []const u8 {
@@ -2463,7 +2702,7 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
         if (!c.implicit) asked += 1;
     }
     if (asked > 0) {
-        try w.print("Criar ({d}):\n", .{asked});
+        try w.print("{s} ({d}):\n", .{ i18n.tr(s.lang, "Create", "Criar"), asked });
         for (p.creates) |c| {
             if (c.implicit) continue;
             if (c.kind == .symlink) {
@@ -2483,17 +2722,17 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
     // Movimento vindo de outra pasta e copia sao secoes separadas: o que muda
     // entre eles e se a origem continua existindo, e essa e justamente a
     // pergunta que o usuario faz ao olhar o preview.
-    try writeCopySection(s, w, p.copies, true, "Mover de outra pasta");
-    try writeCopySection(s, w, p.copies, false, "Copiar");
+    try writeCopySection(s, w, p.copies, true, i18n.tr(s.lang, "Move from another folder", "Mover de outra pasta"));
+    try writeCopySection(s, w, p.copies, false, i18n.tr(s.lang, "Copy", "Copiar"));
 
     if (missing.len > 0) {
-        try w.print("Criar diretório-pai ({d}):\n", .{missing.len});
+        try w.print("{s} ({d}):\n", .{ i18n.tr(s.lang, "Create parent directory", "Criar diretório-pai"), missing.len });
         for (missing) |d| try w.print("  {s}/\n", .{d});
         try w.writeAll("\n");
     }
 
     if (p.moves.len > 0) {
-        try w.print("Renomear ou mover ({d}):\n", .{p.moves.len});
+        try w.print("{s} ({d}):\n", .{ i18n.tr(s.lang, "Rename or move", "Renomear ou mover"), p.moves.len });
         var width: usize = 0;
         for (p.moves) |m| width = @max(width, m.from.len);
         width = @min(width, 48);
@@ -2508,7 +2747,10 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
     if (p.removes.len > 0) {
         if (inTrash(s, s.view.dir)) {
             // Aqui a remocao nao tem para onde ir -- isto ja e a lixeira.
-            try w.print("Remover ({d})  ->  definitivo: isto é a lixeira\n", .{p.removes.len});
+            switch (s.lang) {
+                .en => try w.print("Remove ({d})  ->  permanent: this is the trash\n", .{p.removes.len}),
+                .pt => try w.print("Remover ({d})  ->  definitivo: isto é a lixeira\n", .{p.removes.len}),
+            }
         } else if (trashIsElsewhere(s)) {
             // Outro filesystem: `rename` nao atravessa, entao a lixeira recebe
             // uma copia. O volume aparece porque "apagar" deixa de ser
@@ -2516,21 +2758,38 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
             var total: u64 = 0;
             for (p.removes) |rm| total += fsops.entrySize(s.io, base_dir, rm.path, rm.kind);
             var size_buf: [16]u8 = undefined;
-            try w.print(
-                "Remover ({d})  ->  lixeira {s}, apagada após 30 dias\n" ++
-                    "              cópia de {s}: a lixeira está em outro filesystem\n",
-                .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path), explorer.sizeText(&size_buf, total) },
-            );
+            switch (s.lang) {
+                .en => try w.print(
+                    "Remove ({d})  ->  trash {s}, deleted after 30 days\n" ++
+                        "              copying {s}: trash is on another filesystem\n",
+                    .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path), explorer.sizeText(&size_buf, total) },
+                ),
+                .pt => try w.print(
+                    "Remover ({d})  ->  lixeira {s}, apagada após 30 dias\n" ++
+                        "              cópia de {s}: a lixeira está em outro filesystem\n",
+                    .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path), explorer.sizeText(&size_buf, total) },
+                ),
+            }
         } else {
-            try w.print(
-                "Remover ({d})  ->  lixeira {s}, apagada após 30 dias\n",
-                .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path) },
-            );
+            switch (s.lang) {
+                .en => try w.print(
+                    "Remove ({d})  ->  trash {s}, deleted after 30 days\n",
+                    .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path) },
+                ),
+                .pt => try w.print(
+                    "Remover ({d})  ->  lixeira {s}, apagada após 30 dias\n",
+                    .{ p.removes.len, abbreviateHome(s.arena, s.environ, s.trash_path) },
+                ),
+            }
         }
         for (p.removes) |rm| {
             if (rm.kind == .dir) {
                 const count = fsops.subtreeCount(s.io, base_dir, rm.path);
-                try w.print("  {s}/  ({d} item(ns) na subárvore)\n", .{ rm.path, count });
+                try w.print("  {s}/  ({d} {s})\n", .{
+                    rm.path,
+                    count,
+                    i18n.tr(s.lang, "item(s) in subtree", "item(ns) na subárvore"),
+                });
             } else {
                 try w.print("  {s}\n", .{rm.path});
             }
@@ -2542,52 +2801,108 @@ fn writeDiff(s: *Session, w: *Io.Writer, base_dir: Io.Dir, p: plan.Plan, missing
 fn reportOutcome(s: *Session, outcome: fsops.Outcome) !void {
     const w = s.out;
     if (outcome.failure) |f| {
-        try w.print("\nFALHA em \"{s}\": {s} ({s})\n", .{ f.phase, f.detail, formatFsError(f.err) });
+        try w.print("\n{s} \"{s}\": {s} ({s})\n", .{
+            i18n.tr(s.lang, "FAILURE in", "FALHA em"),
+            i18n.fsPhase(s.lang, f.phase),
+            f.detail,
+            formatFsError(f.err, s.lang),
+        });
         if (outcome.rollback_errors.len == 0) {
-            try w.writeAll("Rollback completo: nada foi alterado.\n");
+            try w.writeAll(i18n.tr(
+                s.lang,
+                "Rollback complete: nothing was changed.\n",
+                "Rollback completo: nada foi alterado.\n",
+            ));
         } else {
-            try w.writeAll("O rollback nao conseguiu desfazer tudo. Estado a recuperar a mao:\n");
+            try w.writeAll(i18n.tr(
+                s.lang,
+                "Rollback could not undo everything. State to recover manually:\n",
+                "O rollback não conseguiu desfazer tudo. Estado a recuperar à mão:\n",
+            ));
             for (outcome.rollback_errors) |e| try w.print("  {s}\n", .{e});
-            try w.writeAll("Entradas que continuam aplicadas:\n");
+            try w.writeAll(i18n.tr(
+                s.lang,
+                "Entries still applied:\n",
+                "Entradas que continuam aplicadas:\n",
+            ));
             for (outcome.applied.created) |c| {
-                try w.print("  {s}{s} criado\n", .{ c.path, if (c.kind == .dir) "/" else "" });
+                try w.print("  {s}{s} {s}\n", .{
+                    c.path,
+                    if (c.kind == .dir) "/" else "",
+                    i18n.tr(s.lang, "created", "criado"),
+                });
             }
             for (outcome.applied.renames) |r| try w.print("  {s} -> {s}\n", .{ r.from, r.to });
-            for (outcome.applied.copied) |c| try w.print("  {s} -> {s} copiado\n", .{ c.from, c.to });
+            for (outcome.applied.copied) |c| try w.print("  {s} -> {s} {s}\n", .{
+                c.from,
+                c.to,
+                i18n.tr(s.lang, "copied", "copiado"),
+            });
             for (outcome.applied.removed) |rm| {
                 if (rm.permanent) {
-                    try w.print("  {s} foi removido em definitivo\n", .{rm.path});
+                    try w.print("  {s} {s}\n", .{
+                        rm.path,
+                        i18n.tr(s.lang, "was permanently removed", "foi removido em definitivo"),
+                    });
                 } else {
-                    try w.print("  {s} esta na lixeira, como {s}\n", .{ rm.path, rm.stored });
+                    try w.print("  {s} {s} {s}\n", .{
+                        rm.path,
+                        i18n.tr(s.lang, "is in trash as", "está na lixeira, como"),
+                        rm.stored,
+                    });
                 }
             }
         }
         return;
     }
 
-    try w.print(
-        "\nAplicado: {d} criacao(oes), {d} copia(s), {d} renomeacao(oes), {d} diretorio(s)-pai, {d} remocao(oes).\n",
-        .{
-            outcome.applied.created.len,
-            outcome.applied.copied.len,
-            outcome.applied.renames.len,
-            outcome.applied.created_dirs.len,
-            outcome.applied.removed.len,
-        },
-    );
+    switch (s.lang) {
+        .en => try w.print(
+            "\nApplied: {d} creation(s), {d} copy(ies), {d} rename(s), {d} parent dir(s), {d} removal(s).\n",
+            .{
+                outcome.applied.created.len,
+                outcome.applied.copied.len,
+                outcome.applied.renames.len,
+                outcome.applied.created_dirs.len,
+                outcome.applied.removed.len,
+            },
+        ),
+        .pt => try w.print(
+            "\nAplicado: {d} criação(ões), {d} cópia(s), {d} renomeação(ões), {d} diretório(s)-pai, {d} remoção(ões).\n",
+            .{
+                outcome.applied.created.len,
+                outcome.applied.copied.len,
+                outcome.applied.renames.len,
+                outcome.applied.created_dirs.len,
+                outcome.applied.removed.len,
+            },
+        ),
+    }
     if (outcome.applied.removed.len > 0) {
-        try w.writeAll("Escreva :undo no buffer para desfazer enquanto a sessao estiver aberta.\n");
+        try w.writeAll(i18n.tr(
+            s.lang,
+            "Write :undo in the buffer to revert while the session is open.\n",
+            "Escreva :undo no buffer para desfazer enquanto a sessão estiver aberta.\n",
+        ));
     }
 }
 
 fn reportProblems(s: *Session, problems: []const plan.Problem) !void {
-    try s.out.writeAll("\nNada foi aplicado. O buffer tem problemas:\n");
+    try s.out.writeAll(i18n.tr(
+        s.lang,
+        "\nNothing was applied. The buffer has problems:\n",
+        "\nNada foi aplicado. O buffer tem problemas:\n",
+    ));
     for (problems) |p| {
         try s.out.writeAll("  ");
-        try p.describe(s.out);
+        try p.describeLang(s.out, s.lang);
         try s.out.writeByte('\n');
     }
-    try s.out.writeAll("\nO buffer volta como voce deixou, para corrigir.\n");
+    try s.out.writeAll(i18n.tr(
+        s.lang,
+        "\nThe buffer will reopen as you left it so you can fix it.\n",
+        "\nO buffer volta como você deixou, para corrigir.\n",
+    ));
     try pause(s);
 }
 
@@ -2658,21 +2973,31 @@ fn pruneTrash(s: *Session) void {
     const now: i64 = @intCast(@divFloor(ns, std.time.ns_per_s));
     const pruned = fsops.pruneTrash(s.io, dir, now, fsops.max_age_s, s.pid);
     if (pruned.isEmpty()) return;
-    s.notice = std.fmt.allocPrint(s.arena, "lixeira: {d} item(ns) com mais de 30 dias apagado(s){s}", .{
-        pruned.expired,
-        if (pruned.temps > 0) ", mais copia interrompida de sessao antiga" else "",
-    }) catch null;
+    s.notice = switch (s.lang) {
+        .en => std.fmt.allocPrint(s.arena, "trash: {d} item(s) older than 30 days deleted{s}", .{
+            pruned.expired,
+            if (pruned.temps > 0) ", plus interrupted copy from old session" else "",
+        }) catch null,
+        .pt => std.fmt.allocPrint(s.arena, "lixeira: {d} item(ns) com mais de 30 dias apagado(s){s}", .{
+            pruned.expired,
+            if (pruned.temps > 0) ", mais cópia interrompida de sessão antiga" else "",
+        }) catch null,
+    };
 }
 
 fn undoLast(s: *Session) !void {
     if (s.view.undo_stack.items.len == 0) {
-        s.notice = "nada para desfazer nesta sessão";
+        s.notice = i18n.tr(s.lang, "nothing to undo in this session", "nada para desfazer nesta sessão");
         return;
     }
     const u = s.view.undo_stack.items[s.view.undo_stack.items.len - 1];
 
     var base_dir = Io.Dir.cwd().openDir(s.io, u.base, .{ .iterate = true }) catch {
-        s.notice = "o diretório da última operação não está mais acessível";
+        s.notice = i18n.tr(
+            s.lang,
+            "directory of the last operation is no longer accessible",
+            "o diretório da última operação não está mais acessível",
+        );
         return;
     };
     defer base_dir.close(s.io);
@@ -2682,15 +3007,23 @@ fn undoLast(s: *Session) !void {
     // volta, e o proprio `revert` diz isso no relatorio.
     const trash_dir: ?Io.Dir = if (s.trash) |t| t.dir else null;
 
-    const errors = try fsops.revert(s.arena, s.io, base_dir, u.applied, trash_dir);
+    const errors = try fsops.revertLang(s.arena, s.io, base_dir, u.applied, trash_dir, s.lang);
     if (errors.len == 0) {
         // O movimento vindo de outra pasta voltou para la: aquele buffer
         // tambem mudou, e nao e o que esta em foco.
-        _ = try refreshMovedSources(s, u.applied.copied, "devolvido pelo :undo");
+        _ = try refreshMovedSources(
+            s,
+            u.applied.copied,
+            i18n.tr(s.lang, "restored by :undo", "devolvido pelo :undo"),
+        );
         _ = s.view.undo_stack.pop();
-        s.notice = "última operação desfeita";
+        s.notice = i18n.tr(s.lang, "last operation undone", "última operação desfeita");
     } else {
-        try s.out.writeAll("\nO undo não conseguiu desfazer tudo:\n");
+        try s.out.writeAll(i18n.tr(
+            s.lang,
+            "\nUndo could not revert everything:\n",
+            "\nO undo não conseguiu desfazer tudo:\n",
+        ));
         for (errors) |e| try s.out.print("  {s}\n", .{e});
     }
     if (errors.len > 0) try pause(s);
@@ -2721,7 +3054,7 @@ const Tty = struct {
 
 fn confirm(s: *Session, question: []const u8) !bool {
     const tty = s.tty orelse return false;
-    try s.out.print("{s} [s/N] ", .{question});
+    try s.out.print("{s} {s} ", .{ question, i18n.tr(s.lang, "[y/N]", "[s/N]") });
     try s.out.flush();
     const answer = tty.line(s.arena, s.io) orelse return false;
     const trimmed = std.mem.trim(u8, answer, " \t\r");
@@ -2731,7 +3064,11 @@ fn confirm(s: *Session, question: []const u8) !bool {
 
 fn pause(s: *Session) !void {
     const tty = s.tty orelse return;
-    try s.out.writeAll("\n[Pressione Enter para voltar à lista] ");
+    try s.out.writeAll(i18n.tr(
+        s.lang,
+        "\n[Press Enter to return to the list] ",
+        "\n[Pressione Enter para voltar à lista] ",
+    ));
     try s.out.flush();
     _ = tty.line(s.arena, s.io);
 }
@@ -2741,30 +3078,49 @@ fn report(s: *Session, message: []const u8) !void {
     try pause(s);
 }
 
-fn explainEditor(w: *Io.Writer, err: editor_mod.ResolveError) !void {
+fn explainEditor(w: *Io.Writer, err: editor_mod.ResolveError, lang: i18n.Lang) !void {
     switch (err) {
-        error.NoEditor => try w.writeAll(
-            "lst-f: vim nao foi encontrado no PATH, e o editor e a tela\n" ++
+        error.NoEditor => try w.writeAll(i18n.tr(
+            lang,
+            "lst-f: vim was not found in PATH, and the editor is the lst-f\n" ++
+                "       screen. Install vim or use --editor <cmd> (e.g. nvim).\n",
+            "lst-f: vim não foi encontrado no PATH, e o editor é a tela\n" ++
                 "       do lst-f. Instale o vim ou use --editor <cmd> (ex.: nvim).\n",
-        ),
-        error.NotForeground => try w.writeAll(
-            "lst-f: o editor configurado nao segura o terminal e devolveria o controle\n" ++
-                "       antes da edicao. Use um editor de terminal, ou a flag de espera do seu\n" ++
+        )),
+        error.NotForeground => try w.writeAll(i18n.tr(
+            lang,
+            "lst-f: the configured editor does not stay in the foreground and would return\n" ++
+                "       control before editing. Use a terminal editor, or pass its wait flag\n" ++
                 "       (code --wait, subl -w).\n",
-        ),
+            "lst-f: o editor configurado não segura o terminal e devolveria o controle\n" ++
+                "       antes da edição. Use um editor de terminal, ou a flag de espera do seu\n" ++
+                "       (code --wait, subl -w).\n",
+        )),
     }
 }
 
-fn warnFzf(w: *Io.Writer, err: anyerror) !void {
+fn warnFzf(w: *Io.Writer, err: anyerror, lang: i18n.Lang) !void {
     switch (err) {
-        error.FzfNotFound => try w.writeAll(
-            "lst-f: o fzf nao esta no PATH; :find nao vai funcionar. O resto da sessao\n" ++
-                "       (listar, renomear, mover, remover) nao depende dele.\n",
-        ),
-        error.FzfTooOld => try w.print(
-            "lst-f: fzf antigo demais para o preview; o piso e {d}.{d}. :find fica indisponivel.\n",
-            .{ fzf.min_version.major, fzf.min_version.minor },
-        ),
-        else => try w.print("lst-f: fzf indisponivel ({s}); :find fica fora do ar.\n", .{@errorName(err)}),
+        error.FzfNotFound => try w.writeAll(i18n.tr(
+            lang,
+            "lst-f: fzf is not in PATH; :find will not work. The rest of the session\n" ++
+                "       (listing, renaming, moving, removing) does not depend on it.\n",
+            "lst-f: o fzf não está no PATH; :find não vai funcionar. O resto da sessão\n" ++
+                "       (listar, renomear, mover, remover) não depende dele.\n",
+        )),
+        error.FzfTooOld => switch (lang) {
+            .en => try w.print(
+                "lst-f: fzf is too old for preview; minimum is {d}.{d}. :find is unavailable.\n",
+                .{ fzf.min_version.major, fzf.min_version.minor },
+            ),
+            .pt => try w.print(
+                "lst-f: fzf antigo demais para o preview; o piso é {d}.{d}. :find fica indisponível.\n",
+                .{ fzf.min_version.major, fzf.min_version.minor },
+            ),
+        },
+        else => switch (lang) {
+            .en => try w.print("lst-f: fzf unavailable ({s}); :find is disabled.\n", .{@errorName(err)}),
+            .pt => try w.print("lst-f: fzf indisponível ({s}); :find fica fora do ar.\n", .{@errorName(err)}),
+        },
     }
 }

@@ -13,6 +13,7 @@ const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 const plan = @import("plan.zig");
+const i18n = @import("i18n.zig");
 
 pub const Removed = struct {
     id: u32,
@@ -220,10 +221,21 @@ pub fn apply(
     io: Io,
     base: Io.Dir,
     p: plan.Plan,
+    retention: ?Retention,
+) Allocator.Error!Outcome {
+    return applyLang(arena, io, base, p, retention, .en);
+}
+
+pub fn applyLang(
+    arena: Allocator,
+    io: Io,
+    base: Io.Dir,
+    p: plan.Plan,
     /// Para onde vai o que for removido. `null` so quando o plano nao remove
     /// nada -- quem chama recusa a remocao antes de chegar aqui se a lixeira
     /// nao pode receber.
     retention: ?Retention,
+    lang: i18n.Lang,
 ) Allocator.Error!Outcome {
     var created: std.ArrayList([]const u8) = .empty;
     var new_entries: std.ArrayList(plan.Create) = .empty;
@@ -241,7 +253,7 @@ pub fn apply(
     if (p.removes.len > 0 and retention == null) return .{
         .applied = .{},
         .failure = .{
-            .phase = "remover",
+            .phase = "remove",
             .detail = p.removes[0].path,
             .err = error.TrashUnavailable,
         },
@@ -253,7 +265,7 @@ pub fn apply(
             .dir => continue,
             .symlink => {
                 failure = .{
-                    .phase = "criar diretorio",
+                    .phase = "create directory",
                     .detail = dir_path,
                     .err = error.SymlinkInPath,
                 };
@@ -261,7 +273,7 @@ pub fn apply(
             },
             .other => {
                 failure = .{
-                    .phase = "criar diretorio",
+                    .phase = "create directory",
                     .detail = dir_path,
                     .err = error.PathAlreadyExists,
                 };
@@ -270,7 +282,7 @@ pub fn apply(
             .missing => {},
         }
         base.createDir(io, dir_path, .default_dir) catch |err| {
-            failure = .{ .phase = "criar diretorio", .detail = dir_path, .err = err };
+            failure = .{ .phase = "create directory", .detail = dir_path, .err = err };
             break :phase1;
         };
         try created.append(arena, dir_path);
@@ -293,7 +305,7 @@ pub fn apply(
         for (p.renames) |r| {
             base.renamePreserve(r.from, base, r.to, io) catch |err| {
                 failure = .{
-                    .phase = "renomear",
+                    .phase = "rename",
                     .detail = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ r.from, r.to }),
                     .err = err,
                 };
@@ -313,14 +325,14 @@ pub fn apply(
                 // um diretorio que ja existe foi barrado antes, na validacao.
                 if (dirStatus(io, base, c.path) == .dir) continue;
                 base.createDir(io, c.path, .default_dir) catch |err| {
-                    failure = .{ .phase = "criar diretorio", .detail = c.path, .err = err };
+                    failure = .{ .phase = "create directory", .detail = c.path, .err = err };
                     break;
                 };
             } else if (c.kind == .symlink) {
                 const target = c.target orelse "";
                 base.symLink(io, target, c.path, .{}) catch |err| {
                     failure = .{
-                        .phase = "criar symlink",
+                        .phase = "create symlink",
                         .detail = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ c.path, target }),
                         .err = err,
                     };
@@ -330,7 +342,7 @@ pub fn apply(
                 const target = c.target orelse "";
                 base.hardLink(target, base, c.path, io, .{}) catch |err| {
                     failure = .{
-                        .phase = "criar hardlink",
+                        .phase = "create hardlink",
                         .detail = try std.fmt.allocPrint(arena, "{s} => {s}", .{ c.path, target }),
                         .err = err,
                     };
@@ -338,7 +350,7 @@ pub fn apply(
                 };
             } else {
                 var file = base.createFile(io, c.path, .{ .exclusive = true }) catch |err| {
-                    failure = .{ .phase = "criar", .detail = c.path, .err = err };
+                    failure = .{ .phase = "create", .detail = c.path, .err = err };
                     break;
                 };
                 file.close(io);
@@ -360,7 +372,7 @@ pub fn apply(
                 copyEntry(arena, io, base, c);
             outcome catch |err| {
                 failure = .{
-                    .phase = if (c.cut) "mover" else "copiar",
+                    .phase = if (c.cut) "move" else "copy",
                     .detail = try std.fmt.allocPrint(arena, "{s} -> {s}", .{ c.from, c.to }),
                     .err = err,
                 };
@@ -413,7 +425,7 @@ pub fn apply(
         .trash => |t| t.dir,
         .permanent => null,
     } else null;
-    const errors = try revert(arena, io, base, applied, trash_dir);
+    const errors = try revertLang(arena, io, base, applied, trash_dir, lang);
     if (errors.len == 0) applied = .{};
     return .{ .failure = failure, .applied = applied, .rollback_errors = errors };
 }
@@ -431,7 +443,7 @@ fn remove(
         .trash => |t| return removeIntoTrash(arena, io, base, t, rm, removed),
         .permanent => {
             deleteEntry(io, base, rm.path, rm.kind) catch |err| {
-                return .{ .phase = "remover", .detail = rm.path, .err = err };
+                return .{ .phase = "remove", .detail = rm.path, .err = err };
             };
             try removed.append(arena, .{
                 .id = rm.id,
@@ -465,7 +477,7 @@ fn removeIntoTrash(
     var attempt: u32 = 0;
     while (attempt < 100) : (attempt += 1) {
         const stored = (try freeName(arena, io, t.dir, name, rm.kind == .dir)) orelse
-            return .{ .phase = "remover", .detail = rm.path, .err = error.PathAlreadyExists };
+            return .{ .phase = "remove", .detail = rm.path, .err = error.PathAlreadyExists };
         base.renamePreserve(rm.path, t.dir, stored, io) catch |err| switch (err) {
             // Corrida com outra sessao mandando o mesmo nome para ca: tenta o
             // sufixo seguinte. `renamePreserve` e RENAME_NOREPLACE, entao
@@ -473,7 +485,7 @@ fn removeIntoTrash(
             error.PathAlreadyExists => continue,
             error.CrossDevice => {
                 copyIntoTrash(arena, io, base, t, rm, stored) catch |cerr| {
-                    return .{ .phase = "remover", .detail = rm.path, .err = cerr };
+                    return .{ .phase = "remove", .detail = rm.path, .err = cerr };
                 };
                 try removed.append(arena, .{
                     .id = rm.id,
@@ -484,7 +496,7 @@ fn removeIntoTrash(
                 });
                 return null;
             },
-            else => return .{ .phase = "remover", .detail = rm.path, .err = err },
+            else => return .{ .phase = "remove", .detail = rm.path, .err = err },
         };
         try removed.append(arena, .{
             .id = rm.id,
@@ -494,7 +506,7 @@ fn removeIntoTrash(
         });
         return null;
     }
-    return .{ .phase = "remover", .detail = rm.path, .err = error.PathAlreadyExists };
+    return .{ .phase = "remove", .detail = rm.path, .err = error.PathAlreadyExists };
 }
 
 /// Nome livre na lixeira: o original, ou `nome-01`, `nome-02`... -- o sufixo da
@@ -611,11 +623,11 @@ fn removeSource(
     const dir = std.fs.path.dirname(abs) orelse "/";
     const name = std.fs.path.basename(abs);
     var src = Io.Dir.cwd().openDir(io, dir, .{}) catch |err| {
-        return .{ .phase = "remover a origem do movimento", .detail = abs, .err = err };
+        return .{ .phase = "remove move source", .detail = abs, .err = err };
     };
     defer src.close(io);
     deleteEntry(io, src, name, c.kind) catch |err| {
-        return .{ .phase = "remover a origem do movimento", .detail = abs, .err = err };
+        return .{ .phase = "remove move source", .detail = abs, .err = err };
     };
     try out.append(arena, .{ .dir = dir, .name = name, .to = c.to, .kind = c.kind });
     return null;
@@ -685,12 +697,23 @@ pub fn revert(
     applied: Applied,
     trash_dir: ?Io.Dir,
 ) Allocator.Error![]const []const u8 {
+    return revertLang(arena, io, base, applied, trash_dir, .en);
+}
+
+pub fn revertLang(
+    arena: Allocator,
+    io: Io,
+    base: Io.Dir,
+    applied: Applied,
+    trash_dir: ?Io.Dir,
+    lang: i18n.Lang,
+) Allocator.Error![]const []const u8 {
     var errors: std.ArrayList([]const u8) = .empty;
 
     // Remocoes que vieram por ultimo saem primeiro. As antecipadas so podem
     // voltar depois de desfazer as renomeacoes: um rename pode estar ocupando
     // o caminho original delas.
-    try restoreRemovals(arena, io, base, trash_dir, applied.removed, applied.removed_before, applied.removed.len, &errors);
+    try restoreRemovals(arena, io, base, trash_dir, applied.removed, applied.removed_before, applied.removed.len, lang, &errors);
 
     var c = applied.created.len;
     while (c > 0) {
@@ -701,13 +724,13 @@ pub fn revert(
                 error.FileNotFound => {},
                 error.DirNotEmpty => try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "{s}/ foi mantido: nao esta mais vazio",
-                    .{entry.path},
+                    "{s}/ {s}",
+                    .{ entry.path, i18n.tr(lang, "was kept: no longer empty", "foi mantido: não está mais vazio") },
                 )),
                 else => try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "remover {s}/ criado: {s}",
-                    .{ entry.path, @errorName(err) },
+                    "{s} {s}/: {s}",
+                    .{ i18n.tr(lang, "remove created", "remover criado"), entry.path, @errorName(err) },
                 )),
             };
             continue;
@@ -717,8 +740,8 @@ pub fn revert(
                 error.FileNotFound => {},
                 else => try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "remover {s} criado: {s}",
-                    .{ entry.path, @errorName(err) },
+                    "{s} {s}: {s}",
+                    .{ i18n.tr(lang, "remove created", "remover criado"), entry.path, @errorName(err) },
                 )),
             };
             continue;
@@ -727,16 +750,16 @@ pub fn revert(
         const st = base.statFile(io, entry.path, .{ .follow_symlinks = false }) catch |err| {
             if (err != error.FileNotFound) try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "remover {s} criado: {s}",
-                .{ entry.path, @errorName(err) },
+                "{s} {s}: {s}",
+                .{ i18n.tr(lang, "remove created", "remover criado"), entry.path, @errorName(err) },
             ));
             continue;
         };
         if (st.size != 0) {
             try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "{s} foi mantido: nao esta mais vazio",
-                .{entry.path},
+                "{s} {s}",
+                .{ entry.path, i18n.tr(lang, "was kept: no longer empty", "foi mantido: não está mais vazio") },
             ));
             continue;
         }
@@ -744,8 +767,8 @@ pub fn revert(
             error.FileNotFound => {},
             else => try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "remover {s} criado: {s}",
-                .{ entry.path, @errorName(err) },
+                "{s} {s}: {s}",
+                .{ i18n.tr(lang, "remove created", "remover criado"), entry.path, @errorName(err) },
             )),
         };
     }
@@ -769,8 +792,16 @@ pub fn revert(
             try kept.put(arena, mv.to, {});
             try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "devolver {s} para {s}: {s}; mantive {s}",
-                .{ mv.name, mv.dir, @errorName(err), mv.to },
+                "{s} {s} {s} {s}: {s}; {s} {s}",
+                .{
+                    i18n.tr(lang, "return", "devolver"),
+                    mv.name,
+                    i18n.tr(lang, "to", "para"),
+                    mv.dir,
+                    @errorName(err),
+                    i18n.tr(lang, "kept", "mantive"),
+                    mv.to,
+                },
             ));
         };
     }
@@ -789,8 +820,8 @@ pub fn revert(
             var src = Io.Dir.cwd().openDir(io, parent, .{}) catch |err| {
                 try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "devolver {s} para {s}: {s}",
-                    .{ cp.to, parent, @errorName(err) },
+                    "{s} {s} {s} {s}: {s}",
+                    .{ i18n.tr(lang, "return", "devolver"), cp.to, i18n.tr(lang, "to", "para"), parent, @errorName(err) },
                 ));
                 continue;
             };
@@ -798,8 +829,8 @@ pub fn revert(
             base.renamePreserve(cp.to, src, std.fs.path.basename(abs), io) catch |err| {
                 try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "devolver {s} para {s}: {s}",
-                    .{ cp.to, abs, @errorName(err) },
+                    "{s} {s} {s} {s}: {s}",
+                    .{ i18n.tr(lang, "return", "devolver"), cp.to, i18n.tr(lang, "to", "para"), abs, @errorName(err) },
                 ));
             };
             continue;
@@ -808,8 +839,8 @@ pub fn revert(
             if (copyModified(io, base, cp.to, cp.kind, applied.copied_meta[k])) {
                 try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "{s} foi mantido: modificado após a cópia",
-                    .{cp.to},
+                    "{s} {s}",
+                    .{ cp.to, i18n.tr(lang, "was kept: modified after copy", "foi mantido: modificado após a cópia") },
                 ));
                 continue;
             }
@@ -817,16 +848,16 @@ pub fn revert(
         if (cp.kind == .dir) {
             base.deleteTree(io, cp.to) catch |err| try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "remover {s}/ copiado: {s}",
-                .{ cp.to, @errorName(err) },
+                "{s} {s}/: {s}",
+                .{ i18n.tr(lang, "remove copied", "remover copiado"), cp.to, @errorName(err) },
             ));
         } else {
             base.deleteFile(io, cp.to) catch |err| switch (err) {
                 error.FileNotFound => {},
                 else => try errors.append(arena, try std.fmt.allocPrint(
                     arena,
-                    "remover {s} copiado: {s}",
-                    .{ cp.to, @errorName(err) },
+                    "{s} {s}: {s}",
+                    .{ i18n.tr(lang, "remove copied", "remover copiado"), cp.to, @errorName(err) },
                 )),
             };
         }
@@ -839,8 +870,8 @@ pub fn revert(
         base.renamePreserve(r.to, base, r.from, io) catch |err| {
             try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "desfazer {s} -> {s}: {s}",
-                .{ r.from, r.to, @errorName(err) },
+                "{s} {s} -> {s}: {s}",
+                .{ i18n.tr(lang, "undo", "desfazer"), r.from, r.to, @errorName(err) },
             ));
         };
     }
@@ -852,13 +883,13 @@ pub fn revert(
             error.DirNotEmpty, error.FileNotFound => {},
             else => try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "remover diretorio criado {s}: {s}",
-                .{ applied.created_dirs[j], @errorName(err) },
+                "{s} {s}: {s}",
+                .{ i18n.tr(lang, "remove created directory", "remover diretório criado"), applied.created_dirs[j], @errorName(err) },
             )),
         };
     }
 
-    try restoreRemovals(arena, io, base, trash_dir, applied.removed, 0, applied.removed_before, &errors);
+    try restoreRemovals(arena, io, base, trash_dir, applied.removed, 0, applied.removed_before, lang, &errors);
 
     return errors.toOwnedSlice(arena);
 }
@@ -875,6 +906,7 @@ fn restoreRemovals(
     removed: []const Removed,
     from: usize,
     to: usize,
+    lang: i18n.Lang,
     errors: *std.ArrayList([]const u8),
 ) Allocator.Error!void {
     var i = to;
@@ -884,8 +916,8 @@ fn restoreRemovals(
         if (rm.permanent) {
             try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "{s} nao volta: foi removido em definitivo",
-                .{rm.path},
+                "{s} {s}",
+                .{ rm.path, i18n.tr(lang, "cannot be restored: permanently removed", "não volta: foi removido em definitivo") },
             ));
             continue;
         }
@@ -893,8 +925,8 @@ fn restoreRemovals(
         restoreRemoval(arena, io, base, trash, rm) catch |err| {
             try errors.append(arena, try std.fmt.allocPrint(
                 arena,
-                "restaurar {s} de {s}: {s}",
-                .{ rm.path, rm.stored, @errorName(err) },
+                "{s} {s} {s} {s}: {s}",
+                .{ i18n.tr(lang, "restore", "restaurar"), rm.path, i18n.tr(lang, "from", "de"), rm.stored, @errorName(err) },
             ));
         };
     }

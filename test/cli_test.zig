@@ -96,6 +96,22 @@ test "flags de tema (--light, --dark, --theme)" {
     try testing.expectError(error.BadValue, parse(a, &.{ "lst-f", "--theme", "invalido" }));
 }
 
+test "flag --lang aceita auto, en, pt e rejeita invalidos" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const i18n = @import("lst_f").i18n;
+
+    try testing.expectEqual(@as(?i18n.Lang, null), (try parse(a, &.{"lst-f"})).browse.lang);
+    try testing.expectEqual(@as(?i18n.Lang, .en), (try parse(a, &.{ "lst-f", "--lang", "en" })).browse.lang);
+    try testing.expectEqual(@as(?i18n.Lang, .pt), (try parse(a, &.{ "lst-f", "--lang", "pt" })).browse.lang);
+    try testing.expectEqual(@as(?i18n.Lang, .pt), (try parse(a, &.{ "lst-f", "--lang", "pt_BR" })).browse.lang);
+    try testing.expectEqual(@as(?i18n.Lang, null), (try parse(a, &.{ "lst-f", "--lang", "auto" })).browse.lang);
+
+    try testing.expectError(error.MissingValue, parse(a, &.{ "lst-f", "--lang" }));
+    try testing.expectError(error.BadValue, parse(a, &.{ "lst-f", "--lang", "fr" }));
+}
+
 test "flags novas (--no-icons, --cwd-file, --exclude) e helpers (abbreviateHome, matchesFilter)" {
     var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
     defer arena_state.deinit();

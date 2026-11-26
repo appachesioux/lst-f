@@ -78,12 +78,22 @@ test "render lida com binario grande, vazio, diretorio, symlink quebrado e ANSI"
     {
         var out: std.Io.Writer.Allocating = .init(a);
         try preview.render(a, io, &out.writer, tmp.dir, "grande.bin");
-        try testing.expect(std.mem.indexOf(u8, out.written(), "binário") != null);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "binary") != null);
         try testing.expect(std.mem.indexOf(u8, out.written(), "7f 45 4c 46") != null);
     }
     {
         var out: std.Io.Writer.Allocating = .init(a);
+        try preview.renderLang(a, io, &out.writer, tmp.dir, "grande.bin", .pt);
+        try testing.expect(std.mem.indexOf(u8, out.written(), "binário") != null);
+    }
+    {
+        var out: std.Io.Writer.Allocating = .init(a);
         try preview.render(a, io, &out.writer, tmp.dir, "vazio.txt");
+        try testing.expect(std.mem.indexOf(u8, out.written(), "(empty)") != null);
+    }
+    {
+        var out: std.Io.Writer.Allocating = .init(a);
+        try preview.renderLang(a, io, &out.writer, tmp.dir, "vazio.txt", .pt);
         try testing.expect(std.mem.indexOf(u8, out.written(), "(vazio)") != null);
     }
     {

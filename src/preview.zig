@@ -6,6 +6,7 @@
 const std = @import("std");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
+const i18n = @import("i18n.zig");
 
 const max_text_bytes = 64 * 1024;
 const max_lines = 300;
@@ -19,15 +20,34 @@ pub fn render(
     base: Io.Dir,
     rel_path: []const u8,
 ) !void {
+    return renderLang(arena, io, w, base, rel_path, .en);
+}
+
+pub fn renderLang(
+    arena: Allocator,
+    io: Io,
+    w: *Io.Writer,
+    base: Io.Dir,
+    rel_path: []const u8,
+    lang: i18n.Lang,
+) !void {
     const st = base.statFile(io, rel_path, .{ .follow_symlinks = false }) catch |err| {
-        try w.print("{s}\n\nnão foi possível ler: {s}\n", .{ rel_path, @errorName(err) });
+        try w.print("{s}\n\n{s}: {s}\n", .{
+            rel_path,
+            i18n.tr(lang, "could not read", "não foi possível ler"),
+            @errorName(err),
+        });
         return;
     };
 
     try w.print("{s}\n", .{rel_path});
     try w.print("{s}  {d} bytes\n", .{ @tagName(st.kind), st.size });
     if (!std.unicode.utf8ValidateSlice(rel_path)) {
-        try w.writeAll("nome não é UTF-8 válido: lista e navega, mas a edição em lote recusa\n");
+        try w.writeAll(i18n.tr(
+            lang,
+            "name is not valid UTF-8: listed and navigable, but refused by batch edit\n",
+            "nome não é UTF-8 válido: lista e navega, mas a edição em lote recusa\n",
+        ));
     }
     try w.writeAll("\n");
 
@@ -35,20 +55,31 @@ pub fn render(
         .sym_link => {
             var buf: [Io.Dir.max_path_bytes]u8 = undefined;
             const n = base.readLink(io, rel_path, &buf) catch {
-                try w.writeAll("link simbólico (alvo ilegível)\n");
+                try w.writeAll(i18n.tr(
+                    lang,
+                    "symbolic link (unreadable target)\n",
+                    "link simbólico (alvo ilegível)\n",
+                ));
                 return;
             };
             try w.print("-> {s}\n", .{buf[0..n]});
         },
-        .directory => try renderDir(io, w, base, rel_path),
-        .file => try renderFile(arena, io, w, base, rel_path),
-        else => try w.writeAll("sem preview para este tipo de entrada\n"),
+        .directory => try renderDir(io, w, base, rel_path, lang),
+        .file => try renderFile(arena, io, w, base, rel_path, lang),
+        else => try w.writeAll(i18n.tr(
+            lang,
+            "no preview for this entry type\n",
+            "sem preview para este tipo de entrada\n",
+        )),
     }
 }
 
-fn renderDir(io: Io, w: *Io.Writer, base: Io.Dir, rel_path: []const u8) !void {
+fn renderDir(io: Io, w: *Io.Writer, base: Io.Dir, rel_path: []const u8, lang: i18n.Lang) !void {
     var dir = base.openDir(io, rel_path, .{ .iterate = true }) catch |err| {
-        try w.print("não foi possível abrir: {s}\n", .{@errorName(err)});
+        try w.print("{s}: {s}\n", .{
+            i18n.tr(lang, "could not open", "não foi possível abrir"),
+            @errorName(err),
+        });
         return;
     };
     defer dir.close(io);
@@ -69,13 +100,16 @@ fn renderDir(io: Io, w: *Io.Writer, base: Io.Dir, rel_path: []const u8) !void {
         try w.print("{s}{s}\n", .{ e.name, if (e.kind == .directory) "/" else "" });
         shown += 1;
     }
-    if (truncated) try w.writeAll("(leitura interrompida)\n");
-    if (shown == 0 and !truncated) try w.writeAll("(vazio)\n");
+    if (truncated) try w.writeAll(i18n.tr(lang, "(read interrupted)\n", "(leitura interrompida)\n"));
+    if (shown == 0 and !truncated) try w.writeAll(i18n.tr(lang, "(empty)\n", "(vazio)\n"));
 }
 
-fn renderFile(arena: Allocator, io: Io, w: *Io.Writer, base: Io.Dir, rel_path: []const u8) !void {
+fn renderFile(arena: Allocator, io: Io, w: *Io.Writer, base: Io.Dir, rel_path: []const u8, lang: i18n.Lang) !void {
     const file = base.openFile(io, rel_path, .{}) catch |err| {
-        try w.print("não foi possível ler: {s}\n", .{@errorName(err)});
+        try w.print("{s}: {s}\n", .{
+            i18n.tr(lang, "could not read", "não foi possível ler"),
+            @errorName(err),
+        });
         return;
     };
     defer file.close(io);
@@ -84,17 +118,20 @@ fn renderFile(arena: Allocator, io: Io, w: *Io.Writer, base: Io.Dir, rel_path: [
     var io_buf: [4096]u8 = undefined;
     var reader: Io.File.Reader = .init(file, io, &io_buf);
     const n = reader.interface.readSliceShort(buf) catch |err| {
-        try w.print("não foi possível ler: {s}\n", .{@errorName(err)});
+        try w.print("{s}: {s}\n", .{
+            i18n.tr(lang, "could not read", "não foi possível ler"),
+            @errorName(err),
+        });
         return;
     };
     if (n == 0) {
-        try w.writeAll("(vazio)\n");
+        try w.writeAll(i18n.tr(lang, "(empty)\n", "(vazio)\n"));
         return;
     }
     const truncated_bytes = n > max_text_bytes;
     const data = buf[0..@min(n, max_text_bytes)];
     if (isBinary(data)) {
-        try w.writeAll("binário — primeiros bytes:\n\n");
+        try w.writeAll(i18n.tr(lang, "binary — first bytes:\n\n", "binário — primeiros bytes:\n\n"));
         try hexdump(w, data[0..@min(data.len, 256)]);
         return;
     }

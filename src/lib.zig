@@ -7,3 +7,4 @@ pub const plan = @import("plan.zig");
 pub const fsops = @import("fsops.zig");
 pub const cli = @import("cli.zig");
 pub const tzif = @import("tzif.zig");
+pub const i18n = @import("i18n.zig");

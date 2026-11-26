@@ -8,4 +8,5 @@ test {
     _ = @import("fsops_test.zig");
     _ = @import("cli_test.zig");
     _ = @import("tzif_test.zig");
+    _ = @import("i18n_test.zig");
 }

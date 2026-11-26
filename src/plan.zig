@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const i18n = @import("i18n.zig");
 
 pub const Kind = enum { dir, file, symlink, hardlink, other };
 
@@ -124,64 +125,129 @@ pub const Problem = union(enum) {
     multiple_directives: struct { line: u32 },
 
     pub fn describe(p: Problem, w: *std.Io.Writer) std.Io.Writer.Error!void {
-        switch (p) {
-            .create_empty_path => |v| try w.print("linha {d}: nome vazio", .{v.line}),
-            .create_absolute => |v| try w.print("linha {d}: caminho absoluto não é aceito ({s})", .{ v.line, v.path }),
-            .create_escapes_base => |v| try w.print("linha {d}: caminho sai do diretório-base ({s})", .{ v.line, v.path }),
-            .create_reserved => |v| try w.print("linha {d}: nome reservado pelo lst-f ({s})", .{ v.line, v.path }),
-            .create_duplicate => |v| try w.print("linha {d}: duas linhas criam o mesmo caminho ({s})", .{ v.line, v.path }),
-            .create_occupied => |v| try w.print("linha {d}: {s} já pertence a uma entrada da seleção", .{ v.line, v.path }),
-            .create_over_removed => |v| try w.print(
-                "linha {d}: {s} pertence ao ID {d}, que está sendo removido; remoções acontecem por último",
-                .{ v.line, v.path, v.id },
-            ),
-            .create_under_touched => |v| try w.print(
-                "linha {d}: {s} fica dentro do ID {d}, que está sendo movido ou removido",
-                .{ v.line, v.path, v.id },
-            ),
-            .create_exists => |v| try w.print("linha {d}: {s} já existe no disco", .{ v.line, v.path }),
-            .link_empty_target => |v| try w.print("linha {d}: link \"{s}\" sem destino (alvo)", .{ v.line, v.path }),
-            .copy_no_free_name => |v| try w.print(
-                "ID {d}: {s} colide e não sobrou nome livre com sufixo (-01 a -99)",
-                .{ v.id, v.path },
-            ),
-            .copy_under_touched => |v| try w.print(
-                "ID {d}: {s} fica dentro de um diretório que está sendo movido ou removido",
-                .{ v.id, v.path },
-            ),
-            .copy_into_self => |v| try w.print(
-                "ID {d}: {s} seria copiado para dentro de si mesmo ({s})",
-                .{ v.id, v.from, v.to },
-            ),
-            .move_dest_occupied => |v| try w.print(
-                "ID {d}: mover {s} para cá esbarra em {s}, que já existe; apague a linha dele ou escolha outro nome",
-                .{ v.id, v.from, v.to },
-            ),
-            .claimed_elsewhere => |v| try w.print(
-                "ID {d}: {s} foi colado no buffer de {s}; salve aquela janela para concluir o movimento",
-                .{ v.id, v.path, v.dir },
-            ),
-            .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
-            .unknown_id => |v| try w.print("linha {d}: ID {d} não pertence à seleção", .{ v.line, v.id }),
-            .duplicate_id => |v| try w.print("linha {d}: ID {d} repetido com todas as linhas renomeadas; uma precisa manter o nome original", .{ v.line, v.id }),
-            .empty_path => |v| try w.print("ID {d}: caminho vazio", .{v.id}),
-            .absolute_path => |v| try w.print("ID {d}: caminho absoluto não é aceito ({s})", .{ v.id, v.path }),
-            .escapes_base => |v| try w.print("ID {d}: caminho sai do diretório-base ({s})", .{ v.id, v.path }),
-            .reserved_name => |v| try w.print("ID {d}: nome reservado pelo lst-f ({s})", .{ v.id, v.path }),
-            .duplicate_dest => |v| try w.print("IDs {d} e {d} apontam para o mesmo destino ({s})", .{ v.a, v.b, v.path }),
-            .dest_occupied => |v| try w.print("ID {d}: destino já ocupado ({s})", .{ v.id, v.path }),
-            .dest_under_dest => |v| try w.print("ID {d} vira diretório de ID {d}: destinos incompatíveis", .{ v.outer, v.inner }),
-            .parent_removed_child_moved => |v| try w.print(
-                "ID {d} remove um diretório que contém o ID {d}, que está sendo renomeado",
-                .{ v.parent, v.child },
-            ),
-            .parent_moved_child_touched => |v| try w.print(
-                "ID {d} move um diretório que contém o ID {d}, também alterado na mesma seleção",
-                .{ v.parent, v.child },
-            ),
-            .unknown_directive => |v| try w.print("linha {d}: diretiva desconhecida \":{s}\"", .{ v.line, v.name }),
-            .directive_needs_argument => |v| try w.print("linha {d}: \":{s}\" precisa de um argumento", .{ v.line, v.name }),
-            .multiple_directives => |v| try w.print("linha {d}: só uma diretiva por vez", .{v.line}),
+        return p.describeLang(w, .en);
+    }
+
+    pub fn describeLang(p: Problem, w: *std.Io.Writer, lang: i18n.Lang) std.Io.Writer.Error!void {
+        switch (lang) {
+            .en => switch (p) {
+                .create_empty_path => |v| try w.print("line {d}: empty name", .{v.line}),
+                .create_absolute => |v| try w.print("line {d}: absolute path is not allowed ({s})", .{ v.line, v.path }),
+                .create_escapes_base => |v| try w.print("line {d}: path escapes base directory ({s})", .{ v.line, v.path }),
+                .create_reserved => |v| try w.print("line {d}: name reserved by lst-f ({s})", .{ v.line, v.path }),
+                .create_duplicate => |v| try w.print("line {d}: two lines create the same path ({s})", .{ v.line, v.path }),
+                .create_occupied => |v| try w.print("line {d}: {s} already belongs to an entry in the selection", .{ v.line, v.path }),
+                .create_over_removed => |v| try w.print(
+                    "line {d}: {s} belongs to ID {d}, which is being removed; removals run last",
+                    .{ v.line, v.path, v.id },
+                ),
+                .create_under_touched => |v| try w.print(
+                    "line {d}: {s} is inside ID {d}, which is being moved or removed",
+                    .{ v.line, v.path, v.id },
+                ),
+                .create_exists => |v| try w.print("line {d}: {s} already exists on disk", .{ v.line, v.path }),
+                .link_empty_target => |v| try w.print("line {d}: link \"{s}\" has no target", .{ v.line, v.path }),
+                .copy_no_free_name => |v| try w.print(
+                    "ID {d}: {s} collides and no free suffixed name remains (-01 to -99)",
+                    .{ v.id, v.path },
+                ),
+                .copy_under_touched => |v| try w.print(
+                    "ID {d}: {s} is inside a directory being moved or removed",
+                    .{ v.id, v.path },
+                ),
+                .copy_into_self => |v| try w.print(
+                    "ID {d}: {s} would be copied into itself ({s})",
+                    .{ v.id, v.from, v.to },
+                ),
+                .move_dest_occupied => |v| try w.print(
+                    "ID {d}: moving {s} here collides with {s}, which already exists; delete its line or choose another name",
+                    .{ v.id, v.from, v.to },
+                ),
+                .claimed_elsewhere => |v| try w.print(
+                    "ID {d}: {s} was pasted into the buffer for {s}; save that window to complete the move",
+                    .{ v.id, v.path, v.dir },
+                ),
+                .id_without_path => |v| try w.print("line {d}: ID without path", .{v.line}),
+                .unknown_id => |v| try w.print("line {d}: ID {d} does not belong to the selection", .{ v.line, v.id }),
+                .duplicate_id => |v| try w.print("line {d}: repeated ID {d} with all lines renamed; one must keep the original name", .{ v.line, v.id }),
+                .empty_path => |v| try w.print("ID {d}: empty path", .{v.id}),
+                .absolute_path => |v| try w.print("ID {d}: absolute path is not allowed ({s})", .{ v.id, v.path }),
+                .escapes_base => |v| try w.print("ID {d}: path escapes base directory ({s})", .{ v.id, v.path }),
+                .reserved_name => |v| try w.print("ID {d}: name reserved by lst-f ({s})", .{ v.id, v.path }),
+                .duplicate_dest => |v| try w.print("IDs {d} and {d} point to the same destination ({s})", .{ v.a, v.b, v.path }),
+                .dest_occupied => |v| try w.print("ID {d}: destination already occupied ({s})", .{ v.id, v.path }),
+                .dest_under_dest => |v| try w.print("ID {d} becomes parent directory of ID {d}: incompatible destinations", .{ v.outer, v.inner }),
+                .parent_removed_child_moved => |v| try w.print(
+                    "ID {d} removes a directory containing ID {d}, which is being renamed",
+                    .{ v.parent, v.child },
+                ),
+                .parent_moved_child_touched => |v| try w.print(
+                    "ID {d} moves a directory containing ID {d}, also modified in the same selection",
+                    .{ v.parent, v.child },
+                ),
+                .unknown_directive => |v| try w.print("line {d}: unknown directive \":{s}\"", .{ v.line, v.name }),
+                .directive_needs_argument => |v| try w.print("line {d}: \":{s}\" requires an argument", .{ v.line, v.name }),
+                .multiple_directives => |v| try w.print("line {d}: only one directive at a time", .{v.line}),
+            },
+            .pt => switch (p) {
+                .create_empty_path => |v| try w.print("linha {d}: nome vazio", .{v.line}),
+                .create_absolute => |v| try w.print("linha {d}: caminho absoluto não é aceito ({s})", .{ v.line, v.path }),
+                .create_escapes_base => |v| try w.print("linha {d}: caminho sai do diretório-base ({s})", .{ v.line, v.path }),
+                .create_reserved => |v| try w.print("linha {d}: nome reservado pelo lst-f ({s})", .{ v.line, v.path }),
+                .create_duplicate => |v| try w.print("linha {d}: duas linhas criam o mesmo caminho ({s})", .{ v.line, v.path }),
+                .create_occupied => |v| try w.print("linha {d}: {s} já pertence a uma entrada da seleção", .{ v.line, v.path }),
+                .create_over_removed => |v| try w.print(
+                    "linha {d}: {s} pertence ao ID {d}, que está sendo removido; remoções acontecem por último",
+                    .{ v.line, v.path, v.id },
+                ),
+                .create_under_touched => |v| try w.print(
+                    "linha {d}: {s} fica dentro do ID {d}, que está sendo movido ou removido",
+                    .{ v.line, v.path, v.id },
+                ),
+                .create_exists => |v| try w.print("linha {d}: {s} já existe no disco", .{ v.line, v.path }),
+                .link_empty_target => |v| try w.print("linha {d}: link \"{s}\" sem destino (alvo)", .{ v.line, v.path }),
+                .copy_no_free_name => |v| try w.print(
+                    "ID {d}: {s} colide e não sobrou nome livre com sufixo (-01 a -99)",
+                    .{ v.id, v.path },
+                ),
+                .copy_under_touched => |v| try w.print(
+                    "ID {d}: {s} fica dentro de um diretório que está sendo movido ou removido",
+                    .{ v.id, v.path },
+                ),
+                .copy_into_self => |v| try w.print(
+                    "ID {d}: {s} seria copiado para dentro de si mesmo ({s})",
+                    .{ v.id, v.from, v.to },
+                ),
+                .move_dest_occupied => |v| try w.print(
+                    "ID {d}: mover {s} para cá esbarra em {s}, que já existe; apague a linha dele ou escolha outro nome",
+                    .{ v.id, v.from, v.to },
+                ),
+                .claimed_elsewhere => |v| try w.print(
+                    "ID {d}: {s} foi colado no buffer de {s}; salve aquela janela para concluir o movimento",
+                    .{ v.id, v.path, v.dir },
+                ),
+                .id_without_path => |v| try w.print("linha {d}: ID sem caminho", .{v.line}),
+                .unknown_id => |v| try w.print("linha {d}: ID {d} não pertence à seleção", .{ v.line, v.id }),
+                .duplicate_id => |v| try w.print("linha {d}: ID {d} repetido com todas as linhas renomeadas; uma precisa manter o nome original", .{ v.line, v.id }),
+                .empty_path => |v| try w.print("ID {d}: caminho vazio", .{v.id}),
+                .absolute_path => |v| try w.print("ID {d}: caminho absoluto não é aceito ({s})", .{ v.id, v.path }),
+                .escapes_base => |v| try w.print("ID {d}: caminho sai do diretório-base ({s})", .{ v.id, v.path }),
+                .reserved_name => |v| try w.print("ID {d}: nome reservado pelo lst-f ({s})", .{ v.id, v.path }),
+                .duplicate_dest => |v| try w.print("IDs {d} e {d} apontam para o mesmo destino ({s})", .{ v.a, v.b, v.path }),
+                .dest_occupied => |v| try w.print("ID {d}: destino já ocupado ({s})", .{ v.id, v.path }),
+                .dest_under_dest => |v| try w.print("ID {d} vira diretório de ID {d}: destinos incompatíveis", .{ v.outer, v.inner }),
+                .parent_removed_child_moved => |v| try w.print(
+                    "ID {d} remove um diretório que contém o ID {d}, que está sendo renomeado",
+                    .{ v.parent, v.child },
+                ),
+                .parent_moved_child_touched => |v| try w.print(
+                    "ID {d} move um diretório que contém o ID {d}, também alterado na mesma seleção",
+                    .{ v.parent, v.child },
+                ),
+                .unknown_directive => |v| try w.print("linha {d}: diretiva desconhecida \":{s}\"", .{ v.line, v.name }),
+                .directive_needs_argument => |v| try w.print("linha {d}: \":{s}\" precisa de um argumento", .{ v.line, v.name }),
+                .multiple_directives => |v| try w.print("linha {d}: só uma diretiva por vez", .{v.line}),
+            },
         }
     }
 };
@@ -1198,14 +1264,25 @@ pub const BufferHeader = struct {
 /// do editor. Linha de tela nao rola com a lista, nao pode ser apagada e se
 /// redesenha sozinha quando o terminal muda de tamanho.
 pub fn headerLines(arena: Allocator, header: BufferHeader) Allocator.Error![]const []const u8 {
+    return headerLinesLang(arena, header, .en);
+}
+
+pub fn headerLinesLang(arena: Allocator, header: BufferHeader, lang: i18n.Lang) Allocator.Error![]const []const u8 {
     var out: std.ArrayList([]const u8) = .empty;
     if (header.scope) |scope| try out.append(arena, scope);
     for (header.notes) |note| {
-        try out.append(arena, try std.fmt.allocPrint(arena, "aviso: {s}", .{note}));
+        try out.append(arena, try std.fmt.allocPrint(arena, "{s}: {s}", .{
+            i18n.tr(lang, "notice", "aviso"),
+            note,
+        }));
     }
     for (header.unlistable) |name| {
         var line: std.ArrayList(u8) = .empty;
-        try line.appendSlice(arena, "fora da edicao, nome nao e UTF-8 valido: ");
+        try line.appendSlice(arena, i18n.tr(
+            lang,
+            "not editable, invalid UTF-8 name: ",
+            "fora da edição, nome não é UTF-8 válido: ",
+        ));
         for (name) |c| {
             if (c >= 0x20 and c < 0x7f) {
                 try line.append(arena, c);
@@ -1225,7 +1302,17 @@ pub fn writeBuffer(
     header: BufferHeader,
     originals: []const Original,
 ) !void {
-    for (try headerLines(arena, header)) |line| try w.print("{s}\n", .{line});
+    return writeBufferLang(arena, w, header, originals, .en);
+}
+
+pub fn writeBufferLang(
+    arena: Allocator,
+    w: *std.Io.Writer,
+    header: BufferHeader,
+    originals: []const Original,
+    lang: i18n.Lang,
+) !void {
+    for (try headerLinesLang(arena, header, lang)) |line| try w.print("{s}\n", .{line});
     for (originals) |o| {
         const slash: []const u8 = if (o.kind == .dir and !std.mem.endsWith(u8, o.path, "/")) "/" else "";
         if (o.display.len > 0) {

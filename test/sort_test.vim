@@ -95,9 +95,10 @@ call feedkeys(":sort ext\<CR>", 'xt')
 call assert_equal(5, line('$'))
 
 " Teclas nativas do Vim ficam livres no modo padrao (fora de LST_F_KEYMAP=classic).
-for s:k in ['.', 'r', '<C-r>', 'b', 'm', 'q', '~', '<C-a>', '?']
+for s:k in ['.', 'r', '<C-r>', 'b', 'm', '~', '<C-a>', '?']
   call assert_equal('', maparg(s:k, 'n', 0, 0), 'tecla nativa nao deve estar remapeada: ' . s:k)
 endfor
+call assert_true(!empty(maparg('q', 'n', 0, 0)))
 call assert_true(!empty(maparg('g.', 'n', 0, 0)))
 call assert_true(!empty(maparg('<C-l>', 'n', 0, 0)))
 call assert_true(!empty(maparg('gm', 'n', 0, 0)))
