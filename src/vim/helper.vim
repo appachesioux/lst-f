@@ -702,7 +702,17 @@ function! s:lstf_reload_others(paths) abort
     if empty(l:p) | continue | endif
     let l:nr = bufnr(l:p)
     if l:nr <= 0 | continue | endif
-    for l:w in win_findbuf(l:nr)
+    let l:wins = win_findbuf(l:nr)
+    if empty(l:wins)
+      " Buffer oculto (comum no Neovim com 'hidden') cuja unica edicao era o
+      " `dd` que acabou de ser movido: descarta-lo evita que continue contando
+      " como modificado em `:wa` ou ao sair.
+      if bufloaded(l:nr)
+        silent! execute 'bwipeout! ' . l:nr
+      endif
+      continue
+    endif
+    for l:w in l:wins
       if l:w == l:cur | continue | endif
       noautocmd call win_gotoid(l:w)
       " Este reload acontece dentro de um autocmd (BufWritePost), e

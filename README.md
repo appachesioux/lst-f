@@ -5,7 +5,7 @@ Neovim**: o `lst-f` abre o diretório como um buffer editável, você edita, sal
 e ele executa o que você escreveu.
 
 ```
-╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.11.26 ─╮   ← moldura
+╭─ ~/Devel/lst-f ─────────────────────────────────────────────────── lst-f v26.11.27 ─╮   ← moldura
 
 ──────────────────────────────────────────────────────────────────────────────────────
 T │ PERMS     │ OWNER    │ SIZE      │ MODIFIED         │ NAME                           ← títulos

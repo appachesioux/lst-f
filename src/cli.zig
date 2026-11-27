@@ -1275,6 +1275,69 @@ fn applySavedBufferLive(s: *Session) !?[]const u8 {
     return null;
 }
 
+/// Diz se o documento `doc` de um buffer de origem tem alguma edicao pendente
+/// alem da retirada das entradas em `moved_ids` (que acabaram de ser movidas
+/// para outra pasta).
+///
+/// Sem outras edicoes, o buffer de origem pode ser relistado e recarregado por
+/// inteiro no editor. Com outras edicoes (ex.: um rename ou outro `dd` ainda
+/// nao salvo), nao podemos sobrescrever o texto da janela; apenas retiramos
+/// `moved_ids` de `v.entries` para que o `:w` seguinte la nao proponha mandar
+/// para a lixeira arquivos que ja sairam.
+pub fn hasOtherPendingEdits(
+    allocator: Allocator,
+    originals: []const plan.Original,
+    doc: plan.Document,
+    moved_ids: *const std.AutoHashMapUnmanaged(u32, void),
+) !bool {
+    if (doc.creates.len > 0) return true;
+
+    var expected: std.AutoHashMapUnmanaged(u32, []const u8) = .empty;
+    for (originals) |orig| {
+        if (moved_ids.contains(orig.id)) continue;
+        try expected.put(allocator, orig.id, orig.path);
+    }
+
+    var seen: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    for (doc.edits) |edit| {
+        const orig_path = expected.get(edit.id) orelse return true;
+        if (!std.mem.eql(u8, edit.path, orig_path)) return true;
+        if ((try seen.getOrPut(allocator, edit.id)).found_existing) return true;
+    }
+    return seen.count() != expected.count();
+}
+
+pub fn pruneMovedEntries(
+    allocator: Allocator,
+    entries: []const plan.Original,
+    moved_ids: *const std.AutoHashMapUnmanaged(u32, void),
+) ![]plan.Original {
+    var kept: std.ArrayList(plan.Original) = .empty;
+    for (entries) |e| {
+        if (moved_ids.contains(e.id)) continue;
+        try kept.append(allocator, e);
+    }
+    return kept.toOwnedSlice(allocator);
+}
+
+fn viewHasOtherPendingEdits(
+    s: *Session,
+    allocator: Allocator,
+    v: *const View,
+    moved_ids: *const std.AutoHashMapUnmanaged(u32, void),
+) !bool {
+    const pending = try std.fmt.allocPrint(allocator, "{s}.pending", .{v.buffer_path});
+    const text = Io.Dir.cwd().readFileAlloc(
+        s.io,
+        pending,
+        allocator,
+        .limited(64 * 1024 * 1024),
+    ) catch return true;
+    const parsed = try plan.parseBufferWithOriginals(allocator, text, v.header_lines, v.entries);
+    if (parsed == .invalid) return true;
+    return hasOtherPendingEdits(allocator, v.entries, parsed.ok, moved_ids);
+}
+
 /// Depois de mover entradas de outras pastas para ca, os buffers delas mostram
 /// uma linha que nao existe mais (e depois de um `:undo`, o contrario). Relista
 /// e regrava cada um, e devolve o caminho dos arquivos para o helper recarregar
@@ -1289,14 +1352,36 @@ fn refreshMovedSources(s: *Session, copies: []const plan.Copy, note: []const u8)
         s.view = focused;
         s.notice = notice;
     }
+    var req_arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
+    defer req_arena_state.deinit();
+    const req = req_arena_state.allocator();
+
     for (copies) |c| {
         if (!c.cut) continue;
         const abs = c.from_abs orelse continue;
         const dir = std.fs.path.dirname(abs) orelse continue;
         if ((try seen.getOrPut(s.arena, dir)).found_existing) continue;
-        // Nao sobrescrever uma janela que tem outras edicoes pendentes.
-        if (isDirty(s, dir)) continue;
         const v = s.views.get(dir) orelse continue;
+        if (isDirty(s, dir)) {
+            var moved_ids: std.AutoHashMapUnmanaged(u32, void) = .empty;
+            for (copies) |c2| {
+                if (!c2.cut) continue;
+                const abs2 = c2.from_abs orelse continue;
+                const dir2 = std.fs.path.dirname(abs2) orelse continue;
+                if (std.mem.eql(u8, dir2, dir)) {
+                    try moved_ids.put(req, c2.id, {});
+                }
+            }
+            // A origem de um movimento (`dd` la, `p` ca) esta sempre suja no
+            // Vim por causa do proprio `dd`. So pulamos o reload quando ha
+            // *outras* edicoes pendentes ali; nesse caso ainda retiramos os
+            // IDs movidos de `v.entries` para que o `:w` seguinte nao proponha
+            // mandar para a lixeira arquivos que ja sairam.
+            if (try viewHasOtherPendingEdits(s, req, v, &moved_ids)) {
+                v.entries = try pruneMovedEntries(s.arena, v.entries, &moved_ids);
+                continue;
+            }
+        }
         s.view = v;
         // O recado da pasta de origem e outro: aqui a linha sumiu, nao chegou.
         s.notice = note;

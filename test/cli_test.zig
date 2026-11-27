@@ -136,3 +136,86 @@ test "flags novas (--no-icons, --cwd-file, --exclude) e helpers (abbreviateHome,
     try testing.expect(cli.matchesFilter("plan", "src_plan_test.zig"));
     try testing.expect(!cli.matchesFilter("plan", "fsops.zig"));
 }
+
+test "hasOtherPendingEdits distingue dd de movimento de outras edicoes na origem" {
+    var arena_state: std.heap.ArenaAllocator = .init(testing.allocator);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    const plan = @import("lst_f").plan;
+
+    const originals = [_]plan.Original{
+        .{ .id = 10, .path = "a.mp4", .kind = .file },
+        .{ .id = 11, .path = "b.mp4", .kind = .file },
+        .{ .id = 12, .path = "c.mp4", .kind = .file },
+    };
+
+    var moved: std.AutoHashMapUnmanaged(u32, void) = .empty;
+    try moved.put(a, 11, {});
+
+    // Unica edicao na origem foi o `dd` do arquivo movido (mesmo reordenado).
+    try testing.expect(!try cli.hasOtherPendingEdits(a, &originals, .{
+        .edits = &.{
+            .{ .id = 12, .path = "c.mp4", .line = 1 },
+            .{ .id = 10, .path = "a.mp4", .line = 2 },
+        },
+        .creates = &.{},
+        .directive = null,
+    }, &moved));
+
+    // Rename pendente alem do movimento -> nao pode sobrescrever o buffer.
+    try testing.expect(try cli.hasOtherPendingEdits(a, &originals, .{
+        .edits = &.{
+            .{ .id = 10, .path = "a-novo.mp4", .line = 1 },
+            .{ .id = 12, .path = "c.mp4", .line = 2 },
+        },
+        .creates = &.{},
+        .directive = null,
+    }, &moved));
+
+    // Outro `dd` pendente alem do movimento -> nao pode sobrescrever o buffer.
+    try testing.expect(try cli.hasOtherPendingEdits(a, &originals, .{
+        .edits = &.{
+            .{ .id = 10, .path = "a.mp4", .line = 1 },
+        },
+        .creates = &.{},
+        .directive = null,
+    }, &moved));
+
+    // Criacao pendente alem do movimento -> nao pode sobrescrever o buffer.
+    try testing.expect(try cli.hasOtherPendingEdits(a, &originals, .{
+        .edits = &.{
+            .{ .id = 10, .path = "a.mp4", .line = 1 },
+            .{ .id = 12, .path = "c.mp4", .line = 2 },
+        },
+        .creates = &.{.{ .path = "novo.txt", .kind = .file, .line = 3 }},
+        .directive = null,
+    }, &moved));
+
+    // Copia (`yy`+`p`) pendente alem do movimento -> nao pode sobrescrever o buffer.
+    try testing.expect(try cli.hasOtherPendingEdits(a, &originals, .{
+        .edits = &.{
+            .{ .id = 10, .path = "a.mp4", .line = 1 },
+            .{ .id = 10, .path = "a.mp4", .line = 2 },
+            .{ .id = 12, .path = "c.mp4", .line = 3 },
+        },
+        .creates = &.{},
+        .directive = null,
+    }, &moved));
+
+    // ID estrangeiro colado na origem -> nao pode sobrescrever o buffer.
+    try testing.expect(try cli.hasOtherPendingEdits(a, &originals, .{
+        .edits = &.{
+            .{ .id = 10, .path = "a.mp4", .line = 1 },
+            .{ .id = 12, .path = "c.mp4", .line = 2 },
+            .{ .id = 99, .path = "outro.mp4", .line = 3 },
+        },
+        .creates = &.{},
+        .directive = null,
+    }, &moved));
+
+    // pruneMovedEntries remove apenas os IDs movidos.
+    const pruned = try cli.pruneMovedEntries(a, &originals, &moved);
+    try testing.expectEqual(@as(usize, 2), pruned.len);
+    try testing.expectEqual(@as(u32, 10), pruned[0].id);
+    try testing.expectEqual(@as(u32, 12), pruned[1].id);
+}
